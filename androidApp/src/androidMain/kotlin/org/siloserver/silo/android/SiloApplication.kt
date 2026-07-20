@@ -36,6 +36,19 @@ import org.koin.core.context.startKoin
 class SiloApplication : Application(), Configuration.Provider, SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
+        // Crash reporting to the self-hosted GlitchTip at errors.wave-ninja.eu.
+        // Must run before Koin so DI/startup crashes are captured. Guarded —
+        // an unreachable errors host must never take the app down with it.
+        runCatching {
+            io.sentry.android.core.SentryAndroid.init(this) { options ->
+                options.dsn = "https://a51c3e6b326d41ae80f63640285e933a@errors.wave-ninja.eu/1"
+                options.release = "org.siloserver.silo@${BuildConfig.VERSION_NAME}+${BuildConfig.VERSION_CODE}"
+                options.environment = if (BuildConfig.DEBUG) "debug" else "production"
+                options.isSendDefaultPii = false
+            }
+        }.onFailure {
+            android.util.Log.w("SiloApplication", "Sentry init failed", it)
+        }
         val koinApp = startKoin {
             androidContext(this@SiloApplication)
             modules(sharedModules() + playerModule + playerInfraModule + androidModule)

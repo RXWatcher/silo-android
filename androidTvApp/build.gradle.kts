@@ -61,6 +61,7 @@ kotlin {
             implementation(libs.lifecycle.process)
             implementation(libs.navigation.compose)
             implementation(libs.koin.android)
+            implementation(libs.sentry.android)
             implementation(libs.koin.compose)
             implementation(libs.koin.compose.viewmodel)
             implementation(libs.coil.compose)

@@ -135,3 +135,4 @@ android-test = { id = "com.android.test", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 androidx-baselineprofile = { id = "androidx.baselineprofile", version.ref = "benchmark" }
 google-services = { id = "com.google.gms.google-services", version.ref = "google-services" }
+sentry-android-gradle = { id = "io.sentry.android.gradle", version = "5.8.0" }

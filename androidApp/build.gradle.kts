@@ -8,6 +8,27 @@ plugins {
     // release APK so profileinstaller can AOT-compile hot paths on first run.
     alias(libs.plugins.androidx.baselineprofile)
     alias(libs.plugins.google.services) apply false
+    alias(libs.plugins.sentry.android.gradle)
+}
+
+// Bytecode-instruments android.util.Log so every existing Log.w/Log.e call
+// site app-wide becomes a Sentry breadcrumb — the codebase narrates its
+// failures there and they were previously invisible off-device. Everything
+// else the plugin can do (mapping upload, dep injection, tracing hooks,
+// telemetry) is switched off.
+sentry {
+    telemetry.set(false)
+    includeProguardMapping.set(false)
+    autoUploadProguardMapping.set(false)
+    autoInstallation { enabled.set(false) }
+    tracingInstrumentation {
+        enabled.set(true)
+        features.set(emptySet())
+        logcat {
+            enabled.set(true)
+            minLevel.set(io.sentry.android.gradle.instrumentation.logcat.LogcatLevel.WARNING)
+        }
+    }
 }
 
 if (file("google-services.json").isFile) {

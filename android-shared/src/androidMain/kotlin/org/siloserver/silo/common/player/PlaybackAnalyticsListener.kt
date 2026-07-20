@@ -9,9 +9,11 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
+import io.sentry.SentryLogLevel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import org.siloserver.silo.common.telemetry.PlaybackTelemetry
 
 /**
  * `AnalyticsListener` that logs the handful of signals we actually triage
@@ -56,6 +58,10 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         initializationDurationMs: Long,
     ) {
         Log.i(TAG, "Video decoder: $decoderName (init ${initializationDurationMs}ms)")
+        PlaybackTelemetry.log(
+            "video decoder initialized",
+            mapOf("decoder" to decoderName, "init_ms" to initializationDurationMs),
+        )
         _events.tryEmit(Event.VideoDecoderInitialized(decoderName, initializationDurationMs))
     }
 
@@ -66,6 +72,10 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         initializationDurationMs: Long,
     ) {
         Log.i(TAG, "Audio decoder: $decoderName (init ${initializationDurationMs}ms)")
+        PlaybackTelemetry.log(
+            "audio decoder initialized",
+            mapOf("decoder" to decoderName, "init_ms" to initializationDurationMs),
+        )
         _events.tryEmit(Event.AudioDecoderInitialized(decoderName))
     }
 
@@ -81,6 +91,20 @@ class PlaybackAnalyticsListener : AnalyticsListener {
                 "codecs=${format.codecs} colorSpace=${colorInfo?.colorSpace} " +
                 "colorTransfer=${colorInfo?.colorTransfer} colorRange=${colorInfo?.colorRange}",
         )
+        PlaybackTelemetry.log(
+            "video format changed",
+            mapOf(
+                "mime" to format.sampleMimeType,
+                "codecs" to format.codecs,
+                "width" to format.width,
+                "height" to format.height,
+                "frame_rate" to format.frameRate,
+                "bitrate" to format.bitrate.takeIf { it != Format.NO_VALUE },
+                "color_space" to colorInfo?.colorSpace,
+                "color_transfer" to colorInfo?.colorTransfer,
+                "color_range" to colorInfo?.colorRange,
+            ),
+        )
         _events.tryEmit(Event.VideoFormatChanged(format))
     }
 
@@ -90,6 +114,16 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?,
     ) {
         Log.i(TAG, "Audio format: ${format.sampleMimeType} ch=${format.channelCount} sr=${format.sampleRate}")
+        PlaybackTelemetry.log(
+            "audio format changed",
+            mapOf(
+                "mime" to format.sampleMimeType,
+                "codecs" to format.codecs,
+                "channels" to format.channelCount,
+                "sample_rate" to format.sampleRate,
+                "bitrate" to format.bitrate.takeIf { it != Format.NO_VALUE },
+            ),
+        )
         _events.tryEmit(Event.AudioFormatChanged(format))
     }
 
@@ -99,6 +133,7 @@ class PlaybackAnalyticsListener : AnalyticsListener {
     ) {
         val description = tracks.describeForLog()
         Log.i(TAG, "Track snapshot: $description")
+        PlaybackTelemetry.log("track snapshot", mapOf("tracks" to description))
         _events.tryEmit(Event.TrackSnapshot(description))
     }
 
@@ -109,6 +144,11 @@ class PlaybackAnalyticsListener : AnalyticsListener {
     ) {
         if (droppedFrames > 0) {
             Log.w(TAG, "Dropped $droppedFrames video frame(s) in ${elapsedRealtimeMs}ms")
+            PlaybackTelemetry.log(
+                "dropped video frames",
+                mapOf("count" to droppedFrames, "elapsed_ms" to elapsedRealtimeMs),
+                SentryLogLevel.WARN,
+            )
         }
         _events.tryEmit(Event.DroppedFrames(droppedFrames, elapsedRealtimeMs))
     }
@@ -120,6 +160,11 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         elapsedSinceLastFeedMs: Long,
     ) {
         Log.w(TAG, "Audio underrun (buffer=${bufferSizeMs}ms, gap=${elapsedSinceLastFeedMs}ms)")
+        PlaybackTelemetry.log(
+            "audio underrun",
+            mapOf("buffer_ms" to bufferSizeMs, "gap_ms" to elapsedSinceLastFeedMs),
+            SentryLogLevel.WARN,
+        )
         _events.tryEmit(Event.AudioUnderrun)
     }
 
@@ -128,19 +173,15 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         error: PlaybackException,
     ) {
         Log.e(TAG, "Player error ${error.errorCodeName}: ${error.message}", error)
-        // Breadcrumb only: the player-screen ViewModels capture the event with
-        // full playback context; this seam also fires for players without a
-        // ViewModel (background audio), where the crumb is the only record.
-        runCatching {
-            io.sentry.Sentry.addBreadcrumb(
-                io.sentry.Breadcrumb().apply {
-                    type = "error"
-                    category = "playback"
-                    message = "Player error ${error.errorCodeName}: ${error.message}"
-                    level = io.sentry.SentryLevel.ERROR
-                },
-            )
-        }
+        // Log+breadcrumb only: the player-screen ViewModels capture the
+        // exception event with full playback context; this seam also fires for
+        // players without a ViewModel (background audio), where this is the
+        // only record.
+        PlaybackTelemetry.log(
+            "player error",
+            mapOf("error_code" to error.errorCodeName, "message" to error.message),
+            SentryLogLevel.ERROR,
+        )
         _events.tryEmit(Event.PlayerError(error))
     }
 
@@ -152,6 +193,17 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         wasCanceled: Boolean,
     ) {
         Log.w(TAG, "Load error (${mediaLoadData.dataType}): ${error.message}")
+        PlaybackTelemetry.log(
+            "load error",
+            mapOf(
+                "data_type" to mediaLoadData.dataType,
+                "error" to error.message,
+                "error_class" to error.javaClass.simpleName,
+                "uri" to loadEventInfo.uri?.toString(),
+                "was_canceled" to wasCanceled,
+            ),
+            SentryLogLevel.WARN,
+        )
         _events.tryEmit(Event.LoadError(error))
     }
 

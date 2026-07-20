@@ -3028,6 +3028,14 @@ class TvPlayerViewModel(
             if (mime != null && plan != null &&
                 playbackSessionManager.trySingleLocalPcmRetry(mime, selectedTrack?.channelCount ?: 0)
             ) {
+                org.siloserver.silo.common.telemetry.PlaybackTelemetry.log(
+                    "playback recovery step",
+                    mapOf(
+                        "action" to "client_pcm_retry",
+                        "mime" to mime,
+                        "error_code" to error.errorCodeName,
+                    ),
+                )
                 val transportMountNonce = nextTransportMountNonce()
                 _uiState.update {
                     it.copy(
@@ -3092,6 +3100,14 @@ class TvPlayerViewModel(
         ) {
             transientNetworkRetries++
             Log.i(TAG, "Transient network error; retrying same route ($transientNetworkRetries/$MAX_TRANSIENT_NETWORK_RETRIES)")
+            org.siloserver.silo.common.telemetry.PlaybackTelemetry.log(
+                "playback recovery step",
+                mapOf(
+                    "action" to "transient_network_same_route_retry",
+                    "attempt" to transientNetworkRetries,
+                    "error_code" to error.errorCodeName,
+                ),
+            )
             val plan = state.playbackPlan
             val transportMountNonce = nextTransportMountNonce()
             _uiState.update {

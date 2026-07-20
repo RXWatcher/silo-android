@@ -46,6 +46,9 @@ class SiloTvApplication : Application(), Configuration.Provider, SingletonImageL
                 options.isAttachViewHierarchy = true
                 options.isEnableUserInteractionBreadcrumbs = true
                 options.tracesSampleRate = 1.0
+                // Structured playback-decision telemetry (PlaybackTelemetry)
+                // rides the Sentry Logs channel, not error events.
+                options.logs.isEnabled = true
             }
         }.onFailure {
             android.util.Log.w("SiloTvApplication", "Sentry init failed", it)

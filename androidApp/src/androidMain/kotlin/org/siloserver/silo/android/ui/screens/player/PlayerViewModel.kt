@@ -1049,6 +1049,14 @@ class PlayerViewModel(
             if (mime != null && plan != null &&
                 playbackSessionManager.trySingleLocalPcmRetry(mime, track?.channels ?: 0)
             ) {
+                org.siloserver.silo.common.telemetry.PlaybackTelemetry.log(
+                    "playback recovery step",
+                    mapOf(
+                        "action" to "client_pcm_retry",
+                        "mime" to mime,
+                        "error_code" to error.errorCodeName,
+                    ),
+                )
                 _uiState.update {
                     it.copy(
                         error = null,
@@ -1112,6 +1120,14 @@ class PlayerViewModel(
         ) {
             transientNetworkRetries++
             Log.i(TAG, "Transient network error; retrying same route ($transientNetworkRetries/$MAX_TRANSIENT_NETWORK_RETRIES)")
+            org.siloserver.silo.common.telemetry.PlaybackTelemetry.log(
+                "playback recovery step",
+                mapOf(
+                    "action" to "transient_network_same_route_retry",
+                    "attempt" to transientNetworkRetries,
+                    "error_code" to error.errorCodeName,
+                ),
+            )
             // Appending to the decision trace produces a new plan object, which
             // re-runs the screen's mount effect — a same-route remount at the
             // current position, without a server round-trip.

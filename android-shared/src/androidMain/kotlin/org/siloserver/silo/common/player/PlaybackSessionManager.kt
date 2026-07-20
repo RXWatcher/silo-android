@@ -78,6 +78,40 @@ open class PlaybackSessionManager(
     private val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val activeVideoAttempt = AtomicReference<ActiveVideoAttempt?>()
 
+    /**
+     * Every server-negotiated route decision funnels through the four Ready
+     * sites below (start / replan / seek reanchor / seek recovery), so this is
+     * the one place that can answer "why is playback doing what it's doing"
+     * for both apps — shipped as structured telemetry, never load-bearing.
+     */
+    private fun logPlanAdopted(
+        stage: String,
+        plan: PlaybackPlanV3,
+        classification: String? = null,
+        qualityPreference: String? = null,
+    ) {
+        org.siloserver.silo.common.telemetry.PlaybackTelemetry.log(
+            "playback plan adopted",
+            mapOf(
+                "stage" to stage,
+                "classification" to classification,
+                "quality_preference" to qualityPreference,
+                "plan_id" to plan.planId,
+                "session_id" to plan.sessionId,
+                "delivery" to plan.delivery.name,
+                "engine" to plan.engine.name,
+                "protocol" to plan.stream.protocol.name,
+                "container" to plan.stream.container,
+                "mime_type" to plan.stream.mimeType,
+                "decision_reason" to plan.decisionReason,
+                "transformations" to plan.transformations.joinToString(",") { it.name }.ifEmpty { null },
+                "applied_quirks" to plan.appliedQuirks.joinToString(",") { "${it.id}:${it.action}" }.ifEmpty { null },
+                "runtime_corrections" to plan.runtimeCorrections.joinToString(",").ifEmpty { null },
+                "degradation_warnings" to plan.degradationWarnings.joinToString(" | ") { "${it.code}: ${it.message}" }.ifEmpty { null },
+            ),
+        )
+    }
+
     suspend fun startVideoSessionV3(
         fileId: Int,
         profileId: String,
@@ -124,6 +158,7 @@ open class PlaybackSessionManager(
                     videoAttemptMutex.withLock { activeVideoAttempt.set(active) }
                     PassthroughSuppressionRegistry.beginAttempt(active.planAttemptKey)
                     reportActiveVideoEvent("plan_selected", network.asRouteDiagnostics())
+                    logPlanAdopted("session_start", validated.plan)
                     ApiResult.Success(
                         VideoSessionStartV3.Ready(
                             session = validated.plan.toSessionResponse(validated.sessionId, profileId, fileId),
@@ -353,6 +388,7 @@ open class PlaybackSessionManager(
                             outputRouteGeneration = currentContext.output.outputRouteGeneration,
                         ),
                     )
+                    logPlanAdopted("replan", validated.plan, classification, qualityPreference)
                     ApiResult.Success(
                         VideoSessionStartV3.Ready(
                             session = validated.plan.toSessionResponse(validated.sessionId, active.profileId, active.fileId),
@@ -510,6 +546,7 @@ open class PlaybackSessionManager(
                             ),
                         )
                         val effectivePlan = next.plan.applyLocalPlaybackMutations(next.localMutations)
+                        logPlanAdopted("seek_reanchor", effectivePlan)
                         ApiResult.Success(
                             VideoSessionStartV3.Ready(
                                 session = effectivePlan.toSessionResponse(next.sessionId, next.profileId, next.fileId),
@@ -771,6 +808,7 @@ open class PlaybackSessionManager(
                                 outputRouteGeneration = next.context.output.outputRouteGeneration,
                             ),
                         )
+                        logPlanAdopted("seek_recovery", next.plan, classification)
                         ApiResult.Success(
                             VideoSessionStartV3.Ready(
                                 session = next.plan.toSessionResponse(next.sessionId, next.profileId, next.fileId),

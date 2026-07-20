@@ -74,6 +74,7 @@ kotlin {
             implementation(libs.navigation.compose)
             implementation(libs.koin.android)
             implementation(libs.sentry.android)
+            implementation(libs.sentry.android.navigation)
             implementation(libs.koin.compose)
             implementation(libs.koin.compose.viewmodel)
             implementation(libs.coil.compose)

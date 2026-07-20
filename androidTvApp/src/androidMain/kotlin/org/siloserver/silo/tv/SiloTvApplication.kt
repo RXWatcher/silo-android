@@ -39,7 +39,13 @@ class SiloTvApplication : Application(), Configuration.Provider, SingletonImageL
                 options.dsn = "https://2bec7fa1d41e421f8785ebce2950c4fe@errors.wave-ninja.eu/2"
                 options.release = "org.siloserver.silo.tv@${BuildConfig.VERSION_NAME}+${BuildConfig.VERSION_CODE}"
                 options.environment = if (BuildConfig.DEBUG) "debug" else "production"
-                options.isSendDefaultPii = false
+                // Internal triage server — capture rich context on purpose:
+                // screenshots/view hierarchy ride along on error events only.
+                options.isSendDefaultPii = true
+                options.isAttachScreenshot = true
+                options.isAttachViewHierarchy = true
+                options.isEnableUserInteractionBreadcrumbs = true
+                options.tracesSampleRate = 1.0
             }
         }.onFailure {
             android.util.Log.w("SiloTvApplication", "Sentry init failed", it)

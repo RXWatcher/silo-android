@@ -1015,6 +1015,27 @@ class PlayerViewModel(
             seekRecoveryRollbackInvalidated = true
             return
         }
+        // Report to GlitchTip before the recovery ladder runs — recovered
+        // errors are exactly the ones no user will ever tell us about.
+        runCatching {
+            io.sentry.Sentry.captureException(error) { scope ->
+                scope.setTag("area", "playback")
+                state.playMethod?.let { scope.setTag("play_method", it.name) }
+                scope.setContexts(
+                    "playback",
+                    mapOf(
+                        "content_id" to state.contentId,
+                        "title" to state.title,
+                        "session_id" to state.sessionId,
+                        "position_sec" to state.position,
+                        "container" to state.container,
+                        "stream_type" to state.playbackPlan?.stream?.streamType,
+                        "plan_id" to state.playbackPlan?.planId,
+                        "error_code" to error.errorCodeName,
+                    ).filterValues { it != null },
+                )
+            }
+        }
         val isAudioSinkFailure = error.errorCode in setOf(
             androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED,
             androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED,

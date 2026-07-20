@@ -27,6 +27,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.SiloTv"
         android:usesCleartextTraffic="true">
+        <!-- Sentry is initialized manually in SiloTvApplication (DSN lives in
+             code); the SDK's ContentProvider auto-init crashes without a
+             manifest DSN, so it must be disabled. -->
+        <meta-data android:name="io.sentry.auto-init" android:value="false" />
 
         <!-- singleTask: warm launcher clicks (Watch Next tiles, pairing links)
              re-deliver their Uri to the live Activity via onNewIntent instead

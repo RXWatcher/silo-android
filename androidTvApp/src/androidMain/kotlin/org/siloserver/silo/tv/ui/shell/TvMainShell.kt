@@ -179,6 +179,15 @@ fun TvMainShell(
 ) {
     val nestedNav = rememberNavController()
     val currentEntry by nestedNav.currentBackStackEntryAsState()
+    // Sentry breadcrumb per tab change inside the shell (Home/Search/
+    // Libraries/Settings live on this nested graph, not the root one).
+    val sentryNavListener = androidx.compose.runtime.remember {
+        io.sentry.android.navigation.SentryNavigationListener()
+    }
+    androidx.compose.runtime.DisposableEffect(nestedNav) {
+        nestedNav.addOnDestinationChangedListener(sentryNavListener)
+        onDispose { nestedNav.removeOnDestinationChangedListener(sentryNavListener) }
+    }
 
     val authRepository: AuthRepository = koinInject()
     val sectionRepository: org.siloserver.silo.repository.SectionRepository = koinInject()

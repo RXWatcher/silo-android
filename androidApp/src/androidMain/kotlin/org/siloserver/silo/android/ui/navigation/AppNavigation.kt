@@ -86,6 +86,15 @@ fun AppNavigation(
     pendingExternalRoute: String? = null,
     onExternalRouteConsumed: () -> Unit = {},
 ) {
+    // Sentry breadcrumb per destination change so error reports carry the
+    // screen trail that led to them.
+    val sentryNavListener = androidx.compose.runtime.remember {
+        io.sentry.android.navigation.SentryNavigationListener()
+    }
+    androidx.compose.runtime.DisposableEffect(navController) {
+        navController.addOnDestinationChangedListener(sentryNavListener)
+        onDispose { navController.removeOnDestinationChangedListener(sentryNavListener) }
+    }
     val tokenManager: TokenManager = koinInject()
     val overlayPrefsStore: OverlayPrefsStore = koinInject()
     val siloCastController: SiloCastController = koinInject()

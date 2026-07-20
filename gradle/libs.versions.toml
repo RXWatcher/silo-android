@@ -112,6 +112,7 @@ koin-androidx-workmanager = { module = "io.insert-koin:koin-androidx-workmanager
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing-core" }
 desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugar-jdk-libs" }
 sentry-android = { module = "io.sentry:sentry-android", version.ref = "sentry" }
+sentry-android-navigation = { module = "io.sentry:sentry-android-navigation", version.ref = "sentry" }
 
 # Baseline Profile — runtime installer (both apps) + macrobenchmark generator deps.
 androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version.ref = "profileinstaller" }

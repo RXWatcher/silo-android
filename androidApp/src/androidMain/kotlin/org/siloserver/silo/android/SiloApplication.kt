@@ -44,7 +44,13 @@ class SiloApplication : Application(), Configuration.Provider, SingletonImageLoa
                 options.dsn = "https://a51c3e6b326d41ae80f63640285e933a@errors.wave-ninja.eu/1"
                 options.release = "org.siloserver.silo@${BuildConfig.VERSION_NAME}+${BuildConfig.VERSION_CODE}"
                 options.environment = if (BuildConfig.DEBUG) "debug" else "production"
-                options.isSendDefaultPii = false
+                // Internal triage server — capture rich context on purpose:
+                // screenshots/view hierarchy ride along on error events only.
+                options.isSendDefaultPii = true
+                options.isAttachScreenshot = true
+                options.isAttachViewHierarchy = true
+                options.isEnableUserInteractionBreadcrumbs = true
+                options.tracesSampleRate = 1.0
             }
         }.onFailure {
             android.util.Log.w("SiloApplication", "Sentry init failed", it)

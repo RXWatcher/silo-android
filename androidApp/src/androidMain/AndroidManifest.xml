@@ -30,6 +30,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Silo"
         android:usesCleartextTraffic="true">
+        <!-- Sentry is initialized manually in SiloApplication (DSN lives in
+             code); the SDK's ContentProvider auto-init crashes without a
+             manifest DSN, so it must be disabled. -->
+        <meta-data android:name="io.sentry.auto-init" android:value="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

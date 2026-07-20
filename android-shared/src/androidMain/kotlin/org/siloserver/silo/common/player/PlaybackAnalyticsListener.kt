@@ -128,6 +128,19 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         error: PlaybackException,
     ) {
         Log.e(TAG, "Player error ${error.errorCodeName}: ${error.message}", error)
+        // Breadcrumb only: the player-screen ViewModels capture the event with
+        // full playback context; this seam also fires for players without a
+        // ViewModel (background audio), where the crumb is the only record.
+        runCatching {
+            io.sentry.Sentry.addBreadcrumb(
+                io.sentry.Breadcrumb().apply {
+                    type = "error"
+                    category = "playback"
+                    message = "Player error ${error.errorCodeName}: ${error.message}"
+                    level = io.sentry.SentryLevel.ERROR
+                },
+            )
+        }
         _events.tryEmit(Event.PlayerError(error))
     }
 

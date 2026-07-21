@@ -82,6 +82,10 @@ fun PlayerControls(
     onOpenTracks: () -> Unit,
     onOpenQuality: () -> Unit,
     onOpenSettings: () -> Unit,
+    // Google Cast (Chromecast) button — sits in the top bar alongside the other
+    // controls. Provided by PlayerScreen; empty by default so this stateless
+    // composable stays test-friendly and decoupled from the Cast SDK.
+    castSlot: @Composable () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // iOS dims the entire screen with a flat `Color.black.opacity(0.4)`
@@ -168,6 +172,9 @@ fun PlayerControls(
                         onClick = onOpenQuality,
                     )
                 }
+
+                // Google Cast (Chromecast) button, when available.
+                castSlot()
 
                 // Settings — iOS `gearshape`, opens the playback settings sheet.
                 ControlButton(

@@ -168,6 +168,15 @@ internal fun restoreTrackSelection(
     )
 }
 
+internal fun mergeTrackSelection(
+    currentAudioIndex: Int?,
+    currentSubtitleIndex: Int?,
+    durable: TvRestoredTrackSelection,
+): TvRestoredTrackSelection = TvRestoredTrackSelection(
+    audioIndex = currentAudioIndex ?: durable.audioIndex,
+    subtitleIndex = currentSubtitleIndex ?: durable.subtitleIndex,
+)
+
 internal fun shouldApplyNextUpTrackRestore(
     currentContentId: String?,
     requestedContentId: String,
@@ -1024,8 +1033,11 @@ class TvItemDetailViewModel(
                     selectedNextUpSubtitleIndex = session.subtitle,
                 )
             }
-            return
         }
+        // A session can intentionally select a file before its durable track
+        // fingerprints have loaded (file B / null / null). Always merge the
+        // selected file's durable dimensions after applying session state;
+        // the guarded update below preserves any non-null session choices.
         seedPersistedNextUpTrackSelection(episodeContentId, detail)
     }
 
@@ -1053,9 +1065,14 @@ class TvItemDetailViewModel(
                 ) {
                     it
                 } else {
+                    val merged = mergeTrackSelection(
+                        currentAudioIndex = it.selectedNextUpAudioIndex,
+                        currentSubtitleIndex = it.selectedNextUpSubtitleIndex,
+                        durable = restored,
+                    )
                     it.copy(
-                        selectedNextUpSubtitleIndex = it.selectedNextUpSubtitleIndex ?: restored.subtitleIndex,
-                        selectedNextUpAudioIndex = it.selectedNextUpAudioIndex ?: restored.audioIndex,
+                        selectedNextUpSubtitleIndex = merged.subtitleIndex,
+                        selectedNextUpAudioIndex = merged.audioIndex,
                     )
                 }
             }

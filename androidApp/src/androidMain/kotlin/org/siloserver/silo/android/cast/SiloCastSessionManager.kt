@@ -23,7 +23,7 @@ import com.google.android.gms.common.images.WebImage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import io.sentry.SentryLogLevel
+import org.siloserver.silo.common.telemetry.TelemetryLevel
 import org.siloserver.silo.common.player.cast.CastMediaSpec
 import org.siloserver.silo.common.telemetry.PlaybackTelemetry
 
@@ -134,7 +134,7 @@ class SiloCastSessionManager(private val context: Context) {
             PlaybackTelemetry.log(
                 "cast: session start failed",
                 mapOf("error_code" to error),
-                SentryLogLevel.WARN,
+                TelemetryLevel.WARN,
             )
             detachRemoteListeners()
             _castState.value = SiloCastState()
@@ -147,7 +147,7 @@ class SiloCastSessionManager(private val context: Context) {
             PlaybackTelemetry.log(
                 "cast: session ended",
                 mapOf("error_code" to error, "last_position" to lastPosition),
-                if (error != 0) SentryLogLevel.WARN else SentryLogLevel.INFO,
+                if (error != 0) TelemetryLevel.WARN else TelemetryLevel.INFO,
             )
             captureRemotePosition(session)
             detachRemoteListeners()
@@ -162,7 +162,7 @@ class SiloCastSessionManager(private val context: Context) {
             PlaybackTelemetry.log(
                 "cast: session resume failed",
                 mapOf("error_code" to error),
-                SentryLogLevel.WARN,
+                TelemetryLevel.WARN,
             )
             detachRemoteListeners()
             _castState.value = SiloCastState()
@@ -315,7 +315,7 @@ class SiloCastSessionManager(private val context: Context) {
                     "subtitles" to spec.subtitles.size,
                     "active_subtitle" to spec.subtitles.any { it.selected },
                 ),
-                if (result.status.isSuccess) SentryLogLevel.INFO else SentryLogLevel.WARN,
+                if (result.status.isSuccess) TelemetryLevel.INFO else TelemetryLevel.WARN,
             )
         }
     }

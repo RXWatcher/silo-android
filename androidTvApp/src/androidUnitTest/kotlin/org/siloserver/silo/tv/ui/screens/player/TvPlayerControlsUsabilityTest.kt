@@ -30,6 +30,20 @@ class TvPlayerControlsUsabilityTest {
     private val remoteKeyBridgeSource = File(
         "src/androidMain/kotlin/org/siloserver/silo/tv/ui/screens/player/TvPlayerRemoteKeyBridge.kt",
     ).takeIf { it.exists() }?.readText().orEmpty()
+    private val playbackSelectorSource = File(
+        "src/androidMain/kotlin/org/siloserver/silo/tv/ui/screens/detail/TvPlaybackSelectorRow.kt",
+    ).readText()
+    private val anchoredSelectorSource = File(
+        "src/androidMain/kotlin/org/siloserver/silo/tv/ui/components/TvAnchoredSelectorMenu.kt",
+    ).readText()
+
+    @Test
+    fun playbackSelectorsConstrainLongLabels() {
+        assertTrue(playbackSelectorSource.contains("Modifier.weight(1f)"))
+        assertTrue(anchoredSelectorSource.contains("TextOverflow.Ellipsis"))
+        assertTrue(anchoredSelectorSource.contains("maxLines = 1"))
+        assertTrue(anchoredSelectorSource.contains("Modifier.weight(1f)"))
+    }
 
     @Test
     fun idleOverlayDefaultsToPlayPauseInTransportDock() {

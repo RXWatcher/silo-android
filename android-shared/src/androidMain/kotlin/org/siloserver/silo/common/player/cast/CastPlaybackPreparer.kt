@@ -2,7 +2,7 @@ package org.siloserver.silo.common.player.cast
 
 import android.util.Log
 import java.net.URLEncoder
-import io.sentry.SentryLogLevel
+import org.siloserver.silo.common.telemetry.TelemetryLevel
 import org.siloserver.silo.common.player.PlaybackNetworkEvidenceProvider
 import org.siloserver.silo.common.player.PlaybackSessionManager
 import org.siloserver.silo.common.player.mediaItemMimeType
@@ -93,7 +93,7 @@ class CastPlaybackPreparer(
                 PlaybackTelemetry.log(
                     "cast: prepare failed",
                     mapOf("code" to result.code, "message" to result.message, "file_id" to request.fileId),
-                    SentryLogLevel.WARN,
+                    TelemetryLevel.WARN,
                 )
                 return null
             }
@@ -102,7 +102,7 @@ class CastPlaybackPreparer(
                 PlaybackTelemetry.log(
                     "cast: prepare network error",
                     mapOf("error" to result.exception.toString(), "file_id" to request.fileId),
-                    SentryLogLevel.WARN,
+                    TelemetryLevel.WARN,
                 )
                 return null
             }
@@ -155,7 +155,7 @@ class CastPlaybackPreparer(
                             "message" to transcodeResult.message,
                             "file_id" to request.fileId,
                         ),
-                        SentryLogLevel.WARN,
+                        TelemetryLevel.WARN,
                     )
                     castSession.stopSession(startedSession.sessionId)
                     return null
@@ -165,7 +165,7 @@ class CastPlaybackPreparer(
                     PlaybackTelemetry.log(
                         "cast: transcode start network error",
                         mapOf("error" to transcodeResult.exception.toString(), "file_id" to request.fileId),
-                        SentryLogLevel.WARN,
+                        TelemetryLevel.WARN,
                     )
                     castSession.stopSession(startedSession.sessionId)
                     return null

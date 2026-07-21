@@ -1051,6 +1051,7 @@ open class PlaybackSessionManager(
         clientPlaybackContext: ClientPlaybackContext? = null,
         preserveDirectAudioSelection: Boolean = false,
         playMethod: PlayMethod? = null,
+        seekableStreamsOnly: Boolean = false,
     ): ApiResult<PlaybackSessionResponse> = startSessionInternal(
         fileId = fileId,
         profileId = profileId,
@@ -1063,6 +1064,7 @@ open class PlaybackSessionManager(
         preserveDirectAudioSelection = preserveDirectAudioSelection,
         playMethod = playMethod,
         disableProgressPersistence = false,
+        seekableStreamsOnly = seekableStreamsOnly,
     )
 
     private suspend fun startSessionInternal(
@@ -1077,6 +1079,7 @@ open class PlaybackSessionManager(
         preserveDirectAudioSelection: Boolean,
         playMethod: PlayMethod?,
         disableProgressPersistence: Boolean,
+        seekableStreamsOnly: Boolean = false,
     ): ApiResult<PlaybackSessionResponse> {
         Log.i(
             TAG,
@@ -1101,6 +1104,7 @@ open class PlaybackSessionManager(
             preserveDirectAudioSelection = preserveDirectAudioSelection,
             playMethod = playMethod,
             disableProgressPersistence = disableProgressPersistence,
+            seekableStreamsOnly = seekableStreamsOnly,
         )
         when (result) {
             is ApiResult.Success -> Log.i(

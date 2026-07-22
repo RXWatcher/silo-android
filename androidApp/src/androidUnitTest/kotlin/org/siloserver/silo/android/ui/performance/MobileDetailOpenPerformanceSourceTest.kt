@@ -65,4 +65,14 @@ class MobileDetailOpenPerformanceSourceTest {
             "Series open should cancel stale season loads, render the selected season first, and defer the full-series episode roll-up.",
         )
     }
+
+    @Test
+    fun similarHydrationIsDeferredLifecycleBoundAndConcurrencyLimited() {
+        assertTrue(similarRail.contains("LifecycleResumeEffect(contentId)"))
+        assertTrue(similarRail.contains("delay(300)"))
+        assertTrue(similarRail.contains("if (!routeActive) return@LaunchedEffect"))
+        assertTrue(similarRail.contains("mapConcurrentBounded(maxConcurrency = 3)"))
+        assertTrue(!similarRail.contains(".map { ref ->"))
+        assertTrue(!similarRail.contains(".awaitAll()"))
+    }
 }

@@ -283,6 +283,7 @@ class EncryptedTokenManagerImpl(
                 serverUrl = scope.serverUrl,
                 profileToken = scope.profileToken,
                 credentialGenerationId = scope.generationId,
+                identityGeneration = identityTransitions.generation.value,
             )
         }
         val serverId = activeServerId ?: return@withLock null
@@ -298,6 +299,7 @@ class EncryptedTokenManagerImpl(
             profileId = profileId,
             serverUrl = url,
             profileToken = profileToken,
+            identityGeneration = identityTransitions.generation.value,
         )
     }
 

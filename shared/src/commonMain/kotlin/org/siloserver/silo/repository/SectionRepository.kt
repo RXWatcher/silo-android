@@ -34,9 +34,23 @@ class SectionRepository internal constructor(
     /** Fetches all home screen sections (with items pre-resolved). */
     suspend fun getHomeSections(forceRefresh: Boolean = false): ApiResult<SectionsResponse> {
         val snapshot = homeScopeProvider()
-        val scopeKey = snapshot?.profileId?.let { HomeRequestScope(snapshot.serverId, it) }
+        val scopeKey = snapshot?.profileId?.let { profileId ->
+            HomeRequestScope(
+                serverId = snapshot.serverId,
+                profileId = profileId,
+                profileToken = snapshot.profileToken,
+                credentialGenerationId = snapshot.credentialGenerationId,
+                identityGeneration = snapshot.identityGeneration,
+            )
+        }
         val policy = if (forceRefresh) HomeRequestPolicy.FORCE else HomeRequestPolicy.NORMAL
-        return homeRequestGate.execute(scopeKey, policy) { sectionApi.getHomeSections() }
+        return homeRequestGate.execute(
+            scopeKey = scopeKey,
+            policy = policy,
+            isScopeCurrent = { homeScopeProvider() == snapshot },
+        ) {
+            sectionApi.getHomeSections(snapshot)
+        }
     }
 
     /** Fetches the items within a specific home section. */

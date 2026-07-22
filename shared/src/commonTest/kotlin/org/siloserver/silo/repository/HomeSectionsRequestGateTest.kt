@@ -196,6 +196,72 @@ class HomeSectionsRequestGateTest {
     }
 
     @Test
+    fun reauthenticatedScopeNeverReusesPriorIdentityResult() = runTest {
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+        val priorIdentity = HomeRequestScope(
+            serverId = "server-a",
+            profileId = "profile-a",
+            profileToken = "profile-token-a",
+            identityGeneration = 4L,
+        )
+        val reauthenticatedIdentity = priorIdentity.copy(identityGeneration = 6L)
+        var calls = 0
+
+        val prior = gate.execute(priorIdentity, HomeRequestPolicy.NORMAL) {
+            calls += 1
+            success("prior")
+        }
+        val current = gate.execute(reauthenticatedIdentity, HomeRequestPolicy.NORMAL) {
+            calls += 1
+            success("current")
+        }
+
+        assertEquals("prior", firstId(prior))
+        assertEquals("current", firstId(current))
+        assertEquals(2, calls)
+    }
+
+    @Test
+    fun identityChangeWhileFetchIsDelayedRejectsAndDoesNotCacheResult() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+        var currentScope = scopeA
+        var calls = 0
+        val delayed = async {
+            gate.execute(
+                scopeKey = scopeA,
+                policy = HomeRequestPolicy.NORMAL,
+                isScopeCurrent = { currentScope == scopeA },
+            ) {
+                calls += 1
+                release.await()
+                success("stale")
+            }
+        }
+        runCurrent()
+
+        currentScope = scopeB
+        release.complete(Unit)
+        assertIs<ApiResult.NetworkError>(delayed.await())
+
+        currentScope = scopeA
+        assertEquals(
+            "fresh",
+            firstId(
+                gate.execute(
+                    scopeKey = scopeA,
+                    policy = HomeRequestPolicy.NORMAL,
+                    isScopeCurrent = { true },
+                ) {
+                    calls += 1
+                    success("fresh")
+                },
+            ),
+        )
+        assertEquals(2, calls)
+    }
+
+    @Test
     fun missingScopeAlwaysFetchesAndNeverReuses() = runTest {
         val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
         var calls = 0

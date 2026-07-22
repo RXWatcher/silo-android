@@ -10,6 +10,7 @@ import io.ktor.http.headersOf
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import org.siloserver.silo.network.api.SectionApi
 
 /**
  * Verifies [SiloAuthPlugin] honors an [AuthScopeSnapshot] pin: a request
@@ -89,6 +90,27 @@ class SiloAuthPluginPinTest {
         assertEquals(null, captured.profileToken)
         assertEquals(null, captured.profileId)
         assertEquals("Bearer ACCESS-A", captured.authorization)
+    }
+
+    @Test
+    fun homeSectionsRequestUsesCapturedAuthScope() = runTest {
+        val tokenManager = TokenManagerImpl().apply {
+            saveTokens(accessToken = "ACCESS-A", refreshToken = "REFRESH-A", expiresIn = 3600)
+        }
+        val captured = Captured()
+        val snapshot = AuthScopeSnapshot(
+            serverId = "server-a",
+            profileId = "profile-a",
+            serverUrl = "https://a.example",
+            profileToken = "ptoken-a",
+            identityGeneration = 7L,
+        )
+
+        SectionApi(client(tokenManager, captured)).getHomeSections(snapshot)
+
+        assertEquals("https://a.example/api/v1/home/sections", captured.url)
+        assertEquals("profile-a", captured.profileId)
+        assertEquals("ptoken-a", captured.profileToken)
     }
 
     @Test

@@ -65,6 +65,21 @@ class TvDetailOpenPerformanceSourceTest {
     }
 
     @Test
+    fun secondaryDetailRequestsAreBoundedAndOwnedByRouteLifecycle() {
+        assertTrue(
+            viewModel.windowed("mapConcurrentBounded(maxConcurrency = 3)".length)
+                .count { it == "mapConcurrentBounded(maxConcurrency = 3)" } >= 2,
+            "Recommendation and episode-favorite enrichment must both use the three-request cap.",
+        )
+        assertTrue(viewModel.contains("fun onRoutePaused()"))
+        assertTrue(viewModel.contains("moreLikeThisJob?.cancel()"))
+        assertTrue(viewModel.contains("episodeFavoriteJob?.cancel()"))
+        assertTrue(viewModel.contains("fun onRouteResumed()"))
+        assertTrue(screen.contains("LifecycleResumeEffect(viewModel)"))
+        assertTrue(screen.contains("viewModel.onRoutePaused()"))
+    }
+
+    @Test
     fun episodeSelectionBrowsesDetailWithoutImplicitPlayback() {
         val start = screen.indexOf("onEpisodeSelected = { episode ->")
         val end = screen.indexOf("onSetEpisodeWatched", start)

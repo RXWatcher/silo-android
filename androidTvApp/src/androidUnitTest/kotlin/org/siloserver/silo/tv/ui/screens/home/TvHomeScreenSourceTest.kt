@@ -16,4 +16,11 @@ class TvHomeScreenSourceTest {
         assertTrue(source.contains("iconForSection = { section ->"))
         assertTrue(source.contains("onSeeAllClickForSection = { section ->"))
     }
+
+    @Test
+    fun homeSkipsInitialResumeAndForcesLaterEligibleRefreshes() {
+        assertTrue(source.contains("rememberSaveable(saver = HomeResumeRefreshPolicy.Saver)"))
+        assertTrue(source.contains("resumeRefreshPolicy.shouldRefresh(shouldRefreshOnResume())"))
+        assertTrue(source.contains("viewModel.refreshAfterResume()"))
+    }
 }

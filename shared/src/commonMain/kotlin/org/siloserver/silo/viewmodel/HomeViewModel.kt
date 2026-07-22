@@ -6,6 +6,7 @@ import org.siloserver.silo.domain.MediaActionsCoordinator
 import org.siloserver.silo.model.catalog.MediaItemUserState
 import org.siloserver.silo.model.section.ResolvedSection
 import org.siloserver.silo.model.section.SectionItem
+import org.siloserver.silo.model.section.resolveHomeSectionItems
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.SectionRepository
 import org.siloserver.silo.repository.port.HomeCachePort
@@ -141,19 +142,7 @@ class HomeViewModel(
                                 // Honor both — using only `.section` silently drops
                                 // a successful refetch that returned items at the top
                                 // level, leaving the section empty and filtered out.
-                                val data = itemsResult.data
-                                val responseSection = data.section
-                                val hydrated = when {
-                                    responseSection != null && responseSection.items.isNotEmpty() ->
-                                        responseSection
-                                    responseSection != null && responseSection.totalCount == 0 ->
-                                        responseSection
-                                    responseSection != null && data.items.isNotEmpty() ->
-                                        responseSection.copy(items = data.items)
-                                    data.items.isNotEmpty() ->
-                                        section.copy(items = data.items)
-                                    else -> null
-                                }
+                                val hydrated = resolveHomeSectionItems(section, itemsResult.data)
                                 if (hydrated != null) hydrated to true else section to false
                             }
                             else -> section to false

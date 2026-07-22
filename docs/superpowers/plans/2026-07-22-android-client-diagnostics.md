@@ -1383,7 +1383,7 @@ git add README.md docs shared android-shared androidApp androidTvApp
 git commit -m "test(diagnostics): harden privacy and lifecycle boundaries"
 ~~~
 
-- [ ] **Step 8: Prepare the single PR**
+- [x] **Step 8: Prepare the single PR**
 
 The PR body must summarize architecture, consent, capture sources, phone/TV UX, privacy gates, test evidence, known platform limitations, and state that no device install or launch occurred. Link server PR 445 and the design specification. Request review only after final verification output is inspected.
 

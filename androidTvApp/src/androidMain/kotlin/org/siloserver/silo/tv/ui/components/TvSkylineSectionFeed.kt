@@ -118,92 +118,6 @@ fun TvSkylineSectionFeed(
         }
     }
 
-    // Warm the hero-sized backdrop/logo variants for the cards the user can
-    // reach first. This is intentionally opportunistic: focus transitions
-    // never wait on the network, but the shared Crossfade usually receives a
-    // memory-cached image instead of a late ThumbHash replacement.
-    LaunchedEffect(rows) {
-        val requests = rows
-            .take(HeroPreloadRowCount)
-            .flatMap { it.items.take(HeroPreloadItemsPerRow) }
-            .flatMap { item ->
-                buildList {
-                    item.backdropUrl?.takeIf { it.isNotBlank() }?.let { url ->
-                        add(
-                            ImageRequest.Builder(context)
-                                .data(url)
-                                .size(HeroBackdropPreloadWidthPx, HeroBackdropPreloadHeightPx)
-                                .build(),
-                        )
-                    }
-                    item.logoUrl?.takeIf { it.isNotBlank() }?.let { url ->
-                        add(
-                            ImageRequest.Builder(context)
-                                .data(url)
-                                .size(HeroLogoPreloadWidthPx, HeroLogoPreloadHeightPx)
-                                .build(),
-                        )
-                    }
-                }
-            }
-            .distinctBy { it.data.toString() }
-
-        val loader = SingletonImageLoader.get(context)
-        coroutineScope {
-            requests.map { request ->
-                async { runCatching { loader.execute(request) } }
-            }.awaitAll()
-        }
-    }
-
-    // Section payloads intentionally stay lightweight and omit the aired/cast
-    // line. Warm detail for the same near-viewport cards whose hero artwork is
-    // preloaded so normal D-pad navigation presents a complete marquee on its
-    // first rested frame. The shared request guard prevents this from racing or
-    // duplicating the focus-driven fetch for the currently displayed card.
-    LaunchedEffect(rows, fetchDetail) {
-        val loader = SingletonImageLoader.get(context)
-        rows
-            .take(HeroPreloadRowCount)
-            .forEach { row ->
-                coroutineScope {
-                    row.items
-                        .take(HeroPreloadItemsPerRow)
-                        .map { item ->
-                            async {
-                                val contentId = item.contentId
-                                if (!marquee.beginEnrichmentRequest(contentId)) return@async
-                                try {
-                                    val detail = runCatching { fetchDetail(contentId) }.getOrNull()
-                                        ?: return@async
-                                    val enrichment = TvMarqueeEnrichment.from(detail)
-                                    marquee.applyEnrichment(contentId, enrichment)
-
-                                    // Warm a possible episode-series art upgrade
-                                    // at the exact hero decode size as well.
-                                    enrichment.backdropUrl?.takeIf { it.isNotBlank() }?.let { url ->
-                                        runCatching {
-                                            loader.execute(
-                                                ImageRequest.Builder(context)
-                                                    .data(url)
-                                                    .size(
-                                                        HeroBackdropPreloadWidthPx,
-                                                        HeroBackdropPreloadHeightPx,
-                                                    )
-                                                    .build(),
-                                            )
-                                        }
-                                    }
-                                } finally {
-                                    marquee.finishEnrichmentRequest(contentId)
-                                }
-                            }
-                        }
-                        .awaitAll()
-                }
-            }
-    }
-
     val rowBandState = rememberLazyListState()
     // NOT keyed on `rows`: a quiet realtime/on-resume refetch emits a new
     // sections list, and resetting the focused-row index to -1 made the next
@@ -725,8 +639,6 @@ private const val HeroBackdropPreloadWidthPx = 1229
 private const val HeroBackdropPreloadHeightPx = 756
 private const val HeroLogoPreloadWidthPx = 880
 private const val HeroLogoPreloadHeightPx = 200
-private const val HeroPreloadRowCount = 2
-private const val HeroPreloadItemsPerRow = 8
 private const val HeroFocusPrefetchRadius = 2
 
 /** tvOS MediaRow cardSpacing 40pt maps to 20dp. */

@@ -707,7 +707,7 @@ git commit -m "feat(diagnostics): build canonical report bundles"
 - Read-only existing-probe snapshots; diagnostics never mutates player state.
 - DeviceSnapshotCollector.capture and DeviceSnapshotCache.currentBytes.
 
-- [ ] **Step 1: Write failing fake-probe tests**
+- [x] **Step 1: Write failing fake-probe tests**
 
 ~~~kotlin
 @Test
@@ -718,13 +718,13 @@ fun inaccessibleAudioProbeReportsUnknown() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DeviceSnapshotCollectorTest'
 ~~~
 
-- [ ] **Step 3: Add immutable accessors and collector**
+- [x] **Step 3: Add immutable accessors and collector**
 
 ~~~kotlin
 interface DiagnosticsDeviceProbe {
@@ -746,13 +746,13 @@ class DeviceSnapshotCache {
 
 Hash stable device/route identifiers, omit SSIDs and addresses, and use explicit unknown/not_collected values.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DeviceSnapshotCollectorTest' --tests '*PassthroughSuppressionRegistryTest'
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared

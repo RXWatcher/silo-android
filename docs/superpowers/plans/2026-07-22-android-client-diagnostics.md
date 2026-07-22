@@ -556,7 +556,7 @@ git commit -m "feat(diagnostics): isolate consent and identity"
 - save, list, load, delete, purge, markState, hasSeenFingerprint, and throttle APIs.
 - Published reports contain binding.json, manifest.json, state.json, and device.json.
 
-- [ ] **Step 1: Write failing staging, cap, expiry, and fingerprint tests**
+- [x] **Step 1: Write failing staging, cap, expiry, and fingerprint tests**
 
 ~~~kotlin
 @Test
@@ -567,13 +567,13 @@ fun droppedLateReportIsNotMarkedSeen() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*PendingReportStoreTest'
 ~~~
 
-- [ ] **Step 3: Implement staging and bounded metadata**
+- [x] **Step 3: Implement staging and bounded metadata**
 
 ~~~kotlin
 data class PendingReport(
@@ -609,13 +609,13 @@ interface PendingReportStore {
 
 Implement the interface as FilePendingReportStore(root, nowMs). binding.json contains PendingReportBinding and never contains tokens, URLs, profile names, or account display fields. Reject traversal/non-allowlisted artifacts, exclude from backup, write into a sibling staging directory, fsync files and directory metadata, atomically rename, then update the seen-fingerprint index. Delete failed staging, prune after seven days, cap at three per binding, reject a late report rather than evicting newer evidence, and prune fingerprint/throttle maps.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*PendingReportStoreTest'
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared

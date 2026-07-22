@@ -22,11 +22,12 @@ data class PendingReportBinding(
 ) {
     val binding: DiagnosticsBinding get() = DiagnosticsBinding(serverInstanceId, accountUserId)
 
+    // ownershipGeneration guards in-process capture races, but it restarts at zero with the
+    // process. Persisted reports remain owned by the same server/account/profile identity.
     fun matches(context: DiagnosticsCaptureContext): Boolean =
         serverInstanceId == context.binding.serverInstanceId &&
             accountUserId == context.binding.accountUserId &&
-            profileId == context.profileId &&
-            ownershipGeneration == context.ownershipGeneration
+            profileId == context.profileId
 }
 
 @Serializable

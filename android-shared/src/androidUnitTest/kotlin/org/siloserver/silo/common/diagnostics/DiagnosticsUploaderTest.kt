@@ -83,6 +83,19 @@ class DiagnosticsUploaderTest {
     }
 
     @Test
+    fun reportCapturedBeforeProcessRestartUploadsForTheSameIdentity() = runTest {
+        val fixture = fixture()
+        fixture.identity.current = fixture.identity.current?.copy(ownershipGeneration = 0)
+        fixture.api.result = ApiResult.Success(DiagnosticsUploadResponse("report-1", "ABC123"))
+
+        val decision = fixture.uploader.upload(fixture.report.id)
+
+        assertEquals(DiagnosticsUploadDecision.Uploaded("ABC123"), decision)
+        assertEquals(1, fixture.api.uploadCalls)
+        assertNull(fixture.store.load(fixture.report.id))
+    }
+
+    @Test
     fun unsupportedSchemaMarksServerUpdateRequired() = runTest {
         val fixture = fixture()
         fixture.api.result = ApiResult.Error(400, "unsupported_schema", "upgrade")

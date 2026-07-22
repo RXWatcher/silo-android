@@ -265,7 +265,7 @@ git commit -m "feat(diagnostics): add status and upload API"
 - Produces DiagnosticsRedactor, SiloLogAttribute, DiagnosticsLogSink, and pre-Koin SiloLog.
 - SiloLog always forwards to android.util.Log and optionally offers a structured line.
 
-- [ ] **Step 1: Write failing leak and registry tests**
+- [x] **Step 1: Write failing leak and registry tests**
 
 ~~~kotlin
 @Test
@@ -285,13 +285,13 @@ fun unregisteredAttributeIsDropped() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsRedactorTest' --tests '*SiloLogTest'
 ~~~
 
-- [ ] **Step 3: Implement typed logging and canonical registry**
+- [x] **Step 3: Implement typed logging and canonical registry**
 
 ~~~kotlin
 sealed interface SiloLogAttribute {
@@ -327,13 +327,13 @@ object SiloLog {
 
 Implement stable host hashing, loopback preservation, JWT/email/cookie/header scrubbing, typed attribute allowlists, throwable depth/byte limits, and production dropping of invalid keys.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsRedactorTest' --tests '*SiloLogTest'
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared

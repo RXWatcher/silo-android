@@ -2,12 +2,15 @@ package org.siloserver.silo.di
 
 import org.siloserver.silo.network.TokenManager
 import org.siloserver.silo.network.TokenManagerImpl
+import org.siloserver.silo.network.DefaultIdentityTransitionBarrier
+import org.siloserver.silo.network.IdentityTransitionBarrier
 import org.siloserver.silo.network.createSiloClient
 import org.siloserver.silo.network.api.*
 import org.koin.dsl.module
 
 val networkModule = module {
-    single<TokenManager> { TokenManagerImpl() }
+    single<IdentityTransitionBarrier> { DefaultIdentityTransitionBarrier() }
+    single<TokenManager> { TokenManagerImpl(get()) }
     single { createSiloClient(get(), getOrNull()) }
     single { AuthApi(get()) }
     single<DeviceLoginApi> { DefaultDeviceLoginApi(get()) }

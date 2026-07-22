@@ -434,7 +434,7 @@ git commit -m "feat(diagnostics): add bounded log capture"
 - Resolver returns only validated DiagnosticsCaptureContext.
 - Run ledger maps an opaque token to binding/profile without putting identity in processStateSummary.
 
-- [ ] **Step 1: Write failing transition tests**
+- [x] **Step 1: Write failing transition tests**
 
 ~~~kotlin
 @Test
@@ -467,13 +467,13 @@ fun profileSwitchRotatesEvidenceBeforeProfileMutation() = runTest {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsSettingsStoreTest' --tests '*DiagnosticsIdentityResolverTest' --tests '*DiagnosticsRunLedgerTest'
 ~~~
 
-- [ ] **Step 3: Implement DataStore records and fail-closed resolver**
+- [x] **Step 3: Implement DataStore records and fail-closed resolver**
 
 ~~~kotlin
 data class DiagnosticsBinding(
@@ -531,13 +531,13 @@ interface DiagnosticsIdentityResolver {
 
 Inject one IdentityTransitionBarrier into TokenManager, ServerRegistry, and ProfileRepository. Its changing function invokes the installed gate callback inline with WILL_CHANGE before running the mutation, increments the ownership generation, and emits DID_CHANGE in finally. The replayless flow is for observation and UI refresh only; it is not the privacy barrier. Cover save/clear/invalidate/sign-out tokens, active-server switch/removal, profile select/clear, and temporary-scope begin/end with table-driven transition tests. The coordinator gate callback synchronously closes capture and rotates ring/file generations on WILL_CHANGE. Resolve status, /auth/me, active profile, and child state under one ownership generation; retry if the generation changes during resolution. Cache only positive results. Temporary auth scopes cannot use persistent capture. Confirmed child evidence is purged; unresolved profile eligibility is quarantined and never treated as account-scoped adult evidence.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsSettingsStoreTest' --tests '*DiagnosticsIdentityResolverTest' --tests '*DiagnosticsRunLedgerTest'
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add shared android-shared

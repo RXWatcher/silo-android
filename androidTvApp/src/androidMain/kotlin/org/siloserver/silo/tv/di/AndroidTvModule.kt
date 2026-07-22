@@ -76,13 +76,13 @@ val androidTvModule = module {
 
     // Multi-server registry. Loaded synchronously in init so MainTvActivity's
     // runBlocking-resolved start destination sees consistent state.
-    single<ServerRegistry> { AndroidServerRegistry(get()) }
+    single<ServerRegistry> { AndroidServerRegistry(get(), get()) }
 
     // Persistent (EncryptedSharedPreferences-backed) replacement for the
     // commonMain in-memory TokenManager. Koin 3.1+ replaces same-key bindings
     // when the redefining module is loaded after the original — sharedModules()
     // is registered first in SiloTvApplication, so this wins.
-    single<TokenManager> { EncryptedTokenManagerImpl(get(), get()) }
+    single<TokenManager> { EncryptedTokenManagerImpl(get(), get(), get()) }
 
     // Offline-first Room store (Track B). Bound after sharedModules() so the
     // commonMain PersonalDataRepository's `getOrNull<UserItemStatePort>()` picks

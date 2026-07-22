@@ -5,6 +5,7 @@ import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
 import org.siloserver.silo.common.ui.components.resolveAvatarUrl
 import org.siloserver.silo.model.profile.Profile
+import org.siloserver.silo.model.section.HomeSectionItemsResponse
 import org.siloserver.silo.model.section.ResolvedSection
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.AuthRepository
@@ -12,6 +13,7 @@ import org.siloserver.silo.repository.PersonalDataRepository
 import org.siloserver.silo.repository.ProfileRepository
 import org.siloserver.silo.repository.SectionRepository
 import org.siloserver.silo.repository.port.HomeCachePort
+import org.siloserver.silo.util.mapConcurrentBounded
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -67,6 +69,46 @@ data class StartupArtworkPlan(
             backdropHeightPx = 270,
         )
     }
+}
+
+internal data class StartupHomeResolution(
+    val sections: List<ResolvedSection>,
+    val fullyResolved: Boolean,
+)
+
+internal suspend fun hydrateStartupHomeSections(
+    sections: List<ResolvedSection>,
+    fetchItems: suspend (String) -> ApiResult<HomeSectionItemsResponse>,
+): StartupHomeResolution {
+    val unresolved = sections.filter { it.items.isEmpty() && it.totalCount > 0 }
+    val fallbackById = unresolved.mapConcurrentBounded(maxConcurrency = 4) { section ->
+        val hydrated = when (val result = fetchItems(section.id)) {
+            is ApiResult.Success -> {
+                val responseSection = result.data.section
+                when {
+                    responseSection != null && responseSection.items.isNotEmpty() -> responseSection
+                    responseSection != null && responseSection.totalCount == 0 -> responseSection
+                    responseSection != null && result.data.items.isNotEmpty() ->
+                        responseSection.copy(items = result.data.items)
+                    result.data.items.isNotEmpty() -> section.copy(items = result.data.items)
+                    else -> null
+                }
+            }
+            is ApiResult.Error,
+            is ApiResult.NetworkError -> null
+        }
+        section.id to hydrated
+    }.toMap()
+
+    val fullyResolved = unresolved.all { fallbackById[it.id] != null }
+    val resolved = sections.mapNotNull { section ->
+        when {
+            section.items.isNotEmpty() -> section
+            section.totalCount == 0 -> null
+            else -> fallbackById[section.id]?.takeIf { it.items.isNotEmpty() }
+        }
+    }
+    return StartupHomeResolution(resolved, fullyResolved)
 }
 
 /**

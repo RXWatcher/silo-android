@@ -48,4 +48,23 @@ class TvSkylineSectionFeedSourceTest {
         assertTrue(source.contains("text = content.title"))
         assertTrue(source.contains("if (!logoLoaded"))
     }
+
+    @Test
+    fun pageEntryDoesNotFanOutArtworkOrDetailRequests() {
+        val source = sourceFile.readText()
+
+        assertFalse(source.contains("HeroPreloadRowCount"))
+        assertFalse(source.contains("HeroPreloadItemsPerRow"))
+        assertFalse(source.contains("Warm the hero-sized backdrop/logo variants"))
+        assertFalse(source.contains("Warm detail for the same near-viewport cards"))
+    }
+
+    @Test
+    fun focusedCardStillWarmsTwoNeighborsInEitherDirection() {
+        val source = sourceFile.readText()
+
+        assertTrue(source.contains("private const val HeroFocusPrefetchRadius = 2"))
+        assertTrue(source.contains("focusedItemIndex - HeroFocusPrefetchRadius"))
+        assertTrue(source.contains("focusedItemIndex + HeroFocusPrefetchRadius"))
+    }
 }

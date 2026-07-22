@@ -171,7 +171,7 @@ git commit -m "feat(diagnostics): add schema v1 contracts"
 - Produces DiagnosticsApi.getStatus() and upload(manifestJson, bundleBytes, capturedProfileId).
 - Request scope makes the interceptor send exactly the captured profile or suppress the header for unattributed reports.
 
-- [ ] **Step 1: Write failing MockEngine tests**
+- [x] **Step 1: Write failing MockEngine tests**
 
 ~~~kotlin
 @Test
@@ -186,13 +186,13 @@ fun uploadSendsExactlyTwoPartsAndSuppressesUnattributedProfile() = runTest {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :shared:testDebugUnitTest --tests '*DiagnosticsApiTest'
 ~~~
 
-- [ ] **Step 3: Implement API and header scope**
+- [x] **Step 3: Implement API and header scope**
 
 ~~~kotlin
 enum class DiagnosticsProfileHeaderMode { ACTIVE, SUPPRESS, EXACT }
@@ -236,7 +236,7 @@ class DiagnosticsApi(private val client: HttpClient) {
 
 The auth interceptor must add only ACTIVE or EXACT, and remove/suppress profile headers for SUPPRESS.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ~~~bash
 ./gradlew :shared:testDebugUnitTest --tests '*DiagnosticsApiTest'
@@ -244,7 +244,7 @@ The auth interceptor must add only ACTIVE or EXACT, and remove/suppress profile 
 
 Cover status limits and every stable server error code.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add shared

@@ -46,6 +46,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
 
     onRequest { request, _ ->
         val skipAuth = request.attributes.getOrNull(SkipSiloAuthAttributeKey) == true
+        val diagnosticsScope = request.attributes.getOrNull(DiagnosticsRequestScopeKey)
 
         // Pinned (Track B outbox replay): bind this request to a captured scope
         // regardless of the globally-active server/profile, so a mid-drain switch
@@ -71,10 +72,11 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             tokenManager.getAccessTokenForScope(pinned)?.let { token ->
                 request.header(HttpHeaders.Authorization, "Bearer $token")
             }
-            request.headers.remove("X-Profile-Id")
-            pinned.profileId?.let { request.header("X-Profile-Id", it) }
-            request.headers.remove("X-Profile-Token")
-            pinned.profileToken?.let { request.header("X-Profile-Token", it) }
+            request.applyProfileHeaders(
+                diagnosticsScope = diagnosticsScope,
+                activeProfileId = pinned.profileId,
+                activeProfileToken = pinned.profileToken,
+            )
             request.attachSiloDeviceMetadataHeaders(deviceMetadataProvider)
             return@onRequest
         }
@@ -114,15 +116,11 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             request.header(HttpHeaders.Authorization, "Bearer $token")
         }
 
-        if (!request.headers.contains("X-Profile-Id")) {
-            tokenManager.getProfileId()?.let { profileId ->
-                request.header("X-Profile-Id", profileId)
-            }
-        }
-
-        tokenManager.getProfileToken()?.let { profileToken ->
-            request.header("X-Profile-Token", profileToken)
-        }
+        request.applyProfileHeaders(
+            diagnosticsScope = diagnosticsScope,
+            activeProfileId = tokenManager.getProfileId(),
+            activeProfileToken = tokenManager.getProfileToken(),
+        )
 
         request.attachSiloDeviceMetadataHeaders(deviceMetadataProvider)
     }
@@ -318,6 +316,33 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             proceed(request)
         } else {
             originalCall
+        }
+    }
+}
+
+private fun HttpRequestBuilder.applyProfileHeaders(
+    diagnosticsScope: DiagnosticsRequestScope?,
+    activeProfileId: String?,
+    activeProfileToken: String?,
+) {
+    when (diagnosticsScope?.mode ?: DiagnosticsProfileHeaderMode.ACTIVE) {
+        DiagnosticsProfileHeaderMode.ACTIVE -> {
+            if (!headers.contains("X-Profile-Id")) {
+                activeProfileId?.let { header("X-Profile-Id", it) }
+            }
+            if (!headers.contains("X-Profile-Token")) {
+                activeProfileToken?.let { header("X-Profile-Token", it) }
+            }
+        }
+        DiagnosticsProfileHeaderMode.SUPPRESS -> {
+            headers.remove("X-Profile-Id")
+            headers.remove("X-Profile-Token")
+        }
+        DiagnosticsProfileHeaderMode.EXACT -> {
+            headers.remove("X-Profile-Id")
+            headers.remove("X-Profile-Token")
+            val exactProfileId = checkNotNull(diagnosticsScope?.exactProfileId)
+            header("X-Profile-Id", exactProfileId)
         }
     }
 }

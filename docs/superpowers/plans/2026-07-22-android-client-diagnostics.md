@@ -1288,7 +1288,7 @@ Do not mechanically ingest existing Log strings. Exclude titles, subtitle text, 
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsInstrumentationTest' :androidApp:testDebugUnitTest :androidTvApp:testDebugUnitTest
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add shared android-shared androidApp androidTvApp
@@ -1309,7 +1309,7 @@ git commit -m "feat(diagnostics): add curated client evidence"
 **Interfaces:**
 - Final harness exercises capture-to-bundle and identity transitions through fakes.
 
-- [ ] **Step 1: Write final failing regressions**
+- [x] **Step 1: Write final failing regressions**
 
 ~~~kotlin
 @Test
@@ -1332,13 +1332,13 @@ fun jvmMarkerAndExitInfoProduceOneReport() = runTest {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED, then fix only cross-layer gaps**
+- [x] **Step 2: Verify RED, then fix only cross-layer gaps**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsPrivacyIntegrationTest' --tests '*DiagnosticsStartupRobolectricTest'
 ~~~
 
-- [ ] **Step 3: Run all unit tests**
+- [x] **Step 3: Run all unit tests**
 
 ~~~bash
 ./gradlew --rerun-tasks --no-build-cache \
@@ -1350,7 +1350,7 @@ fun jvmMarkerAndExitInfoProduceOneReport() = runTest {
 
 Expected: zero failures.
 
-- [ ] **Step 4: Compile both applications**
+- [x] **Step 4: Compile both applications**
 
 ~~~bash
 ./gradlew :androidApp:compileDebugKotlinAndroid :androidTvApp:compileDebugKotlinAndroid
@@ -1358,7 +1358,7 @@ Expected: zero failures.
 
 Expected: success.
 
-- [ ] **Step 5: Build both debug APKs without installing**
+- [x] **Step 5: Build both debug APKs without installing**
 
 ~~~bash
 ./gradlew :androidApp:assembleDebug :androidTvApp:assembleDebug
@@ -1366,7 +1366,7 @@ Expected: success.
 
 Expected: success. Do not run install tasks.
 
-- [ ] **Step 6: Inspect scope and dependencies**
+- [x] **Step 6: Inspect scope and dependencies**
 
 ~~~bash
 git diff --check origin/main...HEAD
@@ -1376,7 +1376,7 @@ rg -n -i 'sentry|glitchtip|crashlytics|opentelemetry|acra' gradle androidApp and
 
 Expected: no whitespace errors and no new diagnostics SDK reference.
 
-- [ ] **Step 7: Commit final hardening**
+- [x] **Step 7: Commit final hardening**
 
 ~~~bash
 git add README.md docs shared android-shared androidApp androidTvApp

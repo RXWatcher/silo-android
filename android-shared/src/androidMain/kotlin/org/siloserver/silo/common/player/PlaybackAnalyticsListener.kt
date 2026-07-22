@@ -1,5 +1,6 @@
 package org.siloserver.silo.common.player
 
+import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.PlaybackException
@@ -27,6 +28,10 @@ import org.siloserver.silo.common.diagnostics.DiagnosticsStatsCadence
  */
 @UnstableApi
 class PlaybackAnalyticsListener : AnalyticsListener {
+
+    companion object {
+        private const val TAG = "Media3Analytics"
+    }
 
     sealed class Event {
         data class VideoDecoderInitialized(
@@ -96,8 +101,10 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         eventTime: AnalyticsListener.EventTime,
         tracks: Tracks,
     ) {
+        val description = tracks.describeForLog()
+        Log.i(TAG, "Track snapshot: $description")
         DiagnosticsPlaybackLogger.tracksChanged()
-        emit(Event.TrackSnapshot(tracks.describeForLog()))
+        emit(Event.TrackSnapshot(description))
     }
 
     override fun onDroppedVideoFrames(
@@ -125,6 +132,7 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         eventTime: AnalyticsListener.EventTime,
         error: PlaybackException,
     ) {
+        Log.e(TAG, "Player error ${error.errorCodeName}: ${error.message}", error)
         DiagnosticsPlaybackLogger.playerError()
         emit(Event.PlayerError(error))
     }

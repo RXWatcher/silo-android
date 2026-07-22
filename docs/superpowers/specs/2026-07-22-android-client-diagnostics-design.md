@@ -1,8 +1,8 @@
 # Android Client Diagnostics Design
 
-**Status:** Approved design, pending implementation plan  
-**Date:** 2026-07-22  
-**Repository:** `Silo-Server/silo-android`  
+**Status:** Implemented on `feat/android-client-diagnostics`, pending review
+**Date:** 2026-07-22
+**Repository:** `Silo-Server/silo-android`
 **Delivery:** One comprehensive pull request with ordered internal commits
 
 ## Purpose

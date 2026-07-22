@@ -7,6 +7,8 @@ import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import org.siloserver.silo.common.data.sync.SyncEngine
 import org.siloserver.silo.common.data.sync.SyncWorker
+import org.siloserver.silo.common.diagnostics.DiagnosticsUploadWorker
+import org.siloserver.silo.common.diagnostics.DiagnosticsUploader
 import org.siloserver.silo.repository.SectionRepository
 import org.koin.core.context.GlobalContext
 
@@ -50,6 +52,14 @@ class TvWorkerFactory : WorkerFactory() {
                     appContext = appContext,
                     params = workerParameters,
                     syncEngine = koin.get<SyncEngine>(),
+                )
+            }
+            DiagnosticsUploadWorker::class.java.name -> {
+                Log.i(TAG, "Building DiagnosticsUploadWorker via Koin")
+                DiagnosticsUploadWorker(
+                    appContext = appContext,
+                    params = workerParameters,
+                    uploader = koin.get<DiagnosticsUploader>(),
                 )
             }
             else -> {

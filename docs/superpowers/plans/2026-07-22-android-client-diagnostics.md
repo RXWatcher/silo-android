@@ -935,7 +935,7 @@ git commit -m "feat(diagnostics): collect Android exit evidence"
 - DiagnosticsUploader.upload(reportId) returns DiagnosticsUploadDecision.
 - Worker enqueues connected-network unique work and performs the same identity checks.
 
-- [ ] **Step 1: Write failing identity-race/error tests**
+- [x] **Step 1: Write failing identity-race/error tests**
 
 ~~~kotlin
 @Test
@@ -952,13 +952,13 @@ fun unsupportedSchemaMarksServerUpdateRequired() = runTest {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsUploaderTest'
 ~~~
 
-- [ ] **Step 3: Implement double validation and stable decisions**
+- [x] **Step 3: Implement double validation and stable decisions**
 
 ~~~kotlin
 sealed interface DiagnosticsUploadDecision {
@@ -980,13 +980,13 @@ Implement DefaultDiagnosticsUploader with PendingReportStore, DiagnosticsIdentit
 
 Map stable server results explicitly: retry network, busy, quota, and rate-limit responses; keep and label too_large, unsupported_schema, diagnostics_disabled, storage_unavailable, invalid_archive, invalid_manifest, stale_report, destination_mismatch, profile_mismatch, and child_profile_forbidden without retry loops. Add a table-driven test containing every server error code from the canonical contract. Register the shared diagnostics Koin module and add explicit DiagnosticsUploadWorker branches to AppWorkerFactory and TvWorkerFactory.
 
-- [ ] **Step 4: Verify GREEN and worker construction**
+- [x] **Step 4: Verify GREEN and worker construction**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsUploaderTest' :androidApp:compileDebugKotlinAndroid :androidTvApp:compileDebugKotlinAndroid
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared androidApp androidTvApp

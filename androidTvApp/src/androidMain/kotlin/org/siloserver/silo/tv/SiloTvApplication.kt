@@ -11,6 +11,7 @@ import coil3.request.crossfade
 import org.siloserver.silo.common.di.playerInfraModule
 import org.siloserver.silo.common.di.playerModule
 import org.siloserver.silo.common.diagnostics.CrashCapture
+import org.siloserver.silo.common.diagnostics.diagnosticsModule
 import org.siloserver.silo.di.sharedModules
 import org.siloserver.silo.tv.di.androidTvModule
 import org.siloserver.silo.tv.watchnext.TvWorkerFactory
@@ -35,7 +36,7 @@ class SiloTvApplication : Application(), Configuration.Provider, SingletonImageL
         CrashCapture.install(this)
         val koinApp = startKoin {
             androidContext(this@SiloTvApplication)
-            modules(sharedModules() + playerModule + playerInfraModule + androidTvModule)
+            modules(sharedModules() + playerModule + playerInfraModule + androidTvModule + diagnosticsModule)
         }
         // Live-home socket (Apple realtime-updates spec). Guarded — a dead
         // socket just means Home refreshes on open only.

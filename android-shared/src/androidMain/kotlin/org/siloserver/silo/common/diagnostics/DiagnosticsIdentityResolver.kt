@@ -77,6 +77,9 @@ data class DiagnosticsCaptureContext(
     val noticeVersion: Int,
     val status: DiagnosticsAvailabilityStatus,
     val ownershipGeneration: Long,
+    val acceptedSchemaVersions: Set<Int> = setOf(1),
+    val maxBundleBytes: Long = Long.MAX_VALUE,
+    val maxManifestBytes: Long = Long.MAX_VALUE,
 ) {
     val identityKey: DiagnosticsIdentityKey = DiagnosticsIdentityKey(
         binding = binding,
@@ -164,6 +167,9 @@ class DefaultDiagnosticsIdentityResolver(
                 noticeVersion = status.consentNoticeVersion,
                 status = status.status,
                 ownershipGeneration = generation,
+                acceptedSchemaVersions = status.acceptedSchemaVersions.toSet(),
+                maxBundleBytes = status.maxBundleBytes,
+                maxManifestBytes = status.maxManifestBytes,
             )
             if (profileEligible) positiveCache.set(context)
             return context

@@ -20,6 +20,11 @@ import io.ktor.util.AttributeKey
  * refresh tokens are read live from the captured credential slot at send time
  * because they rotate on refresh; freezing their values would break the second
  * op in a drain after the first triggers a token rotation.
+ *
+ * [identityGeneration] changes before every server, account, profile, or
+ * temporary-scope mutation. It distinguishes a later login that happens to
+ * reuse the same server/profile identifiers from the credential identity that
+ * was active when this snapshot was captured.
  */
 data class AuthScopeSnapshot(
     val serverId: String,
@@ -27,6 +32,7 @@ data class AuthScopeSnapshot(
     val serverUrl: String,
     val profileToken: String?,
     val credentialGenerationId: String? = null,
+    val identityGeneration: Long = 0L,
 )
 
 /** Attribute carrying the [AuthScopeSnapshot] that [SiloAuthPlugin] honors. */

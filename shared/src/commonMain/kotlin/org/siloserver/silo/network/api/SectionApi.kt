@@ -8,7 +8,9 @@ import org.siloserver.silo.model.catalog.CatalogResponse
 import org.siloserver.silo.model.section.*
 import org.siloserver.silo.network.ApiErrorBody
 import org.siloserver.silo.network.ApiResult
+import org.siloserver.silo.network.AuthScopeSnapshot
 import org.siloserver.silo.network.SiloJson
+import org.siloserver.silo.network.authScope
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -25,8 +27,10 @@ class SectionApi(private val client: HttpClient) {
         client.get("/api/v1/home/layout")
     }
 
-    suspend fun getHomeSections(): ApiResult<SectionsResponse> = safeApiCall {
-        client.get("/api/v1/home/sections")
+    suspend fun getHomeSections(scope: AuthScopeSnapshot? = null): ApiResult<SectionsResponse> = safeApiCall {
+        client.get("/api/v1/home/sections") {
+            if (scope != null) authScope(scope)
+        }
     }
 
     suspend fun getHomeSectionItems(sectionId: String): ApiResult<HomeSectionItemsResponse> = safeApiCall {

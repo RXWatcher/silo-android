@@ -42,6 +42,10 @@ import org.siloserver.silo.tv.ui.screens.player.TvPlayerScreen
 import org.siloserver.silo.tv.ui.screens.profiles.TvProfileSelectionScreen
 import org.siloserver.silo.tv.ui.screens.servers.TvServerListScreen
 import org.siloserver.silo.tv.ui.screens.servers.TvServerSwitchDestination
+import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsPromptScreen
+import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsReportScreen
+import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsSettingsScreen
+import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsViewModel
 import org.siloserver.silo.tv.ui.screens.watchtogether.TvWatchTogetherLobbyScreen
 import org.siloserver.silo.common.overlays.ProvideCardOverlays
 import org.siloserver.silo.common.settings.LibraryPlaybackPrefsStore
@@ -52,9 +56,13 @@ import org.siloserver.silo.tv.ui.screens.cast.TvSiloCastStandbyView
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
+import org.koin.compose.viewmodel.koinViewModel
 import org.koin.core.qualifier.named
 
 private const val RETURN_TO_MANAGE_SERVERS_KEY = "return_to_manage_servers"
+
+internal fun tvShouldShowDiagnosticsPrompt(currentRoute: String?): Boolean =
+    currentRoute != TvRoute.DiagnosticsReport.ROUTE
 
 /**
  * Upper bound on re-navigations for one queued deep link. Arrival-gated
@@ -110,6 +118,8 @@ fun TvAppNavigation(
     val libraryPlaybackPrefsStore: LibraryPlaybackPrefsStore = koinInject()
     val watchNextSeeder: WatchNextSeeder = koinInject()
     val siloCastReceiver: TvSiloCastReceiver = koinInject()
+    val diagnosticsViewModel = koinViewModel<TvDiagnosticsViewModel>()
+    val diagnosticsState by diagnosticsViewModel.state.collectAsState()
     val pendingDeepLink: MutableStateFlow<Uri?> =
         koinInject(qualifier = named("pendingDeepLink"))
     val siloCastStandby by siloCastReceiver.standbyState.collectAsState()
@@ -474,6 +484,9 @@ fun TvAppNavigation(
                     mainEntry.savedStateHandle[RETURN_TO_MANAGE_SERVERS_KEY] = true
                     navController.navigate(TvRoute.ServerList.route)
                 },
+                onOpenDiagnostics = {
+                    navController.navigate(TvRoute.Diagnostics.route)
+                },
                 onOpenItemDetail = { contentId ->
                     // launchSingleTop collapses a double-OK on the same card into
                     // one ItemDetail entry (consecutive identical contentId), so
@@ -566,6 +579,29 @@ fun TvAppNavigation(
                 onOpenPersonDetail = { personId ->
                     navController.navigate(TvRoute.PersonDetail(personId).route)
                 },
+            )
+        }
+
+        composable(TvRoute.Diagnostics.route) {
+            TvDiagnosticsSettingsScreen(
+                onBack = { navController.popBackStack() },
+                onReportSelected = { reportId ->
+                    navController.navigate(TvRoute.DiagnosticsReport(reportId).route)
+                },
+            )
+        }
+
+        composable(
+            route = TvRoute.DiagnosticsReport.ROUTE,
+            arguments = listOf(
+                navArgument(TvRoute.DiagnosticsReport.ARG_REPORT_ID) { type = NavType.StringType },
+            ),
+        ) { backStack ->
+            TvDiagnosticsReportScreen(
+                reportId = backStack.arguments
+                    ?.getString(TvRoute.DiagnosticsReport.ARG_REPORT_ID)
+                    .orEmpty(),
+                onBack = { navController.popBackStack() },
             )
         }
 
@@ -923,6 +959,19 @@ fun TvAppNavigation(
         TvSiloCastStandbyView(
             state = state,
             onDisconnect = siloCastReceiver::disconnectRemoteControl,
+        )
+    }
+    diagnosticsState.prompt
+        ?.takeIf { tvShouldShowDiagnosticsPrompt(currentEntry?.destination?.route) }
+        ?.let { prompt ->
+        TvDiagnosticsPromptScreen(
+            prompt = prompt,
+            onReview = { navController.navigate(TvRoute.DiagnosticsReport(prompt.reportId).route) },
+            onSend = { diagnosticsViewModel.upload(prompt.reportId) },
+            onAlwaysSend = {
+                diagnosticsViewModel.setConsent(org.siloserver.silo.common.diagnostics.DiagnosticsConsentMode.ALWAYS)
+            },
+            onDontSend = { diagnosticsViewModel.decline(prompt.reportId) },
         )
     }
     }

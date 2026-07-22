@@ -20,6 +20,7 @@ import org.siloserver.silo.common.player.AudioTrackManager
 import org.siloserver.silo.common.player.PlaybackCapabilityDetector
 import org.siloserver.silo.common.player.backend.VideoPlaybackBackendFactory
 import org.siloserver.silo.tv.ui.screens.settings.TvSettingsViewModel
+import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsViewModel
 import org.siloserver.silo.common.player.SiloPlayerFactory
 import org.siloserver.silo.common.player.PlaybackSessionManager
 import org.siloserver.silo.common.player.SubtitleManager
@@ -475,6 +476,7 @@ val androidTvModule = module {
             tvLibraryScopeStore = getOrNull(),
         )
     }
+    viewModel { TvDiagnosticsViewModel(get()) }
 }
 
 private fun tvDeviceName(): String =

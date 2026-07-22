@@ -1163,7 +1163,7 @@ git commit -m "feat(diagnostics): add phone report experience"
 **Interfaces:**
 - Same coordinator semantics as phone, mapped into remote-friendly focus models.
 
-- [ ] **Step 1: Write failing focus tests**
+- [x] **Step 1: Write failing focus tests**
 
 ~~~kotlin
 @Test
@@ -1177,13 +1177,13 @@ fun alwaysNeedsSecondConfirmation() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :androidTvApp:testDebugUnitTest --tests '*TvDiagnosticsStateTest'
 ~~~
 
-- [ ] **Step 3: Implement TV screens**
+- [x] **Step 3: Implement TV screens**
 
 ~~~kotlin
 @Composable
@@ -1209,7 +1209,7 @@ fun TvDiagnosticsPromptScreen(
 
 Use full-screen flows, large remote targets, predictable Back behavior, and non-obstructive timed-capture state.
 
-- [ ] **Step 4: Verify GREEN and compile**
+- [x] **Step 4: Verify GREEN and compile**
 
 ~~~bash
 ./gradlew :androidTvApp:testDebugUnitTest --tests '*TvDiagnosticsStateTest' :androidTvApp:compileDebugKotlinAndroid

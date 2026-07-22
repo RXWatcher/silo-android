@@ -5,6 +5,7 @@ import androidx.media3.common.C
 import androidx.media3.common.ColorInfo
 import androidx.media3.common.Format
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -169,5 +170,54 @@ class PlayerStatsSnapshotReducerTest {
         val result = reducePlayerStats(initial, PlaybackAnalyticsListener.Event.AudioUnderrun)
 
         assertEquals(3, result.audioUnderruns)
+    }
+
+    @Test
+    fun `playback timing tracks startup first frame and rebuffers`() {
+        var snapshot = PlayerStatsSnapshot()
+        snapshot = reducePlayerStats(
+            snapshot,
+            PlaybackAnalyticsListener.Event.PlaybackStateChanged(
+                state = Player.STATE_BUFFERING,
+                realtimeMs = 100,
+                totalBufferedDurationMs = 0,
+                playWhenReady = true,
+            ),
+        )
+        snapshot = reducePlayerStats(
+            snapshot,
+            PlaybackAnalyticsListener.Event.PlaybackStateChanged(
+                state = Player.STATE_READY,
+                realtimeMs = 350,
+                totalBufferedDurationMs = 4_000,
+                playWhenReady = true,
+            ),
+        )
+        snapshot = reducePlayerStats(snapshot, PlaybackAnalyticsListener.Event.FirstFrameRendered(500))
+        snapshot = reducePlayerStats(
+            snapshot,
+            PlaybackAnalyticsListener.Event.PlaybackStateChanged(
+                state = Player.STATE_BUFFERING,
+                realtimeMs = 1_000,
+                totalBufferedDurationMs = 250,
+                playWhenReady = true,
+            ),
+        )
+        snapshot = reducePlayerStats(
+            snapshot,
+            PlaybackAnalyticsListener.Event.PlaybackStateChanged(
+                state = Player.STATE_READY,
+                realtimeMs = 1_300,
+                totalBufferedDurationMs = 3_500,
+                playWhenReady = true,
+            ),
+        )
+
+        assertEquals(250L, snapshot.startupReadyMs)
+        assertEquals(400L, snapshot.firstFrameMs)
+        assertEquals(3_500L, snapshot.bufferedDurationMs)
+        assertEquals(1, snapshot.rebufferCount)
+        assertEquals(300L, snapshot.rebufferTotalMs)
+        assertEquals(300L, snapshot.rebufferMaxMs)
     }
 }

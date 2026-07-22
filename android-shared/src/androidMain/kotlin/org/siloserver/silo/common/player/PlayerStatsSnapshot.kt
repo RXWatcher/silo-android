@@ -2,6 +2,7 @@ package org.siloserver.silo.common.player
 
 import androidx.media3.common.C
 import androidx.media3.common.Format
+import androidx.media3.common.Player
 
 /**
  * Snapshot of player statistics surfaced in playback diagnostics UI.
@@ -33,6 +34,14 @@ data class PlayerStatsSnapshot(
     val bitrateBps: Long? = null,
     val droppedFrames: Int = 0,
     val audioUnderruns: Int = 0,
+    val startupStartedAtMs: Long? = null,
+    val startupReadyMs: Long? = null,
+    val firstFrameMs: Long? = null,
+    val bufferedDurationMs: Long? = null,
+    val rebufferStartedAtMs: Long? = null,
+    val rebufferCount: Int = 0,
+    val rebufferTotalMs: Long = 0,
+    val rebufferMaxMs: Long = 0,
 )
 
 /**
@@ -73,11 +82,51 @@ fun reducePlayerStats(
         current.copy(audioUnderruns = current.audioUnderruns + 1)
     is PlaybackAnalyticsListener.Event.BandwidthEstimate ->
         current.copy(bitrateBps = event.bitrateBps)
+    is PlaybackAnalyticsListener.Event.FirstFrameRendered -> current.copy(
+        firstFrameMs = current.firstFrameMs ?: current.startupStartedAtMs?.let {
+            (event.realtimeMs - it).coerceAtLeast(0)
+        },
+    )
+    is PlaybackAnalyticsListener.Event.PlaybackStateChanged -> current.reducePlaybackState(event)
     is PlaybackAnalyticsListener.Event.LoadError,
     is PlaybackAnalyticsListener.Event.PlayerError,
     is PlaybackAnalyticsListener.Event.TrackSnapshot,
     -> current
 }
+
+private fun PlayerStatsSnapshot.reducePlaybackState(
+    event: PlaybackAnalyticsListener.Event.PlaybackStateChanged,
+): PlayerStatsSnapshot {
+    val withBuffer = copy(bufferedDurationMs = event.totalBufferedDurationMs.coerceAtLeast(0))
+    return when (event.state) {
+        Player.STATE_BUFFERING -> when {
+            withBuffer.startupStartedAtMs == null && withBuffer.firstFrameMs == null ->
+                withBuffer.copy(startupStartedAtMs = event.realtimeMs)
+            withBuffer.firstFrameMs != null && event.playWhenReady && withBuffer.rebufferStartedAtMs == null ->
+                withBuffer.copy(rebufferStartedAtMs = event.realtimeMs)
+            else -> withBuffer
+        }
+        Player.STATE_READY -> {
+            val startupReady = withBuffer.startupReadyMs ?: withBuffer.startupStartedAtMs?.let {
+                (event.realtimeMs - it).coerceAtLeast(0)
+            }
+            val rebufferDuration = withBuffer.rebufferStartedAtMs?.let {
+                (event.realtimeMs - it).coerceAtLeast(0)
+            }
+            withBuffer.copy(
+                startupReadyMs = startupReady,
+                rebufferStartedAtMs = null,
+                rebufferCount = withBuffer.rebufferCount + if (rebufferDuration != null) 1 else 0,
+                rebufferTotalMs = withBuffer.rebufferTotalMs + (rebufferDuration ?: 0),
+                rebufferMaxMs = maxOf(withBuffer.rebufferMaxMs, rebufferDuration ?: 0),
+            )
+        }
+        else -> withBuffer
+    }
+}
+
+fun PlayerStatsSnapshot.hasPerformanceEvidence(): Boolean =
+    startupReadyMs != null || firstFrameMs != null || rebufferCount > 0 || droppedFrames > 0 || audioUnderruns > 0
 
 fun PlayerStatsSnapshot.firstFrameDiagnostics(firstFrameMs: Long): Map<String, String> = buildMap {
     videoDecoderName?.let { put("decoder_name", it) }

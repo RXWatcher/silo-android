@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.analytics.AnalyticsListener
@@ -47,12 +48,44 @@ class PlaybackAnalyticsListener : AnalyticsListener {
         data class PlayerError(val error: PlaybackException) : Event()
         data class BandwidthEstimate(val bitrateBps: Long) : Event()
         data class TrackSnapshot(val description: String) : Event()
+        data class PlaybackStateChanged(
+            val state: Int,
+            val realtimeMs: Long,
+            val totalBufferedDurationMs: Long,
+            val playWhenReady: Boolean,
+        ) : Event()
+        data class FirstFrameRendered(val realtimeMs: Long) : Event()
     }
 
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 32)
     val events: SharedFlow<Event> = _events.asSharedFlow()
     private var diagnosticsStats = PlayerStatsSnapshot()
     private val diagnosticsCadence = DiagnosticsStatsCadence()
+    private var playWhenReady = true
+
+    override fun onPlayWhenReadyChanged(
+        eventTime: AnalyticsListener.EventTime,
+        playWhenReady: Boolean,
+        reason: Int,
+    ) {
+        this.playWhenReady = playWhenReady
+    }
+
+    override fun onPlaybackStateChanged(eventTime: AnalyticsListener.EventTime, state: Int) {
+        emit(Event.PlaybackStateChanged(state, eventTime.realtimeMs, eventTime.totalBufferedDurationMs, playWhenReady))
+        if ((state == Player.STATE_ENDED || state == Player.STATE_IDLE) && DiagnosticsCaptureDetailState.isEnabled()) {
+            if (diagnosticsStats.hasPerformanceEvidence()) DiagnosticsPlaybackLogger.finalStats(diagnosticsStats)
+            diagnosticsStats = PlayerStatsSnapshot()
+        }
+    }
+
+    override fun onRenderedFirstFrame(
+        eventTime: AnalyticsListener.EventTime,
+        output: Any,
+        renderTimeMs: Long,
+    ) {
+        emit(Event.FirstFrameRendered(eventTime.realtimeMs))
+    }
 
     override fun onVideoDecoderInitialized(
         eventTime: AnalyticsListener.EventTime,

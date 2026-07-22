@@ -29,6 +29,7 @@ class FileDiagnosticsCaptureController(
     private val deviceSnapshotCache: DeviceSnapshotCache,
     private val environment: ExitReportEnvironment,
     private val playbackSessions: DiagnosticsPlaybackSessionTracker = DiagnosticsPlaybackSessionTracker(),
+    private val performanceCapture: DiagnosticsPerformanceCapture = DiagnosticsPerformanceCapture.None,
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val sessionIdFactory: () -> String = { UUID.randomUUID().toString() },
 ) : DiagnosticsCaptureController {
@@ -37,7 +38,7 @@ class FileDiagnosticsCaptureController(
 
     override fun closeGate() {
         playbackSessions.clear()
-        DiagnosticsCaptureDetailState.setEnabled(false)
+        setDetailedCaptureEnabled(false)
         SiloLog.installSink(logBuffer)
         logBuffer.rotateGeneration()
     }
@@ -55,7 +56,7 @@ class FileDiagnosticsCaptureController(
             error("diagnostics capture started concurrently")
         }
         SiloLog.installSink(FanOutDiagnosticsLogSink(logBuffer, fileLogger))
-        DiagnosticsCaptureDetailState.setEnabled(true)
+        setDetailedCaptureEnabled(true)
         return capture
     }
 
@@ -68,7 +69,7 @@ class FileDiagnosticsCaptureController(
         check(owned?.capture == active && !owned.debugLogging && this.active.compareAndSet(owned, null)) {
             "diagnostics capture is no longer active"
         }
-        DiagnosticsCaptureDetailState.setEnabled(false)
+        setDetailedCaptureEnabled(false)
         SiloLog.installSink(logBuffer)
         val frozen = try {
             fileLogger.freeze(active.generation)
@@ -113,15 +114,20 @@ class FileDiagnosticsCaptureController(
             error("diagnostics debug logging started concurrently")
         }
         SiloLog.installSink(FanOutDiagnosticsLogSink(logBuffer, fileLogger))
-        DiagnosticsCaptureDetailState.setEnabled(true)
+        setDetailedCaptureEnabled(true)
     }
 
     private suspend fun cancelOwned(owned: OwnedCapture) {
         if (!active.compareAndSet(owned, null)) return
-        DiagnosticsCaptureDetailState.setEnabled(false)
+        setDetailedCaptureEnabled(false)
         SiloLog.installSink(logBuffer)
         runCatching { fileLogger.cancel(owned.capture.generation) }
         logBuffer.rotateGeneration()
+    }
+
+    private fun setDetailedCaptureEnabled(enabled: Boolean) {
+        DiagnosticsCaptureDetailState.setEnabled(enabled)
+        performanceCapture.setDetailedCaptureEnabled(enabled)
     }
 
     override suspend fun captureNow(context: DiagnosticsCaptureContext): PendingReport? {

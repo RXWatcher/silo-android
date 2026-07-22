@@ -1,5 +1,6 @@
 package org.siloserver.silo.common.player.video
 
+import android.os.SystemClock
 import org.siloserver.silo.common.diagnostics.DiagnosticsPlaybackLogger
 
 class VideoPlaybackSessionCoordinator(
@@ -7,9 +8,10 @@ class VideoPlaybackSessionCoordinator(
 ) {
     suspend fun start(request: VideoPlaybackStartRequest): VideoPlayerUiState {
         DiagnosticsPlaybackLogger.sessionEvent("video start requested")
+        val startedAtMs = SystemClock.elapsedRealtime()
         return when (val result = starter.start(request)) {
             is VideoPlaybackStartResult.Ready -> {
-                DiagnosticsPlaybackLogger.sessionEvent("video start ready")
+                DiagnosticsPlaybackLogger.startReady(SystemClock.elapsedRealtime() - startedAtMs)
                 VideoPlayerUiState.Ready(
                     contentId = result.contentId,
                     fileId = result.fileId,

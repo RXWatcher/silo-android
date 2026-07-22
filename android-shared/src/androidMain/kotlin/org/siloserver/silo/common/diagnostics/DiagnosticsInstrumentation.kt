@@ -1,6 +1,7 @@
 package org.siloserver.silo.common.diagnostics
 
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.siloserver.silo.common.player.PlayerStatsSnapshot
 import org.siloserver.silo.common.player.video.PlaybackDiagnosticsCode
 import org.siloserver.silo.model.diagnostics.DiagnosticsLogCategory
@@ -84,6 +85,24 @@ object DiagnosticsPlaybackLogger {
         code?.let { mapOf("failure_code" to SiloLogAttribute.Text(it.wireValue)) }.orEmpty(),
     )
 
+    fun startReady(durationMs: Long) {
+        if (DiagnosticsCaptureDetailState.isEnabled()) {
+            playbackInfo(
+                "video start ready",
+                mapOf("startup_ready_ms" to SiloLogAttribute.Integer(durationMs.coerceAtLeast(0))),
+            )
+        }
+    }
+
+    fun firstFrame(durationMs: Long) {
+        if (DiagnosticsCaptureDetailState.isEnabled()) {
+            playbackInfo(
+                "first video frame rendered",
+                mapOf("first_frame_ms" to SiloLogAttribute.Integer(durationMs.coerceAtLeast(0))),
+            )
+        }
+    }
+
     fun videoDecoderInitialized(decoderName: String) = playbackInfo(
         "video decoder initialized",
         mapOf("decoder" to SiloLogAttribute.Text(decoderName)),
@@ -135,6 +154,27 @@ object DiagnosticsPlaybackLogger {
             snapshot.bitrateBps?.let { put("bitrate_kbps", SiloLogAttribute.Integer((it / 1_000).coerceAtLeast(0))) }
             put("dropped_frames", SiloLogAttribute.Integer(snapshot.droppedFrames.coerceAtLeast(0).toLong()))
             put("audio_underruns", SiloLogAttribute.Integer(snapshot.audioUnderruns.coerceAtLeast(0).toLong()))
+            snapshot.startupReadyMs?.let { put("startup_ready_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+            snapshot.firstFrameMs?.let { put("first_frame_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+            snapshot.bufferedDurationMs?.let { put("buffered_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+            put("rebuffer_count", SiloLogAttribute.Integer(snapshot.rebufferCount.coerceAtLeast(0).toLong()))
+            put("rebuffer_total_ms", SiloLogAttribute.Integer(snapshot.rebufferTotalMs.coerceAtLeast(0)))
+            put("rebuffer_max_ms", SiloLogAttribute.Integer(snapshot.rebufferMaxMs.coerceAtLeast(0)))
+        },
+    )
+
+    fun finalStats(snapshot: PlayerStatsSnapshot) = playbackInfo(
+        "player final stats",
+        buildMap {
+            snapshot.startupReadyMs?.let { put("startup_ready_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+            snapshot.firstFrameMs?.let { put("first_frame_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+            snapshot.bufferedDurationMs?.let { put("buffered_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+            snapshot.bitrateBps?.let { put("bitrate_kbps", SiloLogAttribute.Integer((it / 1_000).coerceAtLeast(0))) }
+            put("rebuffer_count", SiloLogAttribute.Integer(snapshot.rebufferCount.coerceAtLeast(0).toLong()))
+            put("rebuffer_total_ms", SiloLogAttribute.Integer(snapshot.rebufferTotalMs.coerceAtLeast(0)))
+            put("rebuffer_max_ms", SiloLogAttribute.Integer(snapshot.rebufferMaxMs.coerceAtLeast(0)))
+            put("dropped_frames", SiloLogAttribute.Integer(snapshot.droppedFrames.coerceAtLeast(0).toLong()))
+            put("audio_underruns", SiloLogAttribute.Integer(snapshot.audioUnderruns.coerceAtLeast(0).toLong()))
         },
     )
 
@@ -159,8 +199,42 @@ object DiagnosticsLifecycleLogger {
             ?.lowercase()
             ?.takeIf(KNOWN_ROUTE_ROOTS::contains)
             ?: "unknown"
+        DiagnosticsPerformanceRoute.update(identifier)
         state("route:$identifier")
     }
+}
+
+private object DiagnosticsPerformanceRoute {
+    private val route = AtomicReference("unknown")
+
+    fun update(value: String) = route.set(value.take(64))
+    fun current(): String = route.get()
+}
+
+object DiagnosticsPerformanceLogger {
+    fun snapshot(
+        frames: PerformanceWindowSnapshot,
+        resources: DiagnosticsResourceSnapshot,
+        startupFirstFrameMs: Long?,
+    ) = SiloLog.i(
+        DiagnosticsLogCategory.LIFECYCLE,
+        "AppPerformance",
+        "app performance snapshot",
+        buildMap {
+            put("route", SiloLogAttribute.Text(DiagnosticsPerformanceRoute.current()))
+            put("frame_count", SiloLogAttribute.Integer(frames.frameCount.coerceAtLeast(0)))
+            put("slow_frame_count", SiloLogAttribute.Integer(frames.slowFrameCount.coerceAtLeast(0)))
+            put("p95_frame_ms", SiloLogAttribute.Integer(frames.p95FrameMs.coerceAtLeast(0)))
+            put("worst_frame_ms", SiloLogAttribute.Integer(frames.worstFrameMs.coerceAtLeast(0)))
+            put("main_stall_count", SiloLogAttribute.Integer(frames.mainThreadStallCount.coerceAtLeast(0)))
+            put("main_stall_max_ms", SiloLogAttribute.Integer(frames.longestMainThreadStallMs.coerceAtLeast(0)))
+            put("java_heap_mb", SiloLogAttribute.Integer(resources.javaHeapMb.coerceAtLeast(0)))
+            put("process_pss_mb", SiloLogAttribute.Integer(resources.processPssMb.coerceAtLeast(0)))
+            put("low_memory", SiloLogAttribute.Flag(resources.lowMemory))
+            resources.thermalStatus?.let { put("thermal_status", SiloLogAttribute.Integer(it.toLong().coerceAtLeast(0))) }
+            startupFirstFrameMs?.let { put("startup_first_frame_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+        },
+    )
 }
 
 object DiagnosticsCastLogger {

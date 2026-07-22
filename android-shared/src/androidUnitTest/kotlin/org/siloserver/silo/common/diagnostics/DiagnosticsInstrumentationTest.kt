@@ -81,4 +81,22 @@ class DiagnosticsInstrumentationTest {
         assertFalse(line.contains("private-title"))
         assertTrue(line.contains("route:unknown"))
     }
+
+    @Test
+    fun appPerformanceSnapshotUsesOnlyRegisteredAggregateAttributes() {
+        val lines = mutableListOf<String>()
+        SiloLog.installSink { lines += it }
+
+        DiagnosticsPerformanceLogger.snapshot(
+            frames = PerformanceWindowSnapshot(120, 7, 22, 48, 2, 410),
+            resources = DiagnosticsResourceSnapshot(82, 140, lowMemory = false, thermalStatus = 1),
+            startupFirstFrameMs = 930,
+        )
+
+        val line = lines.single()
+        assertTrue(line.contains("app performance snapshot"), line)
+        assertTrue(line.contains("slow_frame_count"), line)
+        assertTrue(line.contains("process_pss_mb"), line)
+        assertFalse(line.contains("view_text"), line)
+    }
 }

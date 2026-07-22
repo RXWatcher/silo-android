@@ -30,6 +30,12 @@ val diagnosticsModule = module {
     single<PendingReportStore> { FilePendingReportStore(androidContext().noBackupFilesDir) }
     single<DiagnosticsLogBuffer> { LogRing() }
     single { DiagnosticsPlaybackSessionTracker() }
+    single {
+        AndroidDiagnosticsPerformanceRecorder(androidContext().applicationContext as android.app.Application).also {
+            it.install()
+        }
+    }
+    single<DiagnosticsPerformanceCapture> { get<AndroidDiagnosticsPerformanceRecorder>() }
     single { DiagnosticsFileLogger(androidContext().noBackupFilesDir) }
 
     single<DiagnosticsSavedServerProvider> { RegistryDiagnosticsSavedServerProvider(get()) }
@@ -87,6 +93,7 @@ val diagnosticsModule = module {
             deviceSnapshotCache = get(),
             environment = get(),
             playbackSessions = get(),
+            performanceCapture = get(),
         )
     }
     single<DiagnosticsRuntimePublisher> {

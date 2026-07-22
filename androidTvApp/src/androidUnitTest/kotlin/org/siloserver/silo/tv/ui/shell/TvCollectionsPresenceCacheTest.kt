@@ -14,5 +14,8 @@ class TvCollectionsPresenceCacheTest {
         assertTrue(source.contains("var probedCollectionLibraryIds by rememberSaveable"))
         assertTrue(source.contains("probedCollectionLibraryIds.contentEquals(currentLibraryIds)"))
         assertTrue(source.contains("var librariesWithCollectionsSnapshot by rememberSaveable"))
+        assertTrue(source.contains("var probedCollectionsIdentityKey by rememberSaveable"))
+        assertTrue(source.contains("probedCollectionsIdentityKey == collectionsIdentityKey"))
+        assertTrue(source.contains("probedCollectionsIdentityKey = collectionsIdentityKey"))
     }
 }

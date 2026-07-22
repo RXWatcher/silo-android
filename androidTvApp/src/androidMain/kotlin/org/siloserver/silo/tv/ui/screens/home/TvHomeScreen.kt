@@ -14,6 +14,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.FocusRequester
@@ -60,16 +61,19 @@ fun TvHomeScreen(
     val state by viewModel.uiState.collectAsState()
     val visibleSections = remember(state.sections) { state.sections.normalizeTvHomeSections() }
 
-    // TV has no pull-to-refresh, so ON_RESUME is the only manual freshness
-    // path — refresh quietly whenever the user returns to Home (e.g. after
-    // finishing playback), complementing the realtime socket.
+    // TV has no pull-to-refresh, so a later ON_RESUME is the manual freshness
+    // path after returning to Home (for example after playback). The first
+    // resume is consumed because ViewModel initialization already loads Home.
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val resumeRefreshPolicy = rememberSaveable(saver = HomeResumeRefreshPolicy.Saver) {
+        HomeResumeRefreshPolicy()
+    }
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                if (shouldRefreshOnResume()) {
-                    viewModel.refreshFromRealtime()
-                }
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME &&
+                resumeRefreshPolicy.shouldRefresh(shouldRefreshOnResume())
+            ) {
+                viewModel.refreshAfterResume()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

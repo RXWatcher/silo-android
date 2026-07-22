@@ -354,7 +354,7 @@ git commit -m "feat(diagnostics): add safe structured logging"
 - LogRing.offer, snapshot, rotateGeneration, clear.
 - DiagnosticsFileLogger.start, offer, freeze, cancel.
 
-- [ ] **Step 1: Write failing capacity and generation tests**
+- [x] **Step 1: Write failing capacity and generation tests**
 
 ~~~kotlin
 @Test
@@ -370,13 +370,13 @@ fun snapshotIsNewestLastAndGenerationIsolated() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*LogRingTest' --tests '*DiagnosticsFileLoggerTest'
 ~~~
 
-- [ ] **Step 3: Implement bounded non-blocking storage**
+- [x] **Step 3: Implement bounded non-blocking storage**
 
 ~~~kotlin
 data class LogSnapshot(
@@ -395,7 +395,7 @@ interface DiagnosticsLogBuffer : DiagnosticsLogSink {
 
 Use atomic sequence publication, no writer lock, bounded byte accounting, a torn-entry counter, a 512-entry DROP_OLDEST channel, one IO writer, five 2 MiB append-only segments, and no-backup storage.
 
-- [ ] **Step 4: Verify GREEN and hot-path source constraints**
+- [x] **Step 4: Verify GREEN and hot-path source constraints**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*LogRingTest' --tests '*DiagnosticsFileLoggerTest'
@@ -403,7 +403,7 @@ Use atomic sequence publication, no writer lock, bounded byte accounting, a torn
 
 The regression test performs 100,000 warmed offers, verifies ordering/capacity, and source-checks that the offer path contains no synchronized, Mutex, runBlocking, or channel send.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared

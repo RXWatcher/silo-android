@@ -65,6 +65,9 @@ class CrashCaptureTest {
         assertTrue(files.single().name.endsWith(".json"))
         assertFalse(files.single().name.endsWith(".tmp"))
         assertTrue(files.single().length() in 1..CrashMarkerRenderer.MAX_MARKER_BYTES.toLong())
+        val decoded = FileJvmCrashMarkerSource(temporaryFolder.root).records().single()
+        assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", decoded.runToken)
+        assertEquals("capture-1", decoded.captureSessionId)
     }
 
     @Test

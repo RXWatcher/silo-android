@@ -858,7 +858,7 @@ git commit -m "feat(diagnostics): capture JVM crashes"
 - AndroidExitInfoSource abstracts framework access.
 - collect returns only ledger-correlated, profile-eligible, deduplicated reports.
 
-- [ ] **Step 1: Write failing classification and correlation tests**
+- [x] **Step 1: Write failing classification and correlation tests**
 
 ~~~kotlin
 @Test
@@ -874,13 +874,13 @@ fun unmatchedRunTokenIsNotUploadable() = runTest {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*ExitInfoCollectorTest'
 ~~~
 
-- [ ] **Step 3: Implement API-guarded bounded collection**
+- [x] **Step 3: Implement API-guarded bounded collection**
 
 ~~~kotlin
 interface AndroidExitInfoRecord {
@@ -904,13 +904,13 @@ class ExitInfoCollector(
 
 Publish only the opaque run token through setProcessStateSummary. Bound trace reads, distinguish ANR/JVM text from API-31+ tombstone bytes, and deduplicate against JVM markers before save.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*ExitInfoCollectorTest'
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared

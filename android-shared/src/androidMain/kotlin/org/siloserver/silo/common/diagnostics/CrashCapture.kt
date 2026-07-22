@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -30,6 +31,28 @@ data class CrashRuntimeSnapshot(
         fun empty() = CrashRuntimeSnapshot()
     }
 }
+
+@Serializable
+data class JvmCrashMarkerRecord(
+    @SerialName("schema_version") val schemaVersion: Int = 1,
+    @SerialName("occurred_at_epoch_ms") val occurredAtEpochMs: Long,
+    @SerialName("thread_name") val threadName: String,
+    @SerialName("thread_id") val threadId: Long,
+    @SerialName("throwable_type") val throwableType: String,
+    val stack: String,
+    val binding: PendingReportBinding? = null,
+    @SerialName("capture_session_id") val captureSessionId: String? = null,
+    @SerialName("run_token") val runToken: String? = null,
+    val foreground: Boolean? = null,
+    @SerialName("playback_session_ids") val playbackSessionIds: List<String>,
+    @SerialName("device_snapshot_json") val deviceSnapshotJson: String? = null,
+    @SerialName("log_lines") val logLines: List<String>,
+    @SerialName("log_dropped_count") val logDroppedCount: Long,
+    @SerialName("log_torn_count") val logTornCount: Long,
+    @SerialName("log_generation") val logGeneration: Long,
+    val truncated: Boolean,
+    @Transient val sourceFileName: String? = null,
+)
 
 fun interface CrashMarkerSink {
     fun write(thread: Thread, throwable: Throwable, runtime: CrashRuntimeSnapshot)
@@ -59,7 +82,7 @@ class CrashMarkerRenderer {
         occurredAtEpochMs: Long,
     ): ByteArray {
         val redactor = DiagnosticsRedactor(sensitiveValues = runtime.redactionTokens.toSet())
-        val marker = CrashMarker(
+        val marker = JvmCrashMarkerRecord(
             occurredAtEpochMs = occurredAtEpochMs.coerceAtLeast(0),
             threadName = redactor.sanitize(thread.name).truncateUtf8(MAX_FIELD_BYTES),
             threadId = thread.stableId(),
@@ -148,28 +171,7 @@ class CrashMarkerRenderer {
         return newestFirst
     }
 
-    private fun encode(marker: CrashMarker): ByteArray = JSON.encodeToString(marker).encodeToByteArray()
-
-    @Serializable
-    private data class CrashMarker(
-        @SerialName("schema_version") val schemaVersion: Int = 1,
-        @SerialName("occurred_at_epoch_ms") val occurredAtEpochMs: Long,
-        @SerialName("thread_name") val threadName: String,
-        @SerialName("thread_id") val threadId: Long,
-        @SerialName("throwable_type") val throwableType: String,
-        val stack: String,
-        val binding: PendingReportBinding? = null,
-        @SerialName("capture_session_id") val captureSessionId: String? = null,
-        @SerialName("run_token") val runToken: String? = null,
-        val foreground: Boolean? = null,
-        @SerialName("playback_session_ids") val playbackSessionIds: List<String>,
-        @SerialName("device_snapshot_json") val deviceSnapshotJson: String? = null,
-        @SerialName("log_lines") val logLines: List<String>,
-        @SerialName("log_dropped_count") val logDroppedCount: Long,
-        @SerialName("log_torn_count") val logTornCount: Long,
-        @SerialName("log_generation") val logGeneration: Long,
-        val truncated: Boolean,
-    )
+    private fun encode(marker: JvmCrashMarkerRecord): ByteArray = JSON.encodeToString(marker).encodeToByteArray()
 
     companion object {
         const val MAX_MARKER_BYTES = 512 * 1_024

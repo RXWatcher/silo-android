@@ -2,6 +2,7 @@ package org.siloserver.silo.common.diagnostics
 
 import java.util.concurrent.atomic.AtomicBoolean
 import org.siloserver.silo.common.player.PlayerStatsSnapshot
+import org.siloserver.silo.common.player.video.PlaybackDiagnosticsCode
 import org.siloserver.silo.model.diagnostics.DiagnosticsLogCategory
 import org.siloserver.silo.network.NetworkDiagnosticsObserver
 
@@ -77,6 +78,11 @@ internal fun safeDiagnosticsNetworkPath(rawPath: String): String {
 
 object DiagnosticsPlaybackLogger {
     fun sessionEvent(message: String) = playbackInfo(message)
+
+    fun startFailure(code: PlaybackDiagnosticsCode?) = playbackInfo(
+        "video start failed",
+        code?.let { mapOf("failure_code" to SiloLogAttribute.Text(it.wireValue)) }.orEmpty(),
+    )
 
     fun videoDecoderInitialized(decoderName: String) = playbackInfo(
         "video decoder initialized",

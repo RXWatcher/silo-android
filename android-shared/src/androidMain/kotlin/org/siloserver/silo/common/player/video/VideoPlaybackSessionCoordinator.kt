@@ -47,7 +47,7 @@ class VideoPlaybackSessionCoordinator(
                 )
             }
             is VideoPlaybackStartResult.Error -> {
-                DiagnosticsPlaybackLogger.sessionEvent("video start failed")
+                DiagnosticsPlaybackLogger.startFailure(result.diagnosticsCode)
                 VideoPlayerUiState.Error(
                     contentId = result.contentId,
                     message = result.message,

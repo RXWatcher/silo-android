@@ -149,6 +149,7 @@ internal class DiagnosticsLogRenderer(
                 "bitrate_kbps" to AttributeKind.INTEGER,
                 "dropped_frames" to AttributeKind.INTEGER,
                 "audio_underruns" to AttributeKind.INTEGER,
+                "failure_code" to AttributeKind.STRING,
             ),
             DiagnosticsLogCategory.FOCUS to mapOf(
                 "target" to AttributeKind.STRING,

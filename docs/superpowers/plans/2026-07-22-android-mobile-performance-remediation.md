@@ -432,7 +432,7 @@ Expected: no whitespace errors; only intended tracked changes.
 
 - [ ] **Step 2: Run shared and Android-shared tests**
 
-Run: `./gradlew :shared:allTests :android-shared:testDebugUnitTest`
+Run: `./gradlew :shared:test :android-shared:testDebugUnitTest`
 
 Expected: BUILD SUCCESSFUL.
 

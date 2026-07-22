@@ -37,7 +37,6 @@ class FileDiagnosticsCaptureController(
     private val active = AtomicReference<OwnedCapture?>(null)
 
     override fun closeGate() {
-        playbackSessions.clear()
         setDetailedCaptureEnabled(false)
         SiloLog.installSink(logBuffer)
         logBuffer.rotateGeneration()

@@ -42,6 +42,11 @@ data class PlayerStatsSnapshot(
     val rebufferCount: Int = 0,
     val rebufferTotalMs: Long = 0,
     val rebufferMaxMs: Long = 0,
+    val seekStartedAtMs: Long? = null,
+    val seekCount: Int = 0,
+    val lastSeekDurationMs: Long? = null,
+    val seekTotalMs: Long = 0,
+    val seekMaxMs: Long = 0,
 )
 
 /**
@@ -87,6 +92,7 @@ fun reducePlayerStats(
             (event.realtimeMs - it).coerceAtLeast(0)
         },
     )
+    is PlaybackAnalyticsListener.Event.SeekStarted -> current.copy(seekStartedAtMs = event.realtimeMs)
     is PlaybackAnalyticsListener.Event.PlaybackStateChanged -> current.reducePlaybackState(event)
     is PlaybackAnalyticsListener.Event.LoadError,
     is PlaybackAnalyticsListener.Event.PlayerError,
@@ -113,12 +119,20 @@ private fun PlayerStatsSnapshot.reducePlaybackState(
             val rebufferDuration = withBuffer.rebufferStartedAtMs?.let {
                 (event.realtimeMs - it).coerceAtLeast(0)
             }
+            val seekDuration = withBuffer.seekStartedAtMs?.let {
+                (event.realtimeMs - it).coerceAtLeast(0)
+            }
             withBuffer.copy(
                 startupReadyMs = startupReady,
                 rebufferStartedAtMs = null,
                 rebufferCount = withBuffer.rebufferCount + if (rebufferDuration != null) 1 else 0,
                 rebufferTotalMs = withBuffer.rebufferTotalMs + (rebufferDuration ?: 0),
                 rebufferMaxMs = maxOf(withBuffer.rebufferMaxMs, rebufferDuration ?: 0),
+                seekStartedAtMs = null,
+                seekCount = withBuffer.seekCount + if (seekDuration != null) 1 else 0,
+                lastSeekDurationMs = seekDuration ?: withBuffer.lastSeekDurationMs,
+                seekTotalMs = withBuffer.seekTotalMs + (seekDuration ?: 0),
+                seekMaxMs = maxOf(withBuffer.seekMaxMs, seekDuration ?: 0),
             )
         }
         else -> withBuffer
@@ -126,7 +140,19 @@ private fun PlayerStatsSnapshot.reducePlaybackState(
 }
 
 fun PlayerStatsSnapshot.hasPerformanceEvidence(): Boolean =
-    startupReadyMs != null || firstFrameMs != null || rebufferCount > 0 || droppedFrames > 0 || audioUnderruns > 0
+    startupReadyMs != null || firstFrameMs != null || rebufferCount > 0 || seekCount > 0 ||
+        droppedFrames > 0 || audioUnderruns > 0
+
+data class FinishedPlayerStats(
+    val next: PlayerStatsSnapshot,
+    val finalSnapshot: PlayerStatsSnapshot?,
+)
+
+fun finishPlayerStats(current: PlayerStatsSnapshot, detailedCapture: Boolean): FinishedPlayerStats =
+    FinishedPlayerStats(
+        next = PlayerStatsSnapshot(),
+        finalSnapshot = current.takeIf { detailedCapture && it.hasPerformanceEvidence() },
+    )
 
 fun PlayerStatsSnapshot.firstFrameDiagnostics(firstFrameMs: Long): Map<String, String> = buildMap {
     videoDecoderName?.let { put("decoder_name", it) }

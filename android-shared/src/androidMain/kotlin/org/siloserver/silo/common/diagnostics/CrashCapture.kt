@@ -15,6 +15,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 data class CrashRuntimeSnapshot(
+    val identityKey: DiagnosticsIdentityKey? = null,
     val binding: PendingReportBinding? = null,
     val captureSessionId: String? = null,
     val runToken: String? = null,
@@ -281,6 +282,16 @@ object CrashCapture {
                 redactionTokens = snapshot.redactionTokens.filter(String::isNotEmpty).toList(),
             ),
         )
+    }
+
+    fun updatePlaybackSessionIds(identityKey: DiagnosticsIdentityKey, sessionIds: List<String>) {
+        runtime.updateAndGet { current ->
+            if (current.identityKey == identityKey) {
+                current.copy(playbackSessionIds = sessionIds.toList())
+            } else {
+                current
+            }
+        }
     }
 
     internal fun currentSnapshotForTests(): CrashRuntimeSnapshot = runtime.get()

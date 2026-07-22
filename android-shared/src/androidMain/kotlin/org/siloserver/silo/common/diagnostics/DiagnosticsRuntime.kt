@@ -16,13 +16,14 @@ class DefaultDiagnosticsRuntimePublisher(
     private val active = AtomicReference<PublishedRuntime?>(null)
 
     override fun closeGate() {
-        playbackSessions.clear()
+        playbackSessions.close()
         active.set(null)
         CrashCapture.updateSnapshot(CrashRuntimeSnapshot.empty())
     }
 
     override suspend fun publish(context: DiagnosticsCaptureContext) {
         require(context.profileEligible)
+        val playbackScope = playbackSessions.open(context.identityKey)
         val existing = active.get()?.takeIf { it.identityKey == context.identityKey }
         val published = existing ?: run {
             val captureSessionId = captureSessionIdFactory().take(128)
@@ -35,8 +36,9 @@ class DefaultDiagnosticsRuntimePublisher(
         if (snapshot != null) deviceSnapshotCache.update(snapshot)
         val logs = logBuffer.snapshot()
         val tokens = runCatching { redactionTokens.tokens() }.getOrDefault(emptyList())
-        CrashCapture.updateSnapshot(
-            CrashRuntimeSnapshot(
+        playbackSessions.commitIfCurrent(playbackScope) { playbackSessionIds ->
+            CrashCapture.updateSnapshot(CrashRuntimeSnapshot(
+                identityKey = context.identityKey,
                 binding = PendingReportBinding(
                     serverInstanceId = context.binding.serverInstanceId,
                     accountUserId = context.binding.accountUserId,
@@ -45,15 +47,15 @@ class DefaultDiagnosticsRuntimePublisher(
                 ),
                 captureSessionId = published.captureSessionId,
                 runToken = published.runToken,
-                playbackSessionIds = playbackSessions.snapshot(),
+                playbackSessionIds = playbackSessionIds,
                 deviceSnapshotJson = deviceSnapshotCache.currentBytes()?.decodeToString(),
                 logLines = logs.lines,
                 logDroppedCount = logs.droppedCount,
                 logTornCount = logs.tornCount,
                 logGeneration = logs.generation,
                 redactionTokens = tokens,
-            ),
-        )
+            ))
+        }
     }
 
     private data class PublishedRuntime(

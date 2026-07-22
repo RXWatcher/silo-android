@@ -69,12 +69,17 @@ internal fun safeDiagnosticsNetworkPath(rawPath: String): String {
     if (segments.size < 3 || segments[0] != "api" || !segments[1].matches(API_VERSION)) {
         return "/other"
     }
+    if ('?' in rawPath || '#' in rawPath) return "/api/${segments[1]}/other"
     val resource = segments[2].lowercase()
-    if (resource !in KNOWN_API_RESOURCES) return "/api/${segments[1]}/other"
-    val safeTail = segments.drop(3).map { segment ->
-        segment.lowercase().takeIf(KNOWN_API_LITERAL_SEGMENTS::contains) ?: "{id}"
-    }
-    return (listOf("", "api", segments[1], resource) + safeTail).joinToString("/")
+    val tail = segments.drop(3)
+    val template = API_ROUTE_TEMPLATES[resource]
+        ?.firstOrNull { candidate ->
+            candidate.size == tail.size && candidate.indices.all { index ->
+                candidate[index] == DYNAMIC_ROUTE_SEGMENT || candidate[index] == tail[index].lowercase()
+            }
+        }
+        ?: return "/api/${segments[1]}/other"
+    return (listOf("", "api", segments[1], resource) + template).joinToString("/")
 }
 
 object DiagnosticsPlaybackLogger {
@@ -160,6 +165,10 @@ object DiagnosticsPlaybackLogger {
             put("rebuffer_count", SiloLogAttribute.Integer(snapshot.rebufferCount.coerceAtLeast(0).toLong()))
             put("rebuffer_total_ms", SiloLogAttribute.Integer(snapshot.rebufferTotalMs.coerceAtLeast(0)))
             put("rebuffer_max_ms", SiloLogAttribute.Integer(snapshot.rebufferMaxMs.coerceAtLeast(0)))
+            put("seek_count", SiloLogAttribute.Integer(snapshot.seekCount.coerceAtLeast(0).toLong()))
+            snapshot.lastSeekDurationMs?.let { put("seek_last_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+            put("seek_total_ms", SiloLogAttribute.Integer(snapshot.seekTotalMs.coerceAtLeast(0)))
+            put("seek_max_ms", SiloLogAttribute.Integer(snapshot.seekMaxMs.coerceAtLeast(0)))
         },
     )
 
@@ -173,6 +182,10 @@ object DiagnosticsPlaybackLogger {
             put("rebuffer_count", SiloLogAttribute.Integer(snapshot.rebufferCount.coerceAtLeast(0).toLong()))
             put("rebuffer_total_ms", SiloLogAttribute.Integer(snapshot.rebufferTotalMs.coerceAtLeast(0)))
             put("rebuffer_max_ms", SiloLogAttribute.Integer(snapshot.rebufferMaxMs.coerceAtLeast(0)))
+            put("seek_count", SiloLogAttribute.Integer(snapshot.seekCount.coerceAtLeast(0).toLong()))
+            snapshot.lastSeekDurationMs?.let { put("seek_last_ms", SiloLogAttribute.Integer(it.coerceAtLeast(0))) }
+            put("seek_total_ms", SiloLogAttribute.Integer(snapshot.seekTotalMs.coerceAtLeast(0)))
+            put("seek_max_ms", SiloLogAttribute.Integer(snapshot.seekMaxMs.coerceAtLeast(0)))
             put("dropped_frames", SiloLogAttribute.Integer(snapshot.droppedFrames.coerceAtLeast(0).toLong()))
             put("audio_underruns", SiloLogAttribute.Integer(snapshot.audioUnderruns.coerceAtLeast(0).toLong()))
         },
@@ -301,129 +314,74 @@ private val KNOWN_ROUTE_ROOTS = setOf(
     "watch_together",
     "watchlist",
 )
-private val KNOWN_API_RESOURCES = setOf(
-    "admin",
-    "auth",
-    "calendar",
-    "catalog",
-    "collections",
-    "device-login",
-    "diagnostics",
-    "downloads",
-    "ebooks",
-    "events",
-    "favorites",
-    "health",
-    "history",
-    "home",
-    "items",
-    "libraries",
-    "library",
-    "library-playback-prefs",
-    "metadata-ai",
-    "metadata",
-    "notifications",
-    "pairing",
-    "personal",
-    "people",
-    "playback",
-    "profiles",
-    "progress",
-    "push",
-    "ratings",
-    "recommendations",
-    "requests",
-    "sections",
-    "settings",
-    "stream",
-    "subtitles",
-    "sync",
-    "user",
-    "users",
-    "watch",
-    "watched",
-    "watch-together",
-    "watchlist",
-)
-private val KNOWN_API_LITERAL_SEGMENTS = setOf(
-    "ai",
-    "app",
-    "approve",
-    "approve-handoff",
-    "audit",
-    "audiobook-groups",
-    "avatar.png",
-    "cancel",
-    "capability",
-    "collections",
-    "continue_watching",
-    "control",
-    "deny",
-    "detail",
-    "device",
-    "discover",
-    "dismissals",
-    "download",
-    "effective",
-    "episodes",
-    "file",
-    "files",
-    "filters",
-    "groups",
-    "home",
-    "items",
-    "join",
-    "layout",
-    "login",
-    "logout",
-    "logs",
-    "me",
-    "message",
-    "mine",
-    "next_up",
-    "order",
-    "overlay-config",
-    "pause",
-    "policy",
-    "poll",
-    "preferences",
-    "progress",
-    "push",
-    "quota",
-    "read",
-    "read-all",
-    "refresh",
-    "replan",
-    "reports",
-    "rooms",
-    "route-events",
-    "scan",
-    "search",
-    "seasons",
-    "sections",
-    "selection",
-    "series",
-    "sessions",
-    "setup",
-    "signup",
-    "similar",
-    "start",
-    "stats",
-    "status",
-    "stream",
-    "subtitle_appearance",
-    "subtitles",
-    "suggestions",
-    "sync",
-    "taste-profile",
-    "translate",
-    "translate-description",
-    "transcode",
-    "unread-count",
-    "users",
-    "verify-pin",
-    "versions",
-    "vote",
-    "ws",
-    "ws-ticket",
+private const val DYNAMIC_ROUTE_SEGMENT = "{id}"
+private val API_ROUTE_TEMPLATES: Map<String, List<List<String>>> = mapOf(
+    "admin" to listOf(emptyList(), listOf("stats"), listOf("users"), listOf("users", DYNAMIC_ROUTE_SEGMENT),
+        listOf("sessions"), listOf("sessions", DYNAMIC_ROUTE_SEGMENT, DYNAMIC_ROUTE_SEGMENT),
+        listOf("logs", "app"), listOf("logs", "audit")),
+    "auth" to listOf(emptyList(), listOf("login"), listOf("refresh"), listOf("setup"), listOf("signup"),
+        listOf("me"), listOf("logout"), listOf("device"), listOf("device", "capability"),
+        listOf("device", "start"), listOf("device", "poll"), listOf("device", "approve"),
+        listOf("device", "deny"), listOf("device", "approve-handoff")),
+    "calendar" to listOf(emptyList()),
+    "catalog" to listOf(emptyList(), listOf("home"), listOf("filters"), listOf("audiobook-groups"),
+        listOf("items", DYNAMIC_ROUTE_SEGMENT)),
+    "collections" to listOf(emptyList(), listOf(DYNAMIC_ROUTE_SEGMENT),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "items", DYNAMIC_ROUTE_SEGMENT), listOf("groups"),
+        listOf("groups", DYNAMIC_ROUTE_SEGMENT), listOf("groups", "order"), listOf("order")),
+    "diagnostics" to listOf(listOf("status"), listOf("reports")),
+    "downloads" to listOf(emptyList(), listOf("capability"), listOf(DYNAMIC_ROUTE_SEGMENT),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "file")),
+    "ebooks" to listOf(listOf("capability"), listOf(DYNAMIC_ROUTE_SEGMENT),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "files", DYNAMIC_ROUTE_SEGMENT, "read"),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "progress")),
+    "events" to listOf(listOf("ws"), listOf("ws-ticket")),
+    "health" to listOf(emptyList()),
+    "home" to listOf(listOf("layout"), listOf("sections"),
+        listOf("sections", DYNAMIC_ROUTE_SEGMENT, "items"),
+        listOf("dismissals", "continue_watching", DYNAMIC_ROUTE_SEGMENT),
+        listOf("dismissals", "next_up", DYNAMIC_ROUTE_SEGMENT)),
+    "items" to listOf(listOf(DYNAMIC_ROUTE_SEGMENT), listOf(DYNAMIC_ROUTE_SEGMENT, "translate-description")),
+    "libraries" to listOf(emptyList(), listOf("scan"), listOf("scan", "cancel")),
+    "library" to listOf(listOf(DYNAMIC_ROUTE_SEGMENT, "sections"),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "sections", DYNAMIC_ROUTE_SEGMENT, "items"),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "collections")),
+    "notifications" to listOf(emptyList(), listOf("sync"), listOf("unread-count"), listOf("read-all"),
+        listOf("preferences"), listOf("capability"), listOf(DYNAMIC_ROUTE_SEGMENT),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "read"), listOf("push", "devices")),
+    "people" to listOf(listOf(DYNAMIC_ROUTE_SEGMENT)),
+    "playback" to listOf(listOf("start"), listOf("route-events"), listOf("transcode", "start"),
+        listOf(DYNAMIC_ROUTE_SEGMENT), listOf(DYNAMIC_ROUTE_SEGMENT, "progress"),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "replan"),
+        listOf("sessions", DYNAMIC_ROUTE_SEGMENT, "control", "ws")),
+    "profiles" to listOf(emptyList(), listOf(DYNAMIC_ROUTE_SEGMENT),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "verify-pin")),
+    "progress" to listOf(emptyList()),
+    "ratings" to listOf(emptyList(), listOf(DYNAMIC_ROUTE_SEGMENT)),
+    "recommendations" to listOf(listOf("discover"), listOf("taste-profile"),
+        listOf("similar", DYNAMIC_ROUTE_SEGMENT)),
+    "requests" to listOf(emptyList(), listOf("status"), listOf("discover"),
+        listOf("discover", DYNAMIC_ROUTE_SEGMENT), listOf("search"), listOf("mine"),
+        listOf("detail", DYNAMIC_ROUTE_SEGMENT, DYNAMIC_ROUTE_SEGMENT), listOf(DYNAMIC_ROUTE_SEGMENT),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "cancel")),
+    "settings" to listOf(emptyList(), listOf("overlay-config"), listOf("effective"),
+        listOf("subtitle_appearance", "effective"), listOf("device", DYNAMIC_ROUTE_SEGMENT),
+        listOf(DYNAMIC_ROUTE_SEGMENT)),
+    "stream" to listOf(listOf(DYNAMIC_ROUTE_SEGMENT),
+        listOf(DYNAMIC_ROUTE_SEGMENT, "subtitles", DYNAMIC_ROUTE_SEGMENT)),
+    "subtitles" to listOf(listOf("search"), listOf("download"), listOf(DYNAMIC_ROUTE_SEGMENT),
+        listOf("ai", "status"), listOf("ai", "quota"), listOf("ai", "translate"),
+        listOf("ai", "jobs"), listOf("ai", "jobs", DYNAMIC_ROUTE_SEGMENT),
+        listOf("ai", "jobs", DYNAMIC_ROUTE_SEGMENT, "cancel")),
+    "sync" to listOf(listOf("progress")),
+    "user" to listOf(listOf("libraries")),
+    "users" to listOf(listOf(DYNAMIC_ROUTE_SEGMENT), listOf(DYNAMIC_ROUTE_SEGMENT, "avatar.png")),
+    "watched" to listOf(listOf(DYNAMIC_ROUTE_SEGMENT)),
+    "watch-together" to listOf(listOf("rooms"), listOf("join"), listOf("rooms", DYNAMIC_ROUTE_SEGMENT),
+        listOf("rooms", DYNAMIC_ROUTE_SEGMENT, "selection"), listOf("rooms", DYNAMIC_ROUTE_SEGMENT, "policy"),
+        listOf("rooms", DYNAMIC_ROUTE_SEGMENT, "suggestions"),
+        listOf("rooms", DYNAMIC_ROUTE_SEGMENT, "suggestions", DYNAMIC_ROUTE_SEGMENT),
+        listOf("rooms", DYNAMIC_ROUTE_SEGMENT, "suggestions", DYNAMIC_ROUTE_SEGMENT, "vote"),
+        listOf("rooms", DYNAMIC_ROUTE_SEGMENT, "suggestions", "promote"),
+        listOf("rooms", DYNAMIC_ROUTE_SEGMENT, "ws")),
 )

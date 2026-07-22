@@ -30,18 +30,20 @@ class DiagnosticsInstrumentationTest {
         assertFalse(line.contains("private-item-id"))
         assertFalse(line.contains("secret"))
         assertTrue(line.contains("duration_ms"))
-        assertTrue(line.contains("/api/v1/items/{id}"))
+        assertTrue(line.contains("/api/v1/other"))
     }
 
     @Test
     fun networkRoutesPreserveOnlyAllowlistedStaticSegments() {
-        assertEquals("/api/v1/playback/start", safeDiagnosticsNetworkPath("/api/v1/playback/start?token=secret"))
+        assertEquals("/api/v1/other", safeDiagnosticsNetworkPath("/api/v1/playback/start?token=secret"))
         assertEquals("/api/v1/playback/route-events", safeDiagnosticsNetworkPath("/api/v1/playback/route-events"))
         assertEquals("/api/v1/playback/{id}/progress", safeDiagnosticsNetworkPath("/api/v1/playback/private-session/progress"))
         assertEquals(
-            "/api/v1/playback/sessions/{id}/control/ws",
+            "/api/v1/other",
             safeDiagnosticsNetworkPath("/api/v1/playback/sessions/private-session/control/ws#fragment"),
         )
+        assertEquals("/api/v1/items/{id}", safeDiagnosticsNetworkPath("/api/v1/items/status"))
+        assertEquals("/api/v1/other", safeDiagnosticsNetworkPath("/api/v1/playback/start/status"))
         assertEquals("/api/v1/other", safeDiagnosticsNetworkPath("/api/v1/private/private-id"))
         assertEquals("/other", safeDiagnosticsNetworkPath("/not-api/private-id"))
     }

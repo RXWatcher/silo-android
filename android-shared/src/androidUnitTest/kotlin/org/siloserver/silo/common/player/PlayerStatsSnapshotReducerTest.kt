@@ -220,4 +220,40 @@ class PlayerStatsSnapshotReducerTest {
         assertEquals(300L, snapshot.rebufferTotalMs)
         assertEquals(300L, snapshot.rebufferMaxMs)
     }
+
+    @Test
+    fun `seek timing closes on the next observable ready state`() {
+        var snapshot = reducePlayerStats(
+            PlayerStatsSnapshot(firstFrameMs = 400),
+            PlaybackAnalyticsListener.Event.SeekStarted(realtimeMs = 2_000),
+        )
+
+        snapshot = reducePlayerStats(
+            snapshot,
+            PlaybackAnalyticsListener.Event.PlaybackStateChanged(
+                state = Player.STATE_READY,
+                realtimeMs = 2_275,
+                totalBufferedDurationMs = 5_000,
+                playWhenReady = true,
+            ),
+        )
+
+        assertEquals(1, snapshot.seekCount)
+        assertEquals(275L, snapshot.lastSeekDurationMs)
+        assertEquals(275L, snapshot.seekTotalMs)
+        assertEquals(275L, snapshot.seekMaxMs)
+    }
+
+    @Test
+    fun `terminal state always clears prior session stats but only logs while detailed`() {
+        val previous = PlayerStatsSnapshot(droppedFrames = 9, firstFrameMs = 400)
+
+        val outsideCapture = finishPlayerStats(previous, detailedCapture = false)
+        val duringCapture = finishPlayerStats(previous, detailedCapture = true)
+
+        assertEquals(PlayerStatsSnapshot(), outsideCapture.next)
+        assertEquals(null, outsideCapture.finalSnapshot)
+        assertEquals(PlayerStatsSnapshot(), duringCapture.next)
+        assertEquals(previous, duringCapture.finalSnapshot)
+    }
 }

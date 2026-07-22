@@ -15,13 +15,15 @@ class DiagnosticsPlaybackSessionTrackerTest {
     @Test
     fun trackerDeduplicatesBoundsAndKeepsNewestSessions() {
         val tracker = DiagnosticsPlaybackSessionTracker(maxSessions = 3, maxIdChars = 8)
+        tracker.open(identityKey("profile-1", 1))
+        val recording = tracker.recording()
 
-        tracker.record("one-long-session")
-        tracker.record("two-long-session")
-        tracker.record("three-long-session")
-        tracker.record("two-long-session")
-        tracker.record("four-long-session")
-        tracker.record(" ")
+        recording.record("one-long-session")
+        recording.record("two-long-session")
+        recording.record("three-long-session")
+        recording.record("two-long-session")
+        recording.record("four-long-session")
+        recording.record(" ")
 
         assertEquals(listOf("three-lo", "two-long", "four-lon"), tracker.snapshot())
         assertTrue(tracker.snapshot().all { it.length <= 8 })
@@ -30,16 +32,31 @@ class DiagnosticsPlaybackSessionTrackerTest {
     @Test
     fun clearDropsAllCorrelationState() {
         val tracker = DiagnosticsPlaybackSessionTracker()
-        tracker.record("session-1")
+        tracker.open(identityKey("profile-1", 1))
+        tracker.recording().record("session-1")
 
-        tracker.clear()
+        tracker.close()
 
         assertEquals(emptyList(), tracker.snapshot())
     }
 
     @Test
+    fun staleRecordingCannotCrossAClosedAndReopenedIdentityGate() {
+        val tracker = DiagnosticsPlaybackSessionTracker()
+        tracker.open(identityKey("profile-1", 1))
+        val stale = tracker.recording()
+
+        tracker.close()
+        tracker.open(identityKey("profile-2", 2))
+        stale.record("old-profile-session")
+        tracker.recording().record("new-profile-session")
+
+        assertEquals(listOf("new-profile-session"), tracker.snapshot())
+    }
+
+    @Test
     fun runtimePublisherIncludesSessionsAndPrivacyGateClearsThem() = runTest {
-        val tracker = DiagnosticsPlaybackSessionTracker().apply { record("session-1") }
+        val tracker = DiagnosticsPlaybackSessionTracker()
         val publisher = DefaultDiagnosticsRuntimePublisher(
             ledger = DiagnosticsRunLedger(temporaryFolder.newFolder()),
             logBuffer = LogRing(),
@@ -59,6 +76,7 @@ class DiagnosticsPlaybackSessionTrackerTest {
         )
 
         publisher.publish(context)
+        tracker.recording().record("session-1")
 
         assertEquals(listOf("session-1"), CrashCapture.currentSnapshotForTests().playbackSessionIds)
 
@@ -67,6 +85,12 @@ class DiagnosticsPlaybackSessionTrackerTest {
         assertEquals(emptyList(), tracker.snapshot())
         assertEquals(emptyList(), CrashCapture.currentSnapshotForTests().playbackSessionIds)
     }
+
+    private fun identityKey(profileId: String, generation: Long) = DiagnosticsIdentityKey(
+        binding = DiagnosticsBinding("server-1", "user-1"),
+        profileId = profileId,
+        ownershipGeneration = generation,
+    )
 
     private object EmptyProbe : DiagnosticsDeviceProbe {
         override fun identity() = DiagnosticsIdentitySnapshot(

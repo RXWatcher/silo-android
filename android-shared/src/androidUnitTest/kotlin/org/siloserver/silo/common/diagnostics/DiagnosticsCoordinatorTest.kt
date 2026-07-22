@@ -108,7 +108,10 @@ class DiagnosticsCoordinatorTest {
     fun oneShotCaptureBuildsAProfileBoundManualReportFromTheCurrentRing() = runTest {
         val files = temporaryFolder.newFolder()
         val ring = LogRing()
-        val playbackSessions = DiagnosticsPlaybackSessionTracker().apply { record("playback-session-1") }
+        val playbackSessions = DiagnosticsPlaybackSessionTracker().apply {
+            open(ADULT_A.identityKey)
+            record("playback-session-1")
+        }
         ring.offer("{\"cat\":\"playback\",\"msg\":\"safe\"}")
         ring.offer("{\"cat\":\"network\",\"msg\":\"safe\"}")
         val store = FilePendingReportStore(files, nowMs = { 20L })
@@ -147,7 +150,7 @@ class DiagnosticsCoordinatorTest {
         assertEquals(listOf("playback-session-1"), report.manifest.playbackSessionIds)
 
         controller.closeGate()
-        assertEquals(emptyList(), playbackSessions.snapshot())
+        assertEquals(listOf("playback-session-1"), playbackSessions.snapshot())
     }
 
     private fun fixture(

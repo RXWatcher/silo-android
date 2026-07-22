@@ -55,6 +55,7 @@ class PlaybackAnalyticsListener : AnalyticsListener {
             val playWhenReady: Boolean,
         ) : Event()
         data class FirstFrameRendered(val realtimeMs: Long) : Event()
+        data class SeekStarted(val realtimeMs: Long) : Event()
     }
 
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 32)
@@ -73,10 +74,20 @@ class PlaybackAnalyticsListener : AnalyticsListener {
 
     override fun onPlaybackStateChanged(eventTime: AnalyticsListener.EventTime, state: Int) {
         emit(Event.PlaybackStateChanged(state, eventTime.realtimeMs, eventTime.totalBufferedDurationMs, playWhenReady))
-        if ((state == Player.STATE_ENDED || state == Player.STATE_IDLE) && DiagnosticsCaptureDetailState.isEnabled()) {
-            if (diagnosticsStats.hasPerformanceEvidence()) DiagnosticsPlaybackLogger.finalStats(diagnosticsStats)
-            diagnosticsStats = PlayerStatsSnapshot()
+        if (state == Player.STATE_ENDED || state == Player.STATE_IDLE) {
+            val finished = finishPlayerStats(diagnosticsStats, DiagnosticsCaptureDetailState.isEnabled())
+            finished.finalSnapshot?.let(DiagnosticsPlaybackLogger::finalStats)
+            diagnosticsStats = finished.next
         }
+    }
+
+    override fun onPositionDiscontinuity(
+        eventTime: AnalyticsListener.EventTime,
+        oldPosition: Player.PositionInfo,
+        newPosition: Player.PositionInfo,
+        reason: Int,
+    ) {
+        if (reason == Player.DISCONTINUITY_REASON_SEEK) emit(Event.SeekStarted(eventTime.realtimeMs))
     }
 
     override fun onRenderedFirstFrame(

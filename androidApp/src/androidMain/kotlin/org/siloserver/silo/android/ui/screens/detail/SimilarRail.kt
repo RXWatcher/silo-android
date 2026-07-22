@@ -14,15 +14,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import kotlinx.coroutines.delay
 import org.siloserver.silo.android.ui.components.MediaCard
 import org.siloserver.silo.model.catalog.ItemDetail
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.CatalogRepository
 import org.siloserver.silo.repository.RecommendationRepository
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import org.koin.compose.koinInject
+import org.siloserver.silo.util.mapConcurrentBounded
 
 /**
  * "More Like This" section — header plus a horizontal poster rail —
@@ -46,10 +46,19 @@ fun SimilarRail(
     catalogRepository: CatalogRepository = koinInject(),
 ) {
     var items by remember(contentId) { mutableStateOf<List<ItemDetail>>(emptyList()) }
+    var routeActive by remember(contentId) { mutableStateOf(false) }
 
-    LaunchedEffect(contentId) {
+    LifecycleResumeEffect(contentId) {
+        routeActive = true
+        onPauseOrDispose { routeActive = false }
+    }
+
+    LaunchedEffect(contentId, routeActive) {
         items = emptyList()
-        items = loadSimilar(contentId, recommendationRepository, catalogRepository)
+        if (!routeActive) return@LaunchedEffect
+        delay(300)
+        val loaded = loadSimilar(contentId, recommendationRepository, catalogRepository)
+        if (routeActive) items = loaded
     }
 
     if (items.isNotEmpty()) {
@@ -74,21 +83,11 @@ private suspend fun loadSimilar(
     }
     if (scored.isEmpty()) return emptyList()
 
-    // Resolve detail pages in parallel — preserve engine ranking by
-    // dropping null results (failed lookups) without reordering.
-    return coroutineScope {
-        scored
-            .map { ref ->
-                async {
-                    when (val r = catalogRepository.getItemDetail(ref.mediaItemId)) {
-                        is ApiResult.Success -> r.data
-                        else -> null
-                    }
-                }
-            }
-            .awaitAll()
-            .filterNotNull()
-    }
+    // Resolve detail pages with bounded concurrency, preserving engine ranking
+    // while dropping failed lookups without blocking primary detail content.
+    return scored.mapConcurrentBounded(maxConcurrency = 3) { ref ->
+        (catalogRepository.getItemDetail(ref.mediaItemId) as? ApiResult.Success)?.data
+    }.filterNotNull()
 }
 
 @Composable
@@ -122,4 +121,3 @@ private fun SimilarRailContent(
         }
     }
 }
-

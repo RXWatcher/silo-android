@@ -2,6 +2,7 @@ package org.siloserver.silo.common.player
 
 import android.util.Log
 import org.siloserver.silo.common.diagnostics.DiagnosticsPlaybackLogger
+import org.siloserver.silo.common.diagnostics.DiagnosticsPlaybackSessionRecorder
 import org.siloserver.silo.model.personal.SyncProgressItem
 import org.siloserver.silo.model.playback.ClientCodecCapabilities
 import org.siloserver.silo.model.playback.ClientPlaybackContext
@@ -50,6 +51,7 @@ class PlaybackSessionLifecycle(
     private val healthApi: HealthApi,
     private val personalDataRepository: PersonalDataRepository,
     private val scope: CoroutineScope,
+    private val playbackSessions: DiagnosticsPlaybackSessionRecorder = DiagnosticsPlaybackSessionRecorder.None,
 ) {
 
     private val _state = MutableStateFlow<SessionState>(SessionState.Idle)
@@ -123,6 +125,7 @@ class PlaybackSessionLifecycle(
             flushProgressOnStop = manageProgress
             stopActiveSessionOnStop = stopSessionOnStop
             this.renewMissingSessionWithLegacyStart = renewMissingSessionWithLegacyStart
+            playbackSessions.record(session.sessionId)
             _state.value = SessionState.Active(session)
             if (manageProgress) {
                 startProgressReporter()
@@ -176,6 +179,7 @@ class PlaybackSessionLifecycle(
         return when (result) {
             is ApiResult.Success -> {
                 DiagnosticsPlaybackLogger.sessionEvent("session active")
+                playbackSessions.record(result.data.sessionId)
                 val active = SessionState.Active(result.data)
                 _state.value = active
                 lastReportedPosition = params.startPosition ?: result.data.position
@@ -365,6 +369,7 @@ class PlaybackSessionLifecycle(
                     // an HTML 200 page, while the Silo origin is down.
                     Log.i(TAG, "Health probe succeeded; resuming playback session")
                     DiagnosticsPlaybackLogger.sessionEvent("session reconnected")
+                    playbackSessions.record(currentSession.sessionId)
                     _state.value = SessionState.Active(currentSession)
                     _notice.value = null
                     return@launch

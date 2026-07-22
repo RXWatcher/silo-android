@@ -28,6 +28,7 @@ class FileDiagnosticsCaptureController(
     private val deviceSnapshots: DeviceSnapshotCollector,
     private val deviceSnapshotCache: DeviceSnapshotCache,
     private val environment: ExitReportEnvironment,
+    private val playbackSessions: DiagnosticsPlaybackSessionTracker = DiagnosticsPlaybackSessionTracker(),
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val sessionIdFactory: () -> String = { UUID.randomUUID().toString() },
 ) : DiagnosticsCaptureController {
@@ -35,6 +36,7 @@ class FileDiagnosticsCaptureController(
     private val active = AtomicReference<OwnedCapture?>(null)
 
     override fun closeGate() {
+        playbackSessions.clear()
         DiagnosticsCaptureDetailState.setEnabled(false)
         SiloLog.installSink(logBuffer)
         logBuffer.rotateGeneration()
@@ -180,7 +182,7 @@ class FileDiagnosticsCaptureController(
             destination = DiagnosticsDestination(context.binding.serverInstanceId),
             consent = DiagnosticsConsent(DiagnosticsConsentMode.MANUAL, context.noticeVersion),
             deviceSummary = environment.deviceSummary,
-            playbackSessionIds = emptyList(),
+            playbackSessionIds = playbackSessions.snapshot(),
             logSummary = DiagnosticsLogSummaryBuilder.build(logBytes, droppedLines, debugLogging),
             archive = DiagnosticsArchive(
                 entries = CANONICAL_ORDER.filter { it == MANIFEST_FILE || it in artifacts },

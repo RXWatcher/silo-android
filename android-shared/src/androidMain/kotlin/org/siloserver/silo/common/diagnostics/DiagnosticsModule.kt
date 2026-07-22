@@ -29,6 +29,7 @@ val diagnosticsModule = module {
     }
     single<PendingReportStore> { FilePendingReportStore(androidContext().noBackupFilesDir) }
     single<DiagnosticsLogBuffer> { LogRing() }
+    single { DiagnosticsPlaybackSessionTracker() }
     single { DiagnosticsFileLogger(androidContext().noBackupFilesDir) }
 
     single<DiagnosticsSavedServerProvider> { RegistryDiagnosticsSavedServerProvider(get()) }
@@ -85,6 +86,7 @@ val diagnosticsModule = module {
             deviceSnapshots = get(),
             deviceSnapshotCache = get(),
             environment = get(),
+            playbackSessions = get(),
         )
     }
     single<DiagnosticsRuntimePublisher> {
@@ -94,6 +96,7 @@ val diagnosticsModule = module {
             deviceSnapshots = get(),
             deviceSnapshotCache = get(),
             redactionTokens = get(),
+            playbackSessions = get(),
         )
     }
     single<DiagnosticsIncidentCollector> {

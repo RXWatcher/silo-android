@@ -9,12 +9,14 @@ class DefaultDiagnosticsRuntimePublisher(
     private val deviceSnapshots: DeviceSnapshotCollector,
     private val deviceSnapshotCache: DeviceSnapshotCache,
     private val redactionTokens: DiagnosticsRedactionTokenProvider,
+    private val playbackSessions: DiagnosticsPlaybackSessionTracker = DiagnosticsPlaybackSessionTracker(),
     private val processStartedAtEpochMs: Long = System.currentTimeMillis(),
     private val captureSessionIdFactory: () -> String = { UUID.randomUUID().toString() },
 ) : DiagnosticsRuntimePublisher {
     private val active = AtomicReference<PublishedRuntime?>(null)
 
     override fun closeGate() {
+        playbackSessions.clear()
         active.set(null)
         CrashCapture.updateSnapshot(CrashRuntimeSnapshot.empty())
     }
@@ -43,6 +45,7 @@ class DefaultDiagnosticsRuntimePublisher(
                 ),
                 captureSessionId = published.captureSessionId,
                 runToken = published.runToken,
+                playbackSessionIds = playbackSessions.snapshot(),
                 deviceSnapshotJson = deviceSnapshotCache.currentBytes()?.decodeToString(),
                 logLines = logs.lines,
                 logDroppedCount = logs.droppedCount,

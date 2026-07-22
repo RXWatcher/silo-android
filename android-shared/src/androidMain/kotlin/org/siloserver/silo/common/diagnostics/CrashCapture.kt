@@ -282,6 +282,8 @@ object CrashCapture {
             ),
         )
     }
+
+    internal fun currentSnapshotForTests(): CrashRuntimeSnapshot = runtime.get()
 }
 
 private fun PendingReportBinding.bounded(): PendingReportBinding = copy(

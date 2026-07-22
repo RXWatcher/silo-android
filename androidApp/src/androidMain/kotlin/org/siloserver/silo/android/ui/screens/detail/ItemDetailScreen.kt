@@ -31,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import org.siloserver.silo.android.downloads.LEGACY_PUBLIC_DOWNLOAD_PERMISSION
 import org.siloserver.silo.android.downloads.hasLegacyPublicDownloadPermission
 import org.siloserver.silo.android.ui.components.DetailLoadingSkeleton
@@ -91,22 +92,11 @@ fun ItemDetailScreen(
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
-    // Refresh on return (e.g. backing out of the player): the ViewModel loads
-    // once in init, so without this the Play button keeps the resume label
-    // computed before playback. Fires on every ON_RESUME; no first-entry
-    // guard — the composable is recreated on back-stack pop, so any
-    // effect-local "skip the first" flag would reset and swallow exactly the
-    // resume we care about. refreshOnReturn() no-ops while detail is still
-    // null, which covers the initial load.
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshOnReturn()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    // Refresh progress and resume secondary series enrichment while this route
+    // is visible; pause the all-season crawl before the player covers detail.
+    LifecycleResumeEffect(viewModel) {
+        viewModel.onRouteResumed()
+        onPauseOrDispose { viewModel.onRoutePaused() }
     }
 
     // iOS parity haptic: success/error sensory feedback when a download

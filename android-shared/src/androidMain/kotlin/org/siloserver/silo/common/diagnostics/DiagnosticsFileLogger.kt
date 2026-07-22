@@ -116,6 +116,11 @@ class DiagnosticsFileLogger(
         capture.directory.deleteRecursively()
     }
 
+    suspend fun purgeStoredEvidence() {
+        active.get()?.let { capture -> runCatching { cancel(capture.generation) } }
+        if (root.exists()) check(root.deleteRecursively()) { "unable to purge diagnostics logs" }
+    }
+
     private fun detach(expectedGeneration: Long): ActiveCapture {
         val capture = active.get() ?: error("diagnostics file capture is not active")
         require(capture.generation == expectedGeneration) {

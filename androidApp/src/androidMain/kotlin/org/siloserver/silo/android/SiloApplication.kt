@@ -18,6 +18,7 @@ import org.siloserver.silo.android.push.AndroidPushRegistrationStarter
 import org.siloserver.silo.common.di.playerInfraModule
 import org.siloserver.silo.common.di.playerModule
 import org.siloserver.silo.common.diagnostics.CrashCapture
+import org.siloserver.silo.common.diagnostics.DiagnosticsCoordinator
 import org.siloserver.silo.common.diagnostics.diagnosticsModule
 import org.siloserver.silo.common.downloads.DownloadWorker
 import org.siloserver.silo.di.sharedModules
@@ -43,6 +44,8 @@ class SiloApplication : Application(), Configuration.Provider, SingletonImageLoa
             androidContext(this@SiloApplication)
             modules(sharedModules() + playerModule + playerInfraModule + androidModule + diagnosticsModule)
         }
+        runCatching { koinApp.koin.get<DiagnosticsCoordinator>().start() }
+            .onFailure { android.util.Log.w("SiloApplication", "Diagnostics coordinator init failed", it) }
         // Drive notifications realtime off the app foreground lifecycle. Guarded:
         // it's a foreground accelerator, never load-bearing for cold start.
         runCatching {

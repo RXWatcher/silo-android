@@ -16,6 +16,8 @@ sealed interface DiagnosticsUploadDecision {
 
 fun interface DiagnosticsUploader {
     suspend fun upload(reportId: String): DiagnosticsUploadDecision
+
+    suspend fun uploadAutomatically(reportId: String): DiagnosticsUploadDecision = upload(reportId)
 }
 
 fun interface DiagnosticsRedactionTokenProvider {
@@ -26,6 +28,10 @@ fun interface DiagnosticsSentRecorder {
     suspend fun record(binding: DiagnosticsBinding, shortId: String, sentAtEpochMs: Long)
 }
 
+fun interface DiagnosticsUploadConsentProvider {
+    suspend fun consent(binding: DiagnosticsBinding, noticeVersion: Int): DiagnosticsConsentMode
+}
+
 class DefaultDiagnosticsUploader(
     private val reports: PendingReportStore,
     private val identity: DiagnosticsIdentityResolver,
@@ -33,10 +39,23 @@ class DefaultDiagnosticsUploader(
     private val api: DiagnosticsApi,
     private val redactionTokens: DiagnosticsRedactionTokenProvider,
     private val sentRecorder: DiagnosticsSentRecorder,
+    private val consentProvider: DiagnosticsUploadConsentProvider = DiagnosticsUploadConsentProvider {
+            _, _ -> DiagnosticsConsentMode.ASK
+    },
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) : DiagnosticsUploader {
-    override suspend fun upload(reportId: String): DiagnosticsUploadDecision {
+    override suspend fun upload(reportId: String): DiagnosticsUploadDecision =
+        upload(reportId, requireAlwaysConsent = false)
+
+    override suspend fun uploadAutomatically(reportId: String): DiagnosticsUploadDecision =
+        upload(reportId, requireAlwaysConsent = true)
+
+    private suspend fun upload(
+        reportId: String,
+        requireAlwaysConsent: Boolean,
+    ): DiagnosticsUploadDecision {
         val report = reports.load(reportId) ?: return DiagnosticsUploadDecision.KeptInvalid
+        if (!consentAllows(report, requireAlwaysConsent)) return DiagnosticsUploadDecision.KeptUnavailable
         val before = identity.resolve(requirePersistentCapture = true)
             ?: return DiagnosticsUploadDecision.KeptUnavailable
         if (!report.canUploadUnder(before)) return DiagnosticsUploadDecision.KeptIdentityChanged
@@ -81,6 +100,7 @@ class DefaultDiagnosticsUploader(
             markPermanent(report.id, "stale_consent")
             return DiagnosticsUploadDecision.KeptInvalid
         }
+        if (!consentAllows(report, requireAlwaysConsent)) return DiagnosticsUploadDecision.KeptUnavailable
         if (
             bundle.bytes.size.toLong() > after.maxBundleBytes ||
             bundle.manifestBytes.size.toLong() > after.maxManifestBytes
@@ -142,6 +162,13 @@ class DefaultDiagnosticsUploader(
 
     private fun markPermanent(reportId: String, code: String) {
         runCatching { reports.markState(reportId, PendingReportStatus.PERMANENT_FAILURE, code) }
+    }
+
+    private suspend fun consentAllows(report: PendingReport, requireAlways: Boolean): Boolean {
+        val mode = runCatching {
+            consentProvider.consent(report.binding.binding, report.manifest.consent.noticeVersion)
+        }.getOrNull() ?: return false
+        return mode != DiagnosticsConsentMode.NEVER && (!requireAlways || mode == DiagnosticsConsentMode.ALWAYS)
     }
 }
 

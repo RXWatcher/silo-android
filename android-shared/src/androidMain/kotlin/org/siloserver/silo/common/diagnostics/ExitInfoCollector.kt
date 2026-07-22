@@ -110,6 +110,9 @@ class AndroidProcessStateSummaryPublisher(context: Context) : ProcessStateSummar
 interface JvmCrashMarkerSource {
     fun records(): List<JvmCrashMarkerRecord>
     fun delete(marker: JvmCrashMarkerRecord)
+    fun purge(binding: DiagnosticsBinding) {
+        records().filter { marker -> marker.binding?.binding == binding }.forEach(::delete)
+    }
 }
 
 class FileJvmCrashMarkerSource(noBackupFilesDir: File) : JvmCrashMarkerSource {

@@ -18,7 +18,7 @@ class DiagnosticsUploadWorker(
     override suspend fun doWork(): Result {
         val reportId = inputData.getString(KEY_REPORT_ID)?.takeIf(String::isNotBlank)
             ?: return Result.failure()
-        return when (uploader.upload(reportId)) {
+        return when (uploader.uploadAutomatically(reportId)) {
             DiagnosticsUploadDecision.KeptRetryable -> Result.retry()
             is DiagnosticsUploadDecision.Uploaded,
             DiagnosticsUploadDecision.KeptIdentityChanged,

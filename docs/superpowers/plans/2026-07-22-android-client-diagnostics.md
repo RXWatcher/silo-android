@@ -1006,7 +1006,7 @@ git commit -m "feat(diagnostics): upload reports safely"
 - StateFlow exposes availability, consent, pending reports, prompt, timed capture, and sent history.
 - Commands cover refresh, consent, one-shot, start/stop/cancel, upload, delete, and decline.
 
-- [ ] **Step 1: Write failing ownership and purge tests**
+- [x] **Step 1: Write failing ownership and purge tests**
 
 ~~~kotlin
 @Test
@@ -1027,13 +1027,13 @@ fun neverPurgesAllBindingEvidence() = runTest {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsCoordinatorTest'
 ~~~
 
-- [ ] **Step 3: Implement one serialized owner**
+- [x] **Step 3: Implement one serialized owner**
 
 ~~~kotlin
 data class DiagnosticsUiState(
@@ -1057,13 +1057,13 @@ interface DiagnosticsCoordinator {
 
 Implement DefaultDiagnosticsCoordinator with one Channel-backed actor. That actor owns identity transitions, persistent logging, prompt suppression, one-fingerprint-per-day throttling, timed-capture generations, and UI state. Crash runtime state remains an atomic read-only mirror. A WILL_CHANGE event closes the capture gate before the corresponding identity mutation can proceed; DID_CHANGE triggers fail-closed re-resolution before capture can reopen.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsCoordinatorTest'
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared

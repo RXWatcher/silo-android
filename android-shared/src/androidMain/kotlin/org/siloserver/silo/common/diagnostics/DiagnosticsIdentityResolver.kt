@@ -80,6 +80,7 @@ data class DiagnosticsCaptureContext(
     val acceptedSchemaVersions: Set<Int> = setOf(1),
     val maxBundleBytes: Long = Long.MAX_VALUE,
     val maxManifestBytes: Long = Long.MAX_VALUE,
+    val retentionDays: Int = 7,
 ) {
     val identityKey: DiagnosticsIdentityKey = DiagnosticsIdentityKey(
         binding = binding,
@@ -170,6 +171,7 @@ class DefaultDiagnosticsIdentityResolver(
                 acceptedSchemaVersions = status.acceptedSchemaVersions.toSet(),
                 maxBundleBytes = status.maxBundleBytes,
                 maxManifestBytes = status.maxManifestBytes,
+                retentionDays = status.retentionDays,
             )
             if (profileEligible) positiveCache.set(context)
             return context

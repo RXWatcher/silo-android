@@ -11,6 +11,7 @@ import coil3.request.crossfade
 import org.siloserver.silo.common.di.playerInfraModule
 import org.siloserver.silo.common.di.playerModule
 import org.siloserver.silo.common.diagnostics.CrashCapture
+import org.siloserver.silo.common.diagnostics.DiagnosticsCoordinator
 import org.siloserver.silo.common.diagnostics.diagnosticsModule
 import org.siloserver.silo.di.sharedModules
 import org.siloserver.silo.tv.di.androidTvModule
@@ -38,6 +39,8 @@ class SiloTvApplication : Application(), Configuration.Provider, SingletonImageL
             androidContext(this@SiloTvApplication)
             modules(sharedModules() + playerModule + playerInfraModule + androidTvModule + diagnosticsModule)
         }
+        runCatching { koinApp.koin.get<DiagnosticsCoordinator>().start() }
+            .onFailure { android.util.Log.w("SiloTvApplication", "Diagnostics coordinator init failed", it) }
         // Live-home socket (Apple realtime-updates spec). Guarded — a dead
         // socket just means Home refreshes on open only.
         runCatching {

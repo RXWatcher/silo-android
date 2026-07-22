@@ -6,7 +6,7 @@ import org.junit.rules.TemporaryFolder
 import org.siloserver.silo.model.diagnostics.DiagnosticsArchive
 import org.siloserver.silo.model.diagnostics.DiagnosticsAvailabilityStatus
 import org.siloserver.silo.model.diagnostics.DiagnosticsConsent
-import org.siloserver.silo.model.diagnostics.DiagnosticsConsentMode
+import org.siloserver.silo.model.diagnostics.DiagnosticsConsentMode as ManifestConsentMode
 import org.siloserver.silo.model.diagnostics.DiagnosticsDestination
 import org.siloserver.silo.model.diagnostics.DiagnosticsDeviceSummary
 import org.siloserver.silo.model.diagnostics.DiagnosticsLogCategory
@@ -55,6 +55,18 @@ class DiagnosticsUploaderTest {
         val report = assertNotNull(fixture.store.load(fixture.report.id))
         assertEquals(PendingReportStatus.PERMANENT_FAILURE, report.state.status)
         assertEquals("stale_consent", report.state.errorCode)
+    }
+
+    @Test
+    fun automaticUploadStopsWhenAlwaysConsentIsDemotedDuringBuild() = runTest {
+        val fixture = fixture()
+        fixture.builder.onBuild = { fixture.consent.mode = DiagnosticsConsentMode.ASK }
+
+        val decision = fixture.uploader.uploadAutomatically(fixture.report.id)
+
+        assertEquals(DiagnosticsUploadDecision.KeptUnavailable, decision)
+        assertEquals(0, fixture.api.uploadCalls)
+        assertNotNull(fixture.store.load(fixture.report.id))
     }
 
     @Test
@@ -154,6 +166,7 @@ class DiagnosticsUploaderTest {
         val builder = FakeBundleBuilder()
         val api = FakeDiagnosticsApi()
         val sent = FakeSentRecorder()
+        val consent = FakeConsentProvider()
         val uploader = DefaultDiagnosticsUploader(
             reports = store,
             identity = identity,
@@ -161,9 +174,10 @@ class DiagnosticsUploaderTest {
             api = api,
             redactionTokens = DiagnosticsRedactionTokenProvider { listOf("secret-token") },
             sentRecorder = sent,
+            consentProvider = consent,
             nowMs = { CAPTURED_AT + 1_000 },
         )
-        return Fixture(store, report, identity, builder, api, sent, uploader)
+        return Fixture(store, report, identity, builder, api, sent, consent, uploader)
     }
 
     private fun context(maxBundleBytes: Long) = DiagnosticsCaptureContext(
@@ -191,7 +205,7 @@ class DiagnosticsUploaderTest {
             profileId = "profile-1",
         ),
         destination = DiagnosticsDestination("server-1"),
-        consent = DiagnosticsConsent(DiagnosticsConsentMode.MANUAL, 2),
+        consent = DiagnosticsConsent(ManifestConsentMode.MANUAL, 2),
         deviceSummary = DiagnosticsDeviceSummary("NVIDIA", "Shield", "Android 36", "tv"),
         playbackSessionIds = emptyList(),
         logSummary = DiagnosticsLogSummary(0, 0, 0, listOf(DiagnosticsLogCategory.OTHER), false),
@@ -234,6 +248,12 @@ class DiagnosticsUploaderTest {
         }
     }
 
+    private class FakeConsentProvider(
+        var mode: DiagnosticsConsentMode = DiagnosticsConsentMode.ALWAYS,
+    ) : DiagnosticsUploadConsentProvider {
+        override suspend fun consent(binding: DiagnosticsBinding, noticeVersion: Int): DiagnosticsConsentMode = mode
+    }
+
     private data class Fixture(
         val store: FilePendingReportStore,
         val report: PendingReport,
@@ -241,6 +261,7 @@ class DiagnosticsUploaderTest {
         val builder: FakeBundleBuilder,
         val api: FakeDiagnosticsApi,
         val sent: FakeSentRecorder,
+        val consent: FakeConsentProvider,
         val uploader: DefaultDiagnosticsUploader,
     )
 

@@ -87,6 +87,24 @@ class DiagnosticsIdentityResolverTest {
     }
 
     @Test
+    fun refreshObservesDiagnosticsAvailabilityChangesForTheSameIdentity() = runTest {
+        var availability = DiagnosticsAvailabilityStatus.DISABLED
+        var statusCalls = 0
+        val fixture = fixture(profileId = "adult", child = false) {
+            statusCalls += 1
+            status().copy(status = availability)
+        }
+
+        val disabled = fixture.resolver.resolve(requirePersistentCapture = true)
+        availability = DiagnosticsAvailabilityStatus.AVAILABLE
+        val available = fixture.resolver.resolve(requirePersistentCapture = true)
+
+        assertEquals(DiagnosticsAvailabilityStatus.DISABLED, disabled?.status)
+        assertEquals(DiagnosticsAvailabilityStatus.AVAILABLE, available?.status)
+        assertEquals(2, statusCalls)
+    }
+
+    @Test
     fun missingCredentialStatusOrAccountFailsClosed() = runTest {
         val noCredential = fixture(profileId = "adult", child = false, saveCredential = false)
         val noStatus = fixture(profileId = "adult", child = false, statusProvider = { null })

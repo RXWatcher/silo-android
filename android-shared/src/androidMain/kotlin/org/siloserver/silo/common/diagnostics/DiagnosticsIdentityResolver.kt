@@ -1,6 +1,5 @@
 package org.siloserver.silo.common.diagnostics
 
-import java.util.concurrent.atomic.AtomicReference
 import org.siloserver.silo.model.diagnostics.DiagnosticsAvailabilityStatus
 import org.siloserver.silo.model.diagnostics.DiagnosticsStatusResponse
 import org.siloserver.silo.network.IdentityTransitionBarrier
@@ -102,8 +101,6 @@ class DefaultDiagnosticsIdentityResolver(
     private val profileProvider: DiagnosticsProfileProvider,
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
 ) : DiagnosticsIdentityResolver {
-    private val positiveCache = AtomicReference<DiagnosticsCaptureContext?>()
-
     init {
         require(maxAttempts > 0) { "maxAttempts must be positive" }
     }
@@ -113,10 +110,6 @@ class DefaultDiagnosticsIdentityResolver(
 
         for (attempt in 0 until maxAttempts) {
             val generation = identityTransitions.generation.value
-            positiveCache.get()?.takeIf {
-                it.ownershipGeneration == generation && it.profileEligible
-            }?.let { return it }
-
             val server = savedServerProvider.activeServer()
                 ?.takeIf { it.id.isNotBlank() && it.url.isNotBlank() }
             if (server == null) {
@@ -173,7 +166,6 @@ class DefaultDiagnosticsIdentityResolver(
                 maxManifestBytes = status.maxManifestBytes,
                 retentionDays = status.retentionDays,
             )
-            if (profileEligible) positiveCache.set(context)
             return context
         }
         return null

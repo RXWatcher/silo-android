@@ -58,7 +58,15 @@ val repositoryModule = module {
     }
     single { ProfileRepository(get(), get(), getOrNull(), get(), get(), get()) }
     single { CollectionRepository(get()) }
-    single { SectionRepository(get(), getOrNull<org.siloserver.silo.repository.port.CatalogCachePort>() ?: org.siloserver.silo.repository.port.NoOpCatalogCachePort) }
+    single {
+        val tokenManager = get<org.siloserver.silo.network.TokenManager>()
+        SectionRepository(
+            sectionApi = get(),
+            catalogCache = getOrNull<org.siloserver.silo.repository.port.CatalogCachePort>()
+                ?: org.siloserver.silo.repository.port.NoOpCatalogCachePort,
+            homeScopeProvider = { tokenManager.snapshotCurrentScope() },
+        )
+    }
     single { RecommendationRepository(get()) }
     single { RequestsRepository(get()) }
     single { RequestsFeatureStore(get()) }

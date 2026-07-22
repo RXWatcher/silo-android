@@ -59,21 +59,25 @@ class HomeViewModel(
         }
     }
 
-    private var realtimeRefreshInFlight = false
+    private var quietRefreshInFlight = false
 
     /**
-     * Debounced realtime refetch: quiet (no spinner) and single-flight —
-     * an in-flight realtime or manual refresh already delivers the fresh
-     * sections, so overlapping signals are dropped rather than raced.
+     * Quiet realtime/lifecycle refetch: no spinner and single-flight. The
+     * repository coalesces this with startup, warmup, and Watch Next work;
+     * lifecycle resumes force freshness only when no matching fetch is active.
      */
-    fun refreshFromRealtime() {
-        if (realtimeRefreshInFlight || _uiState.value.isRefreshing) return
-        realtimeRefreshInFlight = true
+    fun refreshFromRealtime() = quietRefresh(forceRefresh = false)
+
+    fun refreshAfterResume() = quietRefresh(forceRefresh = true)
+
+    private fun quietRefresh(forceRefresh: Boolean) {
+        if (quietRefreshInFlight || _uiState.value.isRefreshing) return
+        quietRefreshInFlight = true
         viewModelScope.launch {
             try {
-                fetchSections()
+                fetchSections(forceRefresh = forceRefresh)
             } finally {
-                realtimeRefreshInFlight = false
+                quietRefreshInFlight = false
             }
         }
     }
@@ -96,7 +100,7 @@ class HomeViewModel(
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(isRefreshing = true, error = null) }
-            fetchSections()
+            fetchSections(forceRefresh = true)
             _uiState.update { it.copy(isRefreshing = false) }
         }
     }
@@ -116,11 +120,11 @@ class HomeViewModel(
         )
     }
 
-    private suspend fun fetchSections() {
+    private suspend fun fetchSections(forceRefresh: Boolean = false) {
         // Whether we already have something to show (cached or prior fetch) — if a
         // refresh fails we keep it rather than replacing it with a blocking error.
         val hadSections = _uiState.value.sections.isNotEmpty()
-        when (val result = sectionRepository.getHomeSections()) {
+        when (val result = sectionRepository.getHomeSections(forceRefresh = forceRefresh)) {
             is ApiResult.Success -> {
                 val sections = result.data.sections
                 // `/home/sections` already returns each section with its items

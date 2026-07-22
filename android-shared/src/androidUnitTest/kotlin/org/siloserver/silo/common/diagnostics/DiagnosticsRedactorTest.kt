@@ -65,6 +65,14 @@ class DiagnosticsRedactorTest {
     }
 
     @Test
+    fun structurallyValidJwtIsRedactedWithoutRedactingDottedCodecNames() {
+        val jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl"
+
+        assertEquals("jwt [REDACTED_JWT]", redactor.sanitize("jwt $jwt"))
+        assertEquals("decoder=c2.android.aac.decoder", redactor.sanitize("decoder=c2.android.aac.decoder"))
+    }
+
+    @Test
     fun throwableSanitizationIsDepthAndUtf8ByteBounded() {
         val root = IllegalStateException("root user@example.com " + "界".repeat(1_000))
         var throwable: Throwable = root

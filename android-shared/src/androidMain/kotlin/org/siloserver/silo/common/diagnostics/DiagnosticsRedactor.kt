@@ -2,7 +2,10 @@ package org.siloserver.silo.common.diagnostics
 
 import java.net.URI
 import java.security.MessageDigest
+import java.util.Base64
 import java.util.Locale
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Removes credentials and network identity before a value enters diagnostics storage.
@@ -29,7 +32,9 @@ class DiagnosticsRedactor(
         output = COOKIE_PATTERN.replace(output) { match ->
             "${match.groupValues[1]}: [REDACTED]"
         }
-        output = JWT_PATTERN.replace(output, "[REDACTED_JWT]")
+        output = JWT_CANDIDATE_PATTERN.replace(output) { match ->
+            if (match.isStructurallyValidJwt()) "[REDACTED_JWT]" else match.value
+        }
         output = EMAIL_PATTERN.replace(output, "[REDACTED_EMAIL]")
         output = NAMED_SECRET_PATTERN.replace(output) { match ->
             "${match.groupValues[1]}=[REDACTED]"
@@ -107,6 +112,17 @@ class DiagnosticsRedactor(
     private fun isLoopbackHost(host: String): Boolean =
         host == "localhost" || host == "::1" || IPV4_LOOPBACK_PATTERN.matches(host)
 
+    private fun MatchResult.isStructurallyValidJwt(): Boolean =
+        groupValues[1].decodesToJsonObject() && groupValues[2].decodesToJsonObject()
+
+    private fun String.decodesToJsonObject(): Boolean {
+        if (length > MAX_JWT_SEGMENT_CHARS || length % 4 == 1) return false
+        val padded = this + "=".repeat((4 - length % 4) % 4)
+        val decoded = runCatching { Base64.getUrlDecoder().decode(padded) }.getOrNull() ?: return false
+        if (decoded.isEmpty() || decoded.size > MAX_JWT_JSON_BYTES) return false
+        return runCatching { JWT_JSON.parseToJsonElement(decoded.decodeToString()) is JsonObject }.getOrDefault(false)
+    }
+
     private fun String.truncateUtf8(maxBytes: Int): String {
         if (encodeToByteArray().size <= maxBytes) return this
         val result = StringBuilder(length.coerceAtMost(maxBytes))
@@ -129,14 +145,19 @@ class DiagnosticsRedactor(
         const val DEFAULT_THROWABLE_BYTES = 4 * 1_024
         const val HOST_TOKEN_PREFIX = "host_"
         const val HOST_TOKEN_HEX_BYTES = 8
+        const val MAX_JWT_SEGMENT_CHARS = 8 * 1_024
+        const val MAX_JWT_JSON_BYTES = 6 * 1_024
 
+        val JWT_JSON = Json { isLenient = false }
         val TRAILING_URL_PUNCTUATION = setOf('.', ',', ';', ':', '!', '?', ')', ']', '}')
         val URL_PATTERN = Regex("(?i)\\bhttps?://[^\\s<>\\\"']+")
         val AUTHORIZATION_PATTERN = Regex(
             "(?i)\\b(authorization|proxy-authorization)\\s*[:=]\\s*(?:bearer\\s+)?[^\\s,;]+",
         )
         val COOKIE_PATTERN = Regex("(?i)\\b(cookie|set-cookie)\\s*:\\s*[^\\r\\n]+")
-        val JWT_PATTERN = Regex("(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{4,}\\.[A-Za-z0-9_-]{1,}\\.[A-Za-z0-9_-]{1,}(?![A-Za-z0-9_-])")
+        val JWT_CANDIDATE_PATTERN = Regex(
+            "(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+)\\.([A-Za-z0-9_-]+)\\.([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])",
+        )
         val EMAIL_PATTERN = Regex("(?i)(?<![A-Z0-9._%+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}(?![A-Z0-9.-])")
         val NAMED_SECRET_PATTERN = Regex(
             "(?i)\\b(access_token|refresh_token|profile_token|token|api_key)\\s*[:=]\\s*[^\\s,;&]+",

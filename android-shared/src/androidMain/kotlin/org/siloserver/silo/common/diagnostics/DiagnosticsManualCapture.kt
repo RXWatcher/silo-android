@@ -37,6 +37,7 @@ class FileDiagnosticsCaptureController(
     private val active = AtomicReference<OwnedCapture?>(null)
 
     override fun closeGate() {
+        DiagnosticsCaptureDetailState.setEnabled(false)
         SiloLog.installSink(logBuffer)
         logBuffer.rotateGeneration()
     }
@@ -54,6 +55,7 @@ class FileDiagnosticsCaptureController(
             error("diagnostics capture started concurrently")
         }
         SiloLog.installSink(FanOutDiagnosticsLogSink(logBuffer, fileLogger))
+        DiagnosticsCaptureDetailState.setEnabled(true)
         return capture
     }
 
@@ -66,6 +68,7 @@ class FileDiagnosticsCaptureController(
         check(owned?.capture == active && !owned.debugLogging && this.active.compareAndSet(owned, null)) {
             "diagnostics capture is no longer active"
         }
+        DiagnosticsCaptureDetailState.setEnabled(false)
         SiloLog.installSink(logBuffer)
         val frozen = try {
             fileLogger.freeze(active.generation)
@@ -110,10 +113,12 @@ class FileDiagnosticsCaptureController(
             error("diagnostics debug logging started concurrently")
         }
         SiloLog.installSink(FanOutDiagnosticsLogSink(logBuffer, fileLogger))
+        DiagnosticsCaptureDetailState.setEnabled(true)
     }
 
     private suspend fun cancelOwned(owned: OwnedCapture) {
         if (!active.compareAndSet(owned, null)) return
+        DiagnosticsCaptureDetailState.setEnabled(false)
         SiloLog.installSink(logBuffer)
         runCatching { fileLogger.cancel(owned.capture.generation) }
         logBuffer.rotateGeneration()

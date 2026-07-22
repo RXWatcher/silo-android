@@ -20,6 +20,7 @@ class SiloAuthConfig {
      */
     var tokenManager: TokenManager? = null
     var deviceMetadataProvider: DeviceMetadataProvider? = null
+    var diagnosticsObserver: NetworkDiagnosticsObserver? = null
 }
 
 /**
@@ -41,6 +42,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
     val tokenManager = pluginConfig.tokenManager
         ?: error("TokenManager must be provided to SiloAuthPlugin")
     val deviceMetadataProvider = pluginConfig.deviceMetadataProvider
+    val diagnosticsObserver = pluginConfig.diagnosticsObserver
 
     val refreshMutex = Mutex()
 
@@ -140,6 +142,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             if (originalCall.response.status != HttpStatusCode.Unauthorized) {
                 return@on originalCall
             }
+            diagnosticsObserver.safeAuthRefresh("required")
             val refreshed = refreshMutex.withLock {
                 // Another path may have refreshed this scope while we waited.
                 val current = tokenManager.getAccessTokenForScope(pinnedScope)?.let { "Bearer $it" }
@@ -151,11 +154,13 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                     return@withLock false
                 }
                 try {
+                    diagnosticsObserver.safeAuthRefresh("started")
                     val refreshResponse = client.post("${pinnedScope.serverUrl}/api/v1/auth/refresh") {
                         contentType(ContentType.Application.Json)
                         setBody(RefreshRequest(refreshToken))
                     }
                     if (refreshResponse.status.isSuccess()) {
+                        diagnosticsObserver.safeAuthRefresh("succeeded")
                         val tokens = refreshResponse.body<RefreshResponse>()
                         tokenManager.saveTokensForScope(
                             scope = pinnedScope,
@@ -171,12 +176,14 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                         val after = tokenManager.getAccessTokenForScope(pinnedScope)?.let { "Bearer $it" }
                         after != null && after != sentAuth
                     } else {
+                        diagnosticsObserver.safeAuthRefresh("failed")
                         // Don't invalidate the active session for a background scope.
                         // Re-check in case a concurrent path refreshed it in flight.
                         val after = tokenManager.getAccessTokenForScope(pinnedScope)?.let { "Bearer $it" }
                         after != null && after != sentAuth
                     }
                 } catch (e: Throwable) {
+                    diagnosticsObserver.safeAuthRefresh("failed")
                     false
                 }
             }
@@ -203,6 +210,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
         if (originalCall.response.status != HttpStatusCode.Unauthorized) {
             return@on originalCall
         }
+        diagnosticsObserver.safeAuthRefresh("required")
 
         val requestPath = originalCall.request.url.encodedPath
         if (requestPath.endsWith("/auth/refresh") || requestPath.endsWith("/auth/login")) {
@@ -243,6 +251,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             }
 
             try {
+                diagnosticsObserver.safeAuthRefresh("started")
                 val serverUrl = tokenManager.getServerUrl()
                 if (serverUrl.isBlank()) {
                     return@withLock false
@@ -274,6 +283,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                 }
 
                 if (refreshResponse.status.isSuccess()) {
+                    diagnosticsObserver.safeAuthRefresh("succeeded")
                     val tokens = refreshResponse.body<RefreshResponse>()
                     tokenManager.saveTokens(
                         accessToken = tokens.accessToken,
@@ -282,6 +292,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                     )
                     true
                 } else {
+                    diagnosticsObserver.safeAuthRefresh("failed")
                     // Only auth rejection proves the refresh token is bad.
                     // Gateway/proxy/server failures should keep the session so
                     // a temporary outage does not sign the user out.
@@ -297,6 +308,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                     false
                 }
             } catch (e: Throwable) {
+                diagnosticsObserver.safeAuthRefresh("failed")
                 false
             }
         }
@@ -351,6 +363,10 @@ private fun HttpStatusCode.shouldInvalidateSessionAfterRefreshFailure(): Boolean
     this == HttpStatusCode.BadRequest ||
         this == HttpStatusCode.Unauthorized ||
         this == HttpStatusCode.Forbidden
+
+private fun NetworkDiagnosticsObserver?.safeAuthRefresh(state: String) {
+    runCatching { this?.authRefresh(state) }
+}
 
 private suspend fun HttpRequestBuilder.attachSiloDeviceMetadataHeaders(
     deviceMetadataProvider: DeviceMetadataProvider?,

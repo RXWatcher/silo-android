@@ -1215,7 +1215,7 @@ Use full-screen flows, large remote targets, predictable Back behavior, and non-
 ./gradlew :androidTvApp:testDebugUnitTest --tests '*TvDiagnosticsStateTest' :androidTvApp:compileDebugKotlinAndroid
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add androidTvApp
@@ -1243,7 +1243,7 @@ git commit -m "feat(diagnostics): add TV report experience"
 - Instrumentation calls only SiloLog.
 - Five-second stats snapshots run only for debug/timed capture.
 
-- [ ] **Step 1: Write failing safety tests**
+- [x] **Step 1: Write failing safety tests**
 
 ~~~kotlin
 @Test
@@ -1260,13 +1260,13 @@ fun subtitleCueTextIsNeverCaptured() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsInstrumentationTest'
 ~~~
 
-- [ ] **Step 3: Add only contract-safe events**
+- [x] **Step 3: Add only contract-safe events**
 
 ~~~kotlin
 SiloLog.i(
@@ -1282,7 +1282,7 @@ SiloLog.i(
 
 Do not mechanically ingest existing Log strings. Exclude titles, subtitle text, raw URLs, bodies, headers, and arbitrary error messages.
 
-- [ ] **Step 4: Verify GREEN and module suites**
+- [x] **Step 4: Verify GREEN and module suites**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsInstrumentationTest' :androidApp:testDebugUnitTest :androidTvApp:testDebugUnitTest

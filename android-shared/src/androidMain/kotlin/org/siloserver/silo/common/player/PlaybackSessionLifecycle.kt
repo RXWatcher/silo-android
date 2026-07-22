@@ -1,6 +1,7 @@
 package org.siloserver.silo.common.player
 
 import android.util.Log
+import org.siloserver.silo.common.diagnostics.DiagnosticsPlaybackLogger
 import org.siloserver.silo.model.personal.SyncProgressItem
 import org.siloserver.silo.model.playback.ClientCodecCapabilities
 import org.siloserver.silo.model.playback.ClientPlaybackContext
@@ -89,6 +90,7 @@ class PlaybackSessionLifecycle(
      * failure (Error or NetworkError).
      */
     suspend fun start(params: StartParams): SessionState {
+        DiagnosticsPlaybackLogger.sessionEvent("session start requested")
         // New start cancels any in-flight recovery / outage probing, by design:
         // this is the explicit "user/code wants a fresh session now" path.
         cancelRecoveryJobs()
@@ -173,6 +175,7 @@ class PlaybackSessionLifecycle(
         }
         return when (result) {
             is ApiResult.Success -> {
+                DiagnosticsPlaybackLogger.sessionEvent("session active")
                 val active = SessionState.Active(result.data)
                 _state.value = active
                 lastReportedPosition = params.startPosition ?: result.data.position
@@ -182,12 +185,14 @@ class PlaybackSessionLifecycle(
                 active
             }
             is ApiResult.Error -> {
+                DiagnosticsPlaybackLogger.sessionEvent("session start failed")
                 Log.w(TAG, "start session error: ${result.code} ${result.error} ${result.message}")
                 val failed = SessionState.Failed(result.message.ifBlank { "Failed to start playback." })
                 _state.value = failed
                 failed
             }
             is ApiResult.NetworkError -> {
+                DiagnosticsPlaybackLogger.sessionEvent("session start network failure")
                 Log.w(TAG, "start session network error: ${result.exception}")
                 val failed = SessionState.Failed("Network error starting playback.")
                 _state.value = failed
@@ -218,6 +223,7 @@ class PlaybackSessionLifecycle(
      * stops the active session.
      */
     suspend fun stop() {
+        DiagnosticsPlaybackLogger.sessionEvent("session stop requested")
         val current = _state.value
         cancelRecoveryJobs()
         reporterJob?.cancel()
@@ -247,6 +253,7 @@ class PlaybackSessionLifecycle(
         renewMissingSessionWithLegacyStart = true
         _notice.value = null
         _state.value = SessionState.Idle
+        DiagnosticsPlaybackLogger.sessionEvent("session stopped")
     }
 
     /**
@@ -301,6 +308,7 @@ class PlaybackSessionLifecycle(
         val params = lastStartParams ?: return
 
         recoveringFromMissingSession = staleSessionId
+        DiagnosticsPlaybackLogger.sessionEvent("session missing")
         if (!renewMissingSessionWithLegacyStart) {
             _missingSessionEvents.tryEmit(lastReportedPosition ?: params.startPosition ?: 0.0)
             return
@@ -331,6 +339,7 @@ class PlaybackSessionLifecycle(
 
         val deadline = nowMs() + OUTAGE_TIMEOUT_MS
         _state.value = SessionState.Reconnecting(deadlineEpochMs = deadline, tone = NoticeTone.Warning)
+        DiagnosticsPlaybackLogger.sessionEvent("session reconnecting")
         _notice.value = PlayerNotice(
             message = OUTAGE_RECONNECT_MESSAGE,
             tone = NoticeTone.Warning,
@@ -355,6 +364,7 @@ class PlaybackSessionLifecycle(
                     // proxies/tunnels can still produce HTTP errors, or even
                     // an HTML 200 page, while the Silo origin is down.
                     Log.i(TAG, "Health probe succeeded; resuming playback session")
+                    DiagnosticsPlaybackLogger.sessionEvent("session reconnected")
                     _state.value = SessionState.Active(currentSession)
                     _notice.value = null
                     return@launch
@@ -364,6 +374,7 @@ class PlaybackSessionLifecycle(
             }
             // Timed out before the server came back.
             Log.w(TAG, "Outage recovery exhausted for playback session")
+            DiagnosticsPlaybackLogger.sessionEvent("session reconnect failed")
             _state.value = SessionState.Failed(OUTAGE_TIMEOUT_MESSAGE)
             _notice.value = PlayerNotice(
                 message = OUTAGE_TIMEOUT_MESSAGE,

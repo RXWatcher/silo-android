@@ -48,6 +48,7 @@ import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsSetti
 import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsViewModel
 import org.siloserver.silo.tv.ui.screens.watchtogether.TvWatchTogetherLobbyScreen
 import org.siloserver.silo.common.overlays.ProvideCardOverlays
+import org.siloserver.silo.common.diagnostics.DiagnosticsLifecycleLogger
 import org.siloserver.silo.common.settings.LibraryPlaybackPrefsStore
 import org.siloserver.silo.common.settings.OverlayPrefsStore
 import org.siloserver.silo.tv.watchnext.WatchNextSeeder
@@ -288,6 +289,9 @@ fun TvAppNavigation(
     // authenticated identity instead of a one-shot at app start, where the user
     // is still on Login and the settings calls would 401.
     val currentEntry by navController.currentBackStackEntryAsState()
+    LaunchedEffect(currentEntry?.destination?.route) {
+        DiagnosticsLifecycleLogger.route(currentEntry?.destination?.route)
+    }
     val overlaySessionKey by produceState<String?>(
         initialValue = null,
         currentEntry?.destination?.route,

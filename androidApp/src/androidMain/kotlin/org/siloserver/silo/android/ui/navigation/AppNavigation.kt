@@ -73,6 +73,7 @@ import org.siloserver.silo.android.ui.screens.servers.ServerSwitchDestination
 import org.siloserver.silo.android.ui.screens.settings.CardOverlaySettingsScreen
 import org.siloserver.silo.android.ui.screens.settings.SettingsScreen
 import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsPromptDialog
+import org.siloserver.silo.common.diagnostics.DiagnosticsLifecycleLogger
 import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsReportScreen
 import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsSettingsScreen
 import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsViewModel
@@ -157,6 +158,9 @@ fun AppNavigation(
     // hydration off the authenticated identity instead of a one-shot at app
     // start, where the user is still on Login and the settings calls 401.
     val currentEntry by navController.currentBackStackEntryAsState()
+    LaunchedEffect(currentEntry?.destination?.route) {
+        DiagnosticsLifecycleLogger.route(currentEntry?.destination?.route)
+    }
     val overlaySessionKey by produceState<String?>(
         initialValue = null,
         currentEntry?.destination?.route,
@@ -848,7 +852,9 @@ fun AppNavigation(
         }
 
     }
-        diagnosticsState.prompt?.let { prompt ->
+        diagnosticsState.prompt
+            ?.takeIf { currentEntry?.destination?.route != Route.DiagnosticsReport.ROUTE }
+            ?.let { prompt ->
             DiagnosticsPromptDialog(
                 prompt = prompt,
                 onReview = { navController.navigate(Route.DiagnosticsReport(prompt.reportId).route) },

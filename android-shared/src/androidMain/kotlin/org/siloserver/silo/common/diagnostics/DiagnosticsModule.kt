@@ -12,6 +12,7 @@ import kotlinx.coroutines.SupervisorJob
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
+import org.siloserver.silo.network.NetworkDiagnosticsObserver
 import org.siloserver.silo.model.diagnostics.DiagnosticsDeviceSummary
 import org.siloserver.silo.model.diagnostics.DiagnosticsPlatform
 import org.siloserver.silo.network.TokenManager
@@ -20,6 +21,7 @@ private val DIAGNOSTICS_DATA_STORE = named("diagnostics-data-store")
 private val DIAGNOSTICS_SCOPE = named("diagnostics-scope")
 
 val diagnosticsModule = module {
+    single<NetworkDiagnosticsObserver> { DiagnosticsNetworkLogger }
     single<DataStore<Preferences>>(DIAGNOSTICS_DATA_STORE) {
         PreferenceDataStoreFactory.create(
             produceFile = { androidContext().preferencesDataStoreFile("silo_diagnostics") },

@@ -17,6 +17,7 @@ import org.siloserver.silo.android.notifications.NotificationsForegroundStarter
 import org.siloserver.silo.android.push.AndroidPushRegistrationStarter
 import org.siloserver.silo.common.di.playerInfraModule
 import org.siloserver.silo.common.di.playerModule
+import org.siloserver.silo.common.diagnostics.CrashCapture
 import org.siloserver.silo.common.downloads.DownloadWorker
 import org.siloserver.silo.di.sharedModules
 import kotlinx.coroutines.launch
@@ -36,6 +37,7 @@ import org.koin.core.context.startKoin
 class SiloApplication : Application(), Configuration.Provider, SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
+        CrashCapture.install(this)
         val koinApp = startKoin {
             androidContext(this@SiloApplication)
             modules(sharedModules() + playerModule + playerInfraModule + androidModule)

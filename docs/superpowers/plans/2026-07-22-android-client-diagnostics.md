@@ -773,7 +773,7 @@ git commit -m "feat(diagnostics): capture Android device evidence"
 - CrashCapture.install(context) is pre-Koin and idempotent.
 - CrashCapture.updateSnapshot accepts pre-rendered runtime state after startup.
 
-- [ ] **Step 1: Write failing delegation and bounds tests**
+- [x] **Step 1: Write failing delegation and bounds tests**
 
 ~~~kotlin
 @Test
@@ -790,13 +790,13 @@ fun markerNeverExceedsLimit() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*CrashCaptureTest'
 ~~~
 
-- [ ] **Step 3: Implement minimal synchronous crash path**
+- [x] **Step 3: Implement minimal synchronous crash path**
 
 ~~~kotlin
 object CrashCapture {
@@ -819,7 +819,7 @@ object CrashCapture {
 
 No coroutine, Koin, DataStore, network, service probe, shared writer lock, or bundle construction is permitted. Use temp, fsync, rename, deterministic truncation, and a hard elapsed-time budget.
 
-- [ ] **Step 4: Wire applications before startKoin and verify GREEN**
+- [x] **Step 4: Wire applications before startKoin and verify GREEN**
 
 ~~~kotlin
 override fun onCreate() {
@@ -839,7 +839,7 @@ Apply the equivalent ordering in SiloTvApplication, using androidTvModule in pla
 ./gradlew :android-shared:testDebugUnitTest --tests '*CrashCaptureTest' :androidApp:compileDebugKotlinAndroid :androidTvApp:compileDebugKotlinAndroid
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared androidApp androidTvApp

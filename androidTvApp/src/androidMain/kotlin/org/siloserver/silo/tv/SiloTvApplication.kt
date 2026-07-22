@@ -10,6 +10,7 @@ import coil3.disk.DiskCache
 import coil3.request.crossfade
 import org.siloserver.silo.common.di.playerInfraModule
 import org.siloserver.silo.common.di.playerModule
+import org.siloserver.silo.common.diagnostics.CrashCapture
 import org.siloserver.silo.di.sharedModules
 import org.siloserver.silo.tv.di.androidTvModule
 import org.siloserver.silo.tv.watchnext.TvWorkerFactory
@@ -31,6 +32,7 @@ import org.koin.core.context.startKoin
 class SiloTvApplication : Application(), Configuration.Provider, SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
+        CrashCapture.install(this)
         val koinApp = startKoin {
             androidContext(this@SiloTvApplication)
             modules(sharedModules() + playerModule + playerInfraModule + androidTvModule)

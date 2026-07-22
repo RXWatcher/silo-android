@@ -633,7 +633,7 @@ git commit -m "feat(diagnostics): add pending report storage"
 **Interfaces:**
 - build(report, redactionTokens) returns finalized external manifest bytes and transmitted gzip bytes.
 
-- [ ] **Step 1: Write failing deterministic archive tests**
+- [x] **Step 1: Write failing deterministic archive tests**
 
 ~~~kotlin
 @Test
@@ -645,13 +645,13 @@ fun bundleUsesCanonicalOrderAndExternalHash() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsBundleBuilderTest'
 ~~~
 
-- [ ] **Step 3: Implement USTAR, gzip, and defense-in-depth redaction**
+- [x] **Step 3: Implement USTAR, gzip, and defense-in-depth redaction**
 
 ~~~kotlin
 data class DiagnosticsBundle(
@@ -678,13 +678,13 @@ val CANONICAL_ARCHIVE_ORDER = listOf(
 
 Implement FileDiagnosticsBundleBuilder with an internal UstarWriter. Include only present allowlisted entries in canonical order. Use correct USTAR padding/end markers, SHA-256 of final gzip bytes, exact uncompressed tar-stream bytes, and a redaction-failure sentinel for invalid UTF-8 text. The embedded manifest omits archive metadata; the external manifest describes and hashes the finalized transmitted gzip.
 
-- [ ] **Step 4: Verify GREEN**
+- [x] **Step 4: Verify GREEN**
 
 ~~~bash
 ./gradlew :android-shared:testDebugUnitTest --tests '*DiagnosticsBundleBuilderTest'
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add android-shared

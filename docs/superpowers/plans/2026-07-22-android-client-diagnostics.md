@@ -36,7 +36,7 @@ Shared wire/API files:
 - shared/src/commonMain/kotlin/org/siloserver/silo/model/diagnostics/DiagnosticsValidation.kt
 - shared/src/commonMain/kotlin/org/siloserver/silo/network/api/DiagnosticsApi.kt
 - shared/src/commonMain/kotlin/org/siloserver/silo/network/DiagnosticsRequestScope.kt
-- shared/src/commonTest/kotlin/org/siloserver/silo/model/diagnostics/DiagnosticsContractTest.kt
+- shared/src/androidUnitTest/kotlin/org/siloserver/silo/model/diagnostics/DiagnosticsContractTest.kt
 - shared/src/commonTest/kotlin/org/siloserver/silo/network/api/DiagnosticsApiTest.kt
 - shared/src/commonTest/resources/diagnostics/v1/ (canonical fixture tree and SOURCE metadata)
 
@@ -58,7 +58,7 @@ Phone presentation lives under androidApp/src/androidMain/kotlin/org/siloserver/
 **Files:**
 - Create: shared/src/commonMain/kotlin/org/siloserver/silo/model/diagnostics/DiagnosticsModels.kt
 - Create: shared/src/commonMain/kotlin/org/siloserver/silo/model/diagnostics/DiagnosticsValidation.kt
-- Create: shared/src/commonTest/kotlin/org/siloserver/silo/model/diagnostics/DiagnosticsContractTest.kt
+- Create: shared/src/androidUnitTest/kotlin/org/siloserver/silo/model/diagnostics/DiagnosticsContractTest.kt
 - Create: shared/src/commonTest/resources/diagnostics/v1/ (canonical fixture tree and SOURCE metadata)
 - Modify: shared/build.gradle.kts
 
@@ -66,11 +66,11 @@ Phone presentation lives under androidApp/src/androidMain/kotlin/org/siloserver/
 - Produces DiagnosticsManifest.validate(), DiagnosticsStatusResponse, DiagnosticsUploadResponse, DiagnosticsLogLine, and DeviceSnapshot.
 - JSON names, enum values, bounds, and archive allowlist match server schema v1.
 
-- [ ] **Step 1: Copy canonical fixtures**
+- [x] **Step 1: Copy canonical fixtures**
 
 Copy docs/design/schemas/client-diagnostics/v1 from server main byte-for-byte. Add a SOURCE file containing the server commit SHA.
 
-- [ ] **Step 2: Write failing contract tests**
+- [x] **Step 2: Write failing contract tests**
 
 ~~~kotlin
 class DiagnosticsContractTest {
@@ -96,7 +96,7 @@ class DiagnosticsContractTest {
 }
 ~~~
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 ~~~bash
 ./gradlew :shared:testDebugUnitTest --tests '*DiagnosticsContractTest'
@@ -104,7 +104,7 @@ class DiagnosticsContractTest {
 
 Expected: compilation fails because diagnostics models do not exist.
 
-- [ ] **Step 4: Implement all schema types and bounds**
+- [x] **Step 4: Implement all schema types and bounds**
 
 ~~~kotlin
 @Serializable
@@ -141,7 +141,7 @@ fun DiagnosticsManifest.validate() {
 
 Implement every schema constraint, not only the sample assertions.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 ~~~bash
 ./gradlew :shared:testDebugUnitTest --tests '*DiagnosticsContractTest'
@@ -149,7 +149,7 @@ Implement every schema constraint, not only the sample assertions.
 
 Expected: all canonical valid fixtures pass and invalid fixtures throw DiagnosticsValidationException.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ~~~bash
 git add shared
@@ -666,11 +666,13 @@ interface DiagnosticsBundleBuilder {
 
 val CANONICAL_ARCHIVE_ORDER = listOf(
     "manifest.json",
-    "logs/log.jsonl",
-    "device/device.json",
+    "device.json",
+    "logs.jsonl",
+    "crash/summary.json",
     "crash/stack.txt",
-    "crash/anr.txt",
     "crash/tombstone.pb",
+    "crash/metrickit.json",
+    "breadcrumbs.jsonl",
 )
 ~~~
 

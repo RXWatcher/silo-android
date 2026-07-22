@@ -180,23 +180,12 @@ private suspend fun CoroutineScope.warmHome(
 ) {
     when (val result = sectionRepository.getHomeSections()) {
         is ApiResult.Success -> {
-            val resolvedPairs: List<Pair<ResolvedSection, Boolean>> =
-                result.data.sections.map { section ->
-                    async {
-                        when (val itemsResult = sectionRepository.getHomeSectionItems(section.id)) {
-                            is ApiResult.Success -> (itemsResult.data.section ?: section) to true
-                            is ApiResult.Error,
-                            is ApiResult.NetworkError -> section to false
-                        }
-                    }
-                }.awaitAll()
-
-            if (resolvedPairs.all { it.second }) {
-                val resolved = resolvedPairs.map { it.first }.filter { it.items.isNotEmpty() }
-                if (resolved.isNotEmpty()) {
-                    homeCache.cacheHome(resolved)
-                    warmHomeArtwork(context, resolved, artworkPlan)
-                }
+            val resolution = hydrateStartupHomeSections(result.data.sections) { sectionId ->
+                sectionRepository.getHomeSectionItems(sectionId)
+            }
+            if (resolution.fullyResolved && resolution.sections.isNotEmpty()) {
+                homeCache.cacheHome(resolution.sections)
+                warmHomeArtwork(context, resolution.sections, artworkPlan)
             }
         }
         is ApiResult.Error,

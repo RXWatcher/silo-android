@@ -98,6 +98,14 @@ class ItemDetailViewModel(
     val uiState: StateFlow<ItemDetailUiState> = _uiState.asStateFlow()
     private var episodeLoadJob: Job? = null
     private var allEpisodeFileIdsJob: Job? = null
+    private data class EpisodeRollupRequest(
+        val seriesId: String,
+        val seasons: List<Season>,
+        val seedEpisodes: List<EpisodeListItem>,
+        val skipSeasonNumber: Int?,
+    )
+    private var routeActive = true
+    private var pendingEpisodeRollup: EpisodeRollupRequest? = null
     // The season number the currently-shown episodes actually belong to. A
     // failed season switch reverts the optimistic selection to THIS season —
     // not merely the previously-selected one, which may itself have failed —
@@ -455,9 +463,16 @@ class ItemDetailViewModel(
         seedEpisodes: List<EpisodeListItem> = emptyList(),
         skipSeasonNumber: Int? = null,
     ) {
+        pendingEpisodeRollup = EpisodeRollupRequest(
+            seriesId = seriesId,
+            seasons = seasons,
+            seedEpisodes = seedEpisodes,
+            skipSeasonNumber = skipSeasonNumber,
+        )
         allEpisodeFileIdsJob?.cancel()
+        if (!routeActive) return
         allEpisodeFileIdsJob = viewModelScope.launch {
-            val fileIds = mutableListOf<Int>()
+            val fileIds = _uiState.value.allEpisodeFileIds.toMutableList()
             seedEpisodes.forEach { ep -> ep.files.firstOrNull()?.fileId?.let { fileIds += it } }
             val canSkipSeedSeason = skipSeasonNumber != null && seedEpisodes.isNotEmpty()
             if (fileIds.isNotEmpty()) {
@@ -472,9 +487,11 @@ class ItemDetailViewModel(
             // This roll-up is only for the detail download badge. Let the selected
             // season render and become interactive before crawling the rest.
             delay(350)
+            if (!routeActive) return@launch
 
             var complete = true
             for (season in seasons) {
+                if (!routeActive) return@launch
                 if (canSkipSeedSeason && season.seasonNumber == skipSeasonNumber) continue
                 when (val r = catalogRepository.getEpisodes(seriesId, season.seasonNumber)) {
                     is ApiResult.Success -> r.data.episodes.forEach { ep ->
@@ -484,10 +501,33 @@ class ItemDetailViewModel(
                     else -> complete = false
                 }
             }
+            if (!routeActive) return@launch
             _uiState.update {
                 it.copy(
                     allEpisodeFileIds = fileIds.distinct(),
                     allEpisodeIdsComplete = complete,
+                )
+            }
+            if (complete) pendingEpisodeRollup = null
+        }
+    }
+
+    fun onRoutePaused() {
+        routeActive = false
+        allEpisodeFileIdsJob?.cancel()
+    }
+
+    fun onRouteResumed() {
+        val wasPaused = !routeActive
+        routeActive = true
+        refreshOnReturn()
+        if (wasPaused && !_uiState.value.allEpisodeIdsComplete) {
+            pendingEpisodeRollup?.let { request ->
+                loadAllEpisodeFileIds(
+                    seriesId = request.seriesId,
+                    seasons = request.seasons,
+                    seedEpisodes = request.seedEpisodes,
+                    skipSeasonNumber = request.skipSeasonNumber,
                 )
             }
         }

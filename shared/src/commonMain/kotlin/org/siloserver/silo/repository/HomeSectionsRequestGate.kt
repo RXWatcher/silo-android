@@ -15,9 +15,18 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 
-internal data class HomeRequestScope(val serverId: String, val profileId: String)
+internal data class HomeRequestScope(
+    val serverId: String,
+    val profileId: String,
+    val profileToken: String? = null,
+    val credentialGenerationId: String? = null,
+    val identityGeneration: Long = 0L,
+)
 
 internal enum class HomeRequestPolicy { NORMAL, FORCE }
+
+private class HomeRequestScopeChangedException :
+    IllegalStateException("Home request identity changed before completion")
 
 internal class HomeSectionsRequestGate(
     private val freshnessWindow: Duration = 10.seconds,
@@ -42,6 +51,18 @@ internal class HomeSectionsRequestGate(
         scopeKey: HomeRequestScope?,
         policy: HomeRequestPolicy,
         fetch: suspend () -> ApiResult<SectionsResponse>,
+    ): ApiResult<SectionsResponse> = execute(
+        scopeKey = scopeKey,
+        policy = policy,
+        isScopeCurrent = { true },
+        fetch = fetch,
+    )
+
+    suspend fun execute(
+        scopeKey: HomeRequestScope?,
+        policy: HomeRequestPolicy,
+        isScopeCurrent: suspend () -> Boolean,
+        fetch: suspend () -> ApiResult<SectionsResponse>,
     ): ApiResult<SectionsResponse> {
         if (scopeKey == null) return fetch()
 
@@ -59,6 +80,9 @@ internal class HomeSectionsRequestGate(
             created = workerScope.async(start = CoroutineStart.LAZY) {
                 try {
                     val result = fetch()
+                    if (!runCatching { isScopeCurrent() }.getOrDefault(false)) {
+                        return@async ApiResult.NetworkError(HomeRequestScopeChangedException())
+                    }
                     if (result is ApiResult.Success) {
                         mutex.withLock {
                             cached[scopeKey] = CachedResult(result, timeSource.markNow())

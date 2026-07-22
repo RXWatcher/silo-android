@@ -449,19 +449,28 @@ fun TvMainShell(
     // (QA 2026-07-08: Movies → Collections → black 'No collections' page).
     // Save the result in Main's back-stack entry so detail/player round trips
     // do not re-probe every library. null = unknown → pill stays visible.
+    val collectionsIdentityKey = remember(activeServerEntry?.id, activeServerEntry?.profileId) {
+        "${activeServerEntry?.id.orEmpty()}\u0000${activeServerEntry?.profileId.orEmpty()}"
+    }
+    var probedCollectionsIdentityKey by rememberSaveable { mutableStateOf("") }
     var probedCollectionLibraryIds by rememberSaveable { mutableStateOf(intArrayOf()) }
     var librariesWithCollectionsSnapshot by rememberSaveable { mutableStateOf(intArrayOf()) }
     val currentLibraryIds = remember(libraries) { libraries.map { it.id }.toIntArray() }
     val librariesWithCollections = if (
+        probedCollectionsIdentityKey == collectionsIdentityKey &&
         probedCollectionLibraryIds.contentEquals(currentLibraryIds)
     ) {
         librariesWithCollectionsSnapshot.toSet()
     } else {
         null
     }
-    LaunchedEffect(libraries, currentLibraryIds) {
-        if (probedCollectionLibraryIds.contentEquals(currentLibraryIds)) return@LaunchedEffect
+    LaunchedEffect(libraries, currentLibraryIds, collectionsIdentityKey) {
+        if (
+            probedCollectionsIdentityKey == collectionsIdentityKey &&
+            probedCollectionLibraryIds.contentEquals(currentLibraryIds)
+        ) return@LaunchedEffect
         if (libraries.isEmpty()) {
+            probedCollectionsIdentityKey = collectionsIdentityKey
             probedCollectionLibraryIds = intArrayOf()
             librariesWithCollectionsSnapshot = intArrayOf()
             return@LaunchedEffect
@@ -472,6 +481,7 @@ fun TvMainShell(
             if (result is ApiResult.Success && result.data.isNotEmpty()) ids += lib.id
         }
         librariesWithCollectionsSnapshot = ids.toIntArray()
+        probedCollectionsIdentityKey = collectionsIdentityKey
         probedCollectionLibraryIds = currentLibraryIds
     }
 

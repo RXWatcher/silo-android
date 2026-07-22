@@ -1088,7 +1088,7 @@ git commit -m "feat(diagnostics): coordinate capture and consent"
 **Interfaces:**
 - ViewModel delegates to coordinator and owns no diagnostics rule.
 
-- [ ] **Step 1: Write failing visibility/state tests**
+- [x] **Step 1: Write failing visibility/state tests**
 
 ~~~kotlin
 @Test
@@ -1105,13 +1105,13 @@ fun disabledServerStillShowsDeleteControls() {
 }
 ~~~
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ~~~bash
 ./gradlew :androidApp:testDebugUnitTest --tests '*DiagnosticsPhoneStateTest'
 ~~~
 
-- [ ] **Step 3: Implement phone routes/screens**
+- [x] **Step 3: Implement phone routes/screens**
 
 ~~~kotlin
 @Composable
@@ -1132,13 +1132,13 @@ fun DiagnosticsSettingsScreen(
 
 Show exact archive entries, destination, captured profile, evidence size, expiry, and upload state. Always Send needs confirmation. Timed capture needs a persistent indicator and Stop & review.
 
-- [ ] **Step 4: Verify GREEN and compile**
+- [x] **Step 4: Verify GREEN and compile**
 
 ~~~bash
 ./gradlew :androidApp:testDebugUnitTest --tests '*DiagnosticsPhoneStateTest' :androidApp:compileDebugKotlinAndroid
 ~~~
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ~~~bash
 git add androidApp

@@ -72,6 +72,10 @@ import org.siloserver.silo.android.ui.screens.servers.ServerListScreen
 import org.siloserver.silo.android.ui.screens.servers.ServerSwitchDestination
 import org.siloserver.silo.android.ui.screens.settings.CardOverlaySettingsScreen
 import org.siloserver.silo.android.ui.screens.settings.SettingsScreen
+import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsPromptDialog
+import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsReportScreen
+import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsSettingsScreen
+import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsViewModel
 import org.siloserver.silo.cast.SiloCastPlaybackRequest
 import org.siloserver.silo.common.overlays.ProvideCardOverlays
 import org.siloserver.silo.common.player.video.VideoPlayerRouteArgs
@@ -94,6 +98,8 @@ fun AppNavigation(
     val tokenManager: TokenManager = koinInject()
     val overlayPrefsStore: OverlayPrefsStore = koinInject()
     val siloCastController: SiloCastController = koinInject()
+    val diagnosticsViewModel = koinViewModel<DiagnosticsViewModel>()
+    val diagnosticsState by diagnosticsViewModel.state.collectAsState()
 
     DisposableEffect(siloCastController) {
         siloCastController.startBrowsing()
@@ -403,6 +409,9 @@ fun AppNavigation(
                 onNavigateToCardOverlays = {
                     navController.navigate(Route.CardOverlays.route)
                 },
+                onNavigateToDiagnostics = {
+                    navController.navigate(Route.Diagnostics.route)
+                },
                 onLoggedOut = {
                     navController.navigate(Route.Login.route) {
                         popUpTo(0) { inclusive = true }
@@ -415,6 +424,23 @@ fun AppNavigation(
         composable(Route.CardOverlays.route) {
             CardOverlaySettingsScreen(
                 store = overlayPrefsStore,
+                onBackClick = { navController.popBackStack() },
+            )
+        }
+        composable(Route.Diagnostics.route) {
+            DiagnosticsSettingsScreen(
+                onBackClick = { navController.popBackStack() },
+                onReportSelected = { reportId ->
+                    navController.navigate(Route.DiagnosticsReport(reportId).route)
+                },
+            )
+        }
+        composable(
+            route = Route.DiagnosticsReport.ROUTE,
+            arguments = listOf(navArgument("reportId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            DiagnosticsReportScreen(
+                reportId = backStackEntry.arguments?.getString("reportId").orEmpty(),
                 onBackClick = { navController.popBackStack() },
             )
         }
@@ -822,6 +848,17 @@ fun AppNavigation(
         }
 
     }
+        diagnosticsState.prompt?.let { prompt ->
+            DiagnosticsPromptDialog(
+                prompt = prompt,
+                onReview = { navController.navigate(Route.DiagnosticsReport(prompt.reportId).route) },
+                onSend = { diagnosticsViewModel.upload(prompt.reportId) },
+                onAlwaysSend = {
+                    diagnosticsViewModel.setConsent(org.siloserver.silo.common.diagnostics.DiagnosticsConsentMode.ALWAYS)
+                },
+                onDontSend = { diagnosticsViewModel.decline(prompt.reportId) },
+            )
+        }
         // Menu-less routes (detail screens etc.) get the cast bar as a bottom
         // overlay. Tab routes render it inside MainScreen's Scaffold, stacked
         // above the nav menu (iOS placement); the full remote and the local

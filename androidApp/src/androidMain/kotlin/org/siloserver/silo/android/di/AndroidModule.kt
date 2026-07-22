@@ -81,6 +81,7 @@ import org.siloserver.silo.android.ui.screens.player.PlayerViewModel
 import org.siloserver.silo.android.ui.screens.reading.ReadingHubViewModel
 import org.siloserver.silo.android.ui.screens.search.SearchViewModel
 import org.siloserver.silo.android.ui.screens.settings.SettingsViewModel
+import org.siloserver.silo.android.ui.screens.settings.diagnostics.DiagnosticsViewModel
 import org.siloserver.silo.android.cast.SharedPrefsSiloCastLastTargetStore
 import org.siloserver.silo.android.cast.SiloCastController
 import org.siloserver.silo.android.cast.SiloCastLastTargetStore
@@ -391,6 +392,7 @@ val androidModule = module {
         )
     }
     viewModel { SettingsViewModel(get(), get(), get(), get(), get(), get()) }
+    viewModel { DiagnosticsViewModel(get()) }
     viewModel { AdminEntryViewModel(get(), get()) }
     viewModel { AdminStatsViewModel(get()) }
     viewModel { AdminUsersViewModel(get()) }

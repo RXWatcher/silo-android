@@ -156,6 +156,10 @@ internal class DiagnosticsLogRenderer(
                 "rebuffer_count" to AttributeKind.INTEGER,
                 "rebuffer_total_ms" to AttributeKind.INTEGER,
                 "rebuffer_max_ms" to AttributeKind.INTEGER,
+                "seek_count" to AttributeKind.INTEGER,
+                "seek_last_ms" to AttributeKind.INTEGER,
+                "seek_total_ms" to AttributeKind.INTEGER,
+                "seek_max_ms" to AttributeKind.INTEGER,
             ),
             DiagnosticsLogCategory.FOCUS to mapOf(
                 "target" to AttributeKind.STRING,

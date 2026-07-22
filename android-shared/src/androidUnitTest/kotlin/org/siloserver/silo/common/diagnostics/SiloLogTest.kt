@@ -87,6 +87,29 @@ class SiloLogTest {
     }
 
     @Test
+    fun strictRendererAcceptsRegisteredSeekPerformanceAttributes() {
+        val renderer = DiagnosticsLogRenderer(redactor, strictAttributeRegistry = true)
+
+        val rendered = assertNotNull(
+            renderer.render(
+                DiagnosticsLogLevel.INFO,
+                DiagnosticsLogCategory.PLAYBACK,
+                "Media3Analytics",
+                "player stats snapshot",
+                mapOf(
+                    "seek_count" to SiloLogAttribute.Integer(1),
+                    "seek_last_ms" to SiloLogAttribute.Integer(275),
+                    "seek_total_ms" to SiloLogAttribute.Integer(275),
+                    "seek_max_ms" to SiloLogAttribute.Integer(275),
+                ),
+            ),
+        )
+
+        val attributes = Json.parseToJsonElement(rendered).jsonObject["attrs"]?.jsonObject
+        assertEquals(setOf("seek_count", "seek_last_ms", "seek_total_ms", "seek_max_ms"), attributes?.keys)
+    }
+
+    @Test
     fun productionRendererDropsInvalidAttributes() {
         val renderer = DiagnosticsLogRenderer(redactor, strictAttributeRegistry = false)
 

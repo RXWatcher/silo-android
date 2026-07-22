@@ -52,7 +52,10 @@ class StartupHomeHydrationTest {
                         ),
                     )
                     "top-level" -> ApiResult.Success(
-                        HomeSectionItemsResponse(items = listOf(item("top-level-item"))),
+                        HomeSectionItemsResponse(
+                            section = section("top-level", totalCount = 0),
+                            items = listOf(item("top-level-item")),
+                        ),
                     )
                     else -> error("unexpected fallback for $id")
                 }

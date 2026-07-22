@@ -7,6 +7,7 @@ import org.siloserver.silo.common.ui.components.resolveAvatarUrl
 import org.siloserver.silo.model.profile.Profile
 import org.siloserver.silo.model.section.HomeSectionItemsResponse
 import org.siloserver.silo.model.section.ResolvedSection
+import org.siloserver.silo.model.section.resolveHomeSectionItems
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.AuthRepository
 import org.siloserver.silo.repository.PersonalDataRepository
@@ -83,17 +84,7 @@ internal suspend fun hydrateStartupHomeSections(
     val unresolved = sections.filter { it.items.isEmpty() && it.totalCount > 0 }
     val fallbackById = unresolved.mapConcurrentBounded(maxConcurrency = 4) { section ->
         val hydrated = when (val result = fetchItems(section.id)) {
-            is ApiResult.Success -> {
-                val responseSection = result.data.section
-                when {
-                    responseSection != null && responseSection.items.isNotEmpty() -> responseSection
-                    responseSection != null && responseSection.totalCount == 0 -> responseSection
-                    responseSection != null && result.data.items.isNotEmpty() ->
-                        responseSection.copy(items = result.data.items)
-                    result.data.items.isNotEmpty() -> section.copy(items = result.data.items)
-                    else -> null
-                }
-            }
+            is ApiResult.Success -> resolveHomeSectionItems(section, result.data)
             is ApiResult.Error,
             is ApiResult.NetworkError -> null
         }

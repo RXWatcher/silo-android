@@ -171,10 +171,10 @@ internal suspend fun hydrateStartupHomeSections(
                 val responseSection = result.data.section
                 when {
                     responseSection != null && responseSection.items.isNotEmpty() -> responseSection
-                    responseSection != null && responseSection.totalCount == 0 -> responseSection
                     responseSection != null && result.data.items.isNotEmpty() ->
                         responseSection.copy(items = result.data.items)
                     result.data.items.isNotEmpty() -> section.copy(items = result.data.items)
+                    responseSection != null && responseSection.totalCount == 0 -> responseSection
                     else -> null
                 }
             }

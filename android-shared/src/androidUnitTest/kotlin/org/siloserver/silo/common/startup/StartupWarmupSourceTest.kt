@@ -13,6 +13,7 @@ class StartupWarmupSourceTest {
     @Test
     fun warmupUsesBoundedHydrationInsteadOfUnconditionalSectionFanout() {
         assertTrue(source.contains("hydrateStartupHomeSections(result.data.sections)"))
+        assertTrue(source.contains("if (resolution.fullyResolved && resolution.sections.isNotEmpty())"))
         assertFalse(source.contains("result.data.sections.map { section ->\n                    async"))
     }
 }

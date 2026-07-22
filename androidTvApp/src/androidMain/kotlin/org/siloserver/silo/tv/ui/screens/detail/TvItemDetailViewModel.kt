@@ -28,6 +28,7 @@ import org.siloserver.silo.repository.port.NoOpUserItemStatePort
 import org.siloserver.silo.repository.port.UserItemStatePort
 import org.siloserver.silo.tv.ui.util.isTvHiddenMediaType
 import org.siloserver.silo.tv.ui.util.visibleOnTv
+import org.siloserver.silo.util.mapConcurrentBounded
 import org.siloserver.silo.viewmodel.applyLocalPlaybackProgress
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -35,9 +36,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 data class TvItemDetailUiState(
@@ -679,6 +677,9 @@ class TvItemDetailViewModel(
 
     private var episodeLoadJob: kotlinx.coroutines.Job? = null
     private var moreLikeThisJob: Job? = null
+    private var episodeFavoriteJob: Job? = null
+    private var routeActive = true
+    private var secondaryWorkGeneration = 0L
     // The season number the currently-shown episodes/next-up actually belong to.
     // Lets a failed load revert the optimistic season selection so the chips and
     // the rail stay consistent (T15).
@@ -729,26 +730,55 @@ class TvItemDetailViewModel(
         }
     }
 
-    private suspend fun refreshEpisodeFavoriteStates(episodes: List<EpisodeListItem>) {
+    private fun refreshEpisodeFavoriteStates(episodes: List<EpisodeListItem>) {
+        episodeFavoriteJob?.cancel()
         if (episodes.isEmpty()) {
             _uiState.update { it.copy(episodeFavoriteStates = emptyMap()) }
             return
         }
-        val knownStates = _uiState.value.episodeFavoriteStates
-        val states = coroutineScope {
-            episodes.map { episode ->
-                async {
+        if (!routeActive) return
+        val generation = secondaryWorkGeneration
+        episodeFavoriteJob = viewModelScope.launch {
+            val knownStates = _uiState.value.episodeFavoriteStates
+            val states = episodes.mapConcurrentBounded(maxConcurrency = 3) { episode ->
                     val favorite = personalDataRepository.isFavorite(episode.contentId)
                     episode.contentId to when (favorite) {
                         is ApiResult.Success -> favorite.data
                         else -> knownStates[episode.contentId] ?: false
                     }
-                }
-            }.awaitAll().toMap()
+            }.toMap()
+            val currentIds = _uiState.value.episodes.mapTo(mutableSetOf()) { it.contentId }
+            if (
+                routeActive &&
+                generation == secondaryWorkGeneration &&
+                currentIds == episodes.mapTo(mutableSetOf()) { it.contentId }
+            ) {
+                _uiState.update { it.copy(episodeFavoriteStates = states) }
+            }
         }
-        val currentIds = _uiState.value.episodes.mapTo(mutableSetOf()) { it.contentId }
-        if (currentIds == episodes.mapTo(mutableSetOf()) { it.contentId }) {
-            _uiState.update { it.copy(episodeFavoriteStates = states) }
+    }
+
+    fun onRoutePaused() {
+        routeActive = false
+        secondaryWorkGeneration += 1
+        moreLikeThisJob?.cancel()
+        episodeFavoriteJob?.cancel()
+        _uiState.update { it.copy(moreLikeThisLoading = false) }
+    }
+
+    fun onRouteResumed() {
+        val wasPaused = !routeActive
+        routeActive = true
+        refreshOnReturn()
+        if (!wasPaused) return
+
+        val current = _uiState.value
+        val detail = current.detail
+        if (detail != null && current.moreLikeThis.isEmpty()) {
+            loadMoreLikeThis(detail)
+        }
+        if (current.episodes.any { it.contentId !in current.episodeFavoriteStates }) {
+            refreshEpisodeFavoriteStates(current.episodes)
         }
     }
 
@@ -1089,14 +1119,18 @@ class TvItemDetailViewModel(
         // viewers want the next episode, not a tangent (Apple showsSimilarRail).
         if (detail.type.lowercase() == "episode") return
         val recommendations = recommendationRepository ?: return
+        if (!routeActive) return
 
         moreLikeThisJob?.cancel()
+        val generation = secondaryWorkGeneration
         moreLikeThisJob = viewModelScope.launch {
             // This shelf is secondary. Let the hero, seasons, and episode rail settle
             // before starting more requests during item-open.
             delay(300)
+            if (!routeActive || generation != secondaryWorkGeneration) return@launch
             _uiState.update { it.copy(moreLikeThisLoading = true) }
             val scored = recommendations.getSimilar(detail.contentId, limit = 12)
+            if (!routeActive || generation != secondaryWorkGeneration) return@launch
             if (scored !is ApiResult.Success || scored.data.items.isEmpty()) {
                 _uiState.update { it.copy(moreLikeThisLoading = false, moreLikeThis = emptyList()) }
                 return@launch
@@ -1104,11 +1138,10 @@ class TvItemDetailViewModel(
             // Resolve refs to renderable items in parallel, preserving the
             // engine's ranking; failed resolutions drop silently (Apple's
             // withTaskGroup + zip-back-to-index).
-            val resolved = scored.data.items.map { ref ->
-                async {
-                    (catalogRepository.getItemDetail(ref.mediaItemId) as? ApiResult.Success)?.data
-                }
-            }.awaitAll()
+            val resolved = scored.data.items.mapConcurrentBounded(maxConcurrency = 3) { ref ->
+                (catalogRepository.getItemDetail(ref.mediaItemId) as? ApiResult.Success)?.data
+            }
+            if (!routeActive || generation != secondaryWorkGeneration) return@launch
             val items = resolved
                 .filterNotNull()
                 .filterNot { isTvHiddenMediaType(it.type) || it.contentId == detail.contentId }

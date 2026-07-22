@@ -17,8 +17,6 @@ import org.siloserver.silo.model.diagnostics.DiagnosticsConsent
 import org.siloserver.silo.model.diagnostics.DiagnosticsConsentMode
 import org.siloserver.silo.model.diagnostics.DiagnosticsDestination
 import org.siloserver.silo.model.diagnostics.DiagnosticsDeviceProvenance
-import org.siloserver.silo.model.diagnostics.DiagnosticsLogCategory
-import org.siloserver.silo.model.diagnostics.DiagnosticsLogSummary
 import org.siloserver.silo.model.diagnostics.DiagnosticsManifest
 import org.siloserver.silo.model.diagnostics.DiagnosticsReport
 import org.siloserver.silo.model.diagnostics.DiagnosticsReportType
@@ -183,13 +181,7 @@ class FileDiagnosticsCaptureController(
             consent = DiagnosticsConsent(DiagnosticsConsentMode.MANUAL, context.noticeVersion),
             deviceSummary = environment.deviceSummary,
             playbackSessionIds = emptyList(),
-            logSummary = DiagnosticsLogSummary(
-                lines = logBytes?.countNewlines()?.toLong() ?: 0,
-                bytesGzip = 0,
-                droppedLines = droppedLines.coerceAtLeast(0),
-                categories = if (logBytes == null) emptyList() else listOf(DiagnosticsLogCategory.OTHER),
-                debugLogging = debugLogging,
-            ),
+            logSummary = DiagnosticsLogSummaryBuilder.build(logBytes, droppedLines, debugLogging),
             archive = DiagnosticsArchive(
                 entries = CANONICAL_ORDER.filter { it == MANIFEST_FILE || it in artifacts },
                 bytes = 0,
@@ -259,8 +251,6 @@ class FileDiagnosticsCaptureController(
             }
             return output.takeIf { it.size() > 0 }?.toByteArray()
         }
-
-        fun ByteArray.countNewlines(): Int = count { it == '\n'.code.toByte() }
 
         fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
             .digest(bytes)

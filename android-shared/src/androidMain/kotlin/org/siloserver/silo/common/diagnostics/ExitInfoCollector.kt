@@ -27,8 +27,6 @@ import org.siloserver.silo.model.diagnostics.DiagnosticsDestination
 import org.siloserver.silo.model.diagnostics.DiagnosticsDeviceProvenance
 import org.siloserver.silo.model.diagnostics.DiagnosticsDeviceSentinel
 import org.siloserver.silo.model.diagnostics.DiagnosticsDeviceSummary
-import org.siloserver.silo.model.diagnostics.DiagnosticsLogCategory
-import org.siloserver.silo.model.diagnostics.DiagnosticsLogSummary
 import org.siloserver.silo.model.diagnostics.DiagnosticsManifest
 import org.siloserver.silo.model.diagnostics.DiagnosticsPlatform
 import org.siloserver.silo.model.diagnostics.DiagnosticsReport
@@ -242,7 +240,6 @@ class ExitInfoCollector(
             foreground = marker.foreground,
             playbackSessionIds = marker.playbackSessionIds,
             artifacts = artifacts,
-            logLines = marker.logLines.size.toLong(),
             droppedLines = marker.logDroppedCount + marker.logTornCount,
         )
         return save(binding, manifest, artifacts, fingerprint, marker.occurredAtEpochMs)
@@ -292,7 +289,6 @@ class ExitInfoCollector(
             foreground = null,
             playbackSessionIds = emptyList(),
             artifacts = artifacts,
-            logLines = 0,
             droppedLines = 0,
         )
         return save(binding, manifest, artifacts, fingerprint, exit.timestampMs)
@@ -322,47 +318,47 @@ class ExitInfoCollector(
         foreground: Boolean?,
         playbackSessionIds: List<String>,
         artifacts: Map<String, ByteArray>,
-        logLines: Long,
         droppedLines: Long,
-    ): DiagnosticsManifest = DiagnosticsManifest(
-        schemaVersion = 1,
-        report = DiagnosticsReport(
-            type = reportType,
-            capturedAt = rfc3339(capturedAtEpochMs),
-            captureSessionId = captureSessionId.take(128),
-            appVersion = environment.appVersion.take(64),
-            appBuild = environment.appBuild.take(64),
-            platform = environment.platform,
-            osVersion = environment.osVersion.take(128),
-            profileId = profileId?.take(128),
-        ),
-        destination = DiagnosticsDestination(binding.serverInstanceId),
-        consent = DiagnosticsConsent(consentMode(), noticeVersion().coerceAtLeast(1)),
-        crash = DiagnosticsCrashInfo(
-            summary = summary.truncateUtf8ForExit(MAX_STACK_EXCERPT_BYTES),
-            stackExcerpt = stackExcerpt,
-            thread = thread?.truncateUtf8ForExit(128),
-            foreground = foreground,
-            source = crashSource,
-            provenance = provenance,
-            occurredAt = rfc3339(capturedAtEpochMs),
-        ),
-        deviceSummary = environment.deviceSummary,
-        playbackSessionIds = playbackSessionIds.take(20).map { it.take(128) },
-        logSummary = DiagnosticsLogSummary(
-            lines = logLines.coerceAtLeast(0),
-            bytesGzip = 0,
-            droppedLines = droppedLines.coerceAtLeast(0),
-            categories = if (logLines > 0) listOf(DiagnosticsLogCategory.CRASH) else emptyList(),
+    ): DiagnosticsManifest {
+        val logSummary = DiagnosticsLogSummaryBuilder.build(
+            logBytes = artifacts[LOGS_FILE],
+            droppedLines = droppedLines,
             debugLogging = false,
-        ),
-        archive = DiagnosticsArchive(
-            entries = CANONICAL_ARCHIVE_ORDER.filter { it == "manifest.json" || it in artifacts },
-            bytes = 0,
-            uncompressedBytes = 0,
-            sha256 = "0".repeat(64),
-        ),
-    )
+        )
+        return DiagnosticsManifest(
+            schemaVersion = 1,
+            report = DiagnosticsReport(
+                type = reportType,
+                capturedAt = rfc3339(capturedAtEpochMs),
+                captureSessionId = captureSessionId.take(128),
+                appVersion = environment.appVersion.take(64),
+                appBuild = environment.appBuild.take(64),
+                platform = environment.platform,
+                osVersion = environment.osVersion.take(128),
+                profileId = profileId?.take(128),
+            ),
+            destination = DiagnosticsDestination(binding.serverInstanceId),
+            consent = DiagnosticsConsent(consentMode(), noticeVersion().coerceAtLeast(1)),
+            crash = DiagnosticsCrashInfo(
+                summary = summary.truncateUtf8ForExit(MAX_STACK_EXCERPT_BYTES),
+                stackExcerpt = stackExcerpt,
+                thread = thread?.truncateUtf8ForExit(128),
+                foreground = foreground,
+                source = crashSource,
+                provenance = provenance,
+                occurredAt = rfc3339(capturedAtEpochMs),
+            ),
+            deviceSummary = environment.deviceSummary,
+            playbackSessionIds = playbackSessionIds.take(20).map { it.take(128) },
+            logSummary = logSummary,
+            archive = DiagnosticsArchive(
+                entries = CANONICAL_ARCHIVE_ORDER.filter { it == "manifest.json" || it in artifacts },
+                bytes = 0,
+                uncompressedBytes = 0,
+                sha256 = "0".repeat(64),
+            ),
+        )
+    }
 
     private fun AndroidExitInfoRecord.runToken(): String? {
         val summary = processStateSummary ?: return null

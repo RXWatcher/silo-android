@@ -44,7 +44,23 @@ val CANONICAL_ARCHIVE_ORDER = listOf(
 class FileDiagnosticsBundleBuilder : DiagnosticsBundleBuilder {
     override fun build(report: PendingReport, redactionTokens: List<String>): DiagnosticsBundle {
         val tokens = redactionTokens.filter(String::isNotEmpty).distinct().sortedByDescending(String::length)
-        val sanitizedManifest = sanitizeManifest(report.manifest, tokens)
+        val artifactEntries = CANONICAL_ARCHIVE_ORDER.drop(1).mapNotNull { path ->
+            val file = report.directory.resolve(path)
+            if (!file.isFile) return@mapNotNull null
+            require(file.isWithin(report.directory)) { "diagnostics artifact escapes report directory: $path" }
+            val bytes = if (path in TEXT_ENTRIES) sanitizeText(path, file.readBytes(), tokens) else file.readBytes()
+            ArchiveEntry(path, bytes)
+        }
+        val sanitizedManifest = sanitizeManifest(report.manifest, tokens).let { manifest ->
+            val logs = artifactEntries.firstOrNull { it.name == LOGS_FILE }?.bytes
+            manifest.copy(
+                logSummary = DiagnosticsLogSummaryBuilder.build(
+                    logBytes = logs,
+                    droppedLines = manifest.logSummary.droppedLines,
+                    debugLogging = manifest.logSummary.debugLogging,
+                ),
+            )
+        }
         val embeddedManifest = JSON.encodeToJsonElement(DiagnosticsManifest.serializer(), sanitizedManifest)
             .jsonObject
             .jsonObjectWithoutArchive()
@@ -53,14 +69,7 @@ class FileDiagnosticsBundleBuilder : DiagnosticsBundleBuilder {
 
         val entries = buildList {
             add(ArchiveEntry(MANIFEST_FILE, embeddedManifest))
-            CANONICAL_ARCHIVE_ORDER.drop(1).forEach { path ->
-                val file = report.directory.resolve(path)
-                if (file.isFile) {
-                    require(file.isWithin(report.directory)) { "diagnostics artifact escapes report directory: $path" }
-                    val bytes = if (path in TEXT_ENTRIES) sanitizeText(path, file.readBytes(), tokens) else file.readBytes()
-                    add(ArchiveEntry(path, bytes))
-                }
-            }
+            addAll(artifactEntries)
         }
         require(entries.any { it.name == DEVICE_FILE }) { "device.json is required" }
 
@@ -212,6 +221,7 @@ class FileDiagnosticsBundleBuilder : DiagnosticsBundleBuilder {
     private companion object {
         const val MANIFEST_FILE = "manifest.json"
         const val DEVICE_FILE = "device.json"
+        const val LOGS_FILE = "logs.jsonl"
         const val REDACTED_VALUE = "[REDACTED]"
         val REDACTION_FAILURE_SENTINEL = "{\"redaction_failure\":true}\n".encodeToByteArray()
         val TEXT_ENTRIES = CANONICAL_ARCHIVE_ORDER.toSet() - MANIFEST_FILE - "crash/tombstone.pb"

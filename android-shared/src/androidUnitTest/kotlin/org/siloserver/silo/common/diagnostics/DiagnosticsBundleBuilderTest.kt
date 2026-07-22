@@ -88,6 +88,35 @@ class DiagnosticsBundleBuilderTest {
     }
 
     @Test
+    fun manifestLogSummaryDescribesTheFinalSanitizedJsonl() {
+        val secret = "secret-token"
+        val report = report(
+            artifacts = mapOf(
+                "device.json" to "{}".encodeToByteArray(),
+                "logs.jsonl" to (
+                    "{\"cat\":\"playback\",\"msg\":\"$secret\"}\n" +
+                        "{\"cat\":\"network\",\"msg\":\"safe\"}\n"
+                    ).encodeToByteArray(),
+            ),
+        )
+
+        val bundle = builder.build(report, redactionTokens = listOf(secret))
+        val entries = untar(gunzip(bundle.bytes)).associateBy(TarEntry::name)
+        val shippedLogs = entries.getValue("logs.jsonl").bytes
+
+        assertFalse(shippedLogs.decodeToString().contains(secret))
+        assertEquals(2, bundle.manifest.logSummary.lines)
+        assertEquals(
+            listOf(DiagnosticsLogCategory.PLAYBACK, DiagnosticsLogCategory.NETWORK),
+            bundle.manifest.logSummary.categories,
+        )
+        assertEquals(
+            DiagnosticsLogSummaryBuilder.build(shippedLogs, droppedLines = 0, debugLogging = false).bytesGzip,
+            bundle.manifest.logSummary.bytesGzip,
+        )
+    }
+
+    @Test
     fun invalidUtf8TextIsReplacedByRedactionFailureSentinel() {
         val report = report(
             artifacts = mapOf(

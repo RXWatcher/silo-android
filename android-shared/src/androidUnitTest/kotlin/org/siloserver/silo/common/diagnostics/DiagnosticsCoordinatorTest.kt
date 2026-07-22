@@ -11,6 +11,7 @@ import org.junit.Rule
 import org.junit.rules.TemporaryFolder
 import org.siloserver.silo.model.diagnostics.DiagnosticsAvailabilityStatus
 import org.siloserver.silo.model.diagnostics.DiagnosticsDeviceSummary
+import org.siloserver.silo.model.diagnostics.DiagnosticsLogCategory
 import org.siloserver.silo.model.diagnostics.DiagnosticsPlatform
 import org.siloserver.silo.model.diagnostics.DiagnosticsReportType
 import org.siloserver.silo.network.DefaultIdentityTransitionBarrier
@@ -107,7 +108,8 @@ class DiagnosticsCoordinatorTest {
     fun oneShotCaptureBuildsAProfileBoundManualReportFromTheCurrentRing() = runTest {
         val files = temporaryFolder.newFolder()
         val ring = LogRing()
-        ring.offer("{\"cat\":\"other\",\"msg\":\"safe\"}")
+        ring.offer("{\"cat\":\"playback\",\"msg\":\"safe\"}")
+        ring.offer("{\"cat\":\"network\",\"msg\":\"safe\"}")
         val store = FilePendingReportStore(files, nowMs = { 20L })
         val controller = FileDiagnosticsCaptureController(
             logBuffer = ring,
@@ -134,6 +136,12 @@ class DiagnosticsCoordinatorTest {
         assertEquals("server-1", report.manifest.destination.serverInstanceId)
         assertTrue(report.directory.resolve("device.json").isFile)
         assertTrue(report.directory.resolve("logs.jsonl").readText().contains("safe"))
+        assertEquals(2, report.manifest.logSummary.lines)
+        assertTrue(report.manifest.logSummary.bytesGzip > 0)
+        assertEquals(
+            listOf(DiagnosticsLogCategory.PLAYBACK, DiagnosticsLogCategory.NETWORK),
+            report.manifest.logSummary.categories,
+        )
     }
 
     private fun fixture(

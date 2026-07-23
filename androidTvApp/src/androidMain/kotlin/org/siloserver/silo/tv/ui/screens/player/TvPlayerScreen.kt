@@ -2931,10 +2931,14 @@ internal fun extractTrackEntries(tracks: Tracks, type: Int): List<PlayerTrackEnt
                 val label = format.label.orEmpty().ifBlank { format.language?.uppercase() ?: "" }
                 val codecOrMime = format.subtitleCodecOrMime()
                 val forced = format.selectionFlags and C.SELECTION_FLAG_FORCED != 0
-                val hearingImpaired = label.indicatesHearingImpairedSubtitle()
+                val hearingImpaired =
+                    format.roleFlags and
+                        (C.ROLE_FLAG_CAPTION or C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND) != 0 ||
+                        label.indicatesHearingImpairedSubtitle()
                 result.add(
                     PlayerTrackEntry(
                         index = media3FlatTextIndex,
+                        trackId = format.id,
                         label = label,
                         language = format.language,
                         isSelected = group.isTrackSelected(trackIndex),

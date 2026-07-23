@@ -22,7 +22,9 @@ import org.siloserver.silo.common.player.SessionState
 import org.siloserver.silo.common.player.SleepTimerController
 import org.siloserver.silo.common.player.SleepTimerState
 import org.siloserver.silo.common.player.StartParams
+import org.siloserver.silo.common.player.MountedSubtitleTrack
 import org.siloserver.silo.common.player.isBitmapSubtitleCodecOrMime
+import org.siloserver.silo.common.player.resolveMountedSubtitle
 import org.siloserver.silo.common.player.backend.VideoBackendCapabilities
 import org.siloserver.silo.common.player.reducePlayerStats
 import org.siloserver.silo.common.player.seek.PendingSeekPresentationGuard
@@ -95,12 +97,12 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * Renderable audio or subtitle track pulled out of ExoPlayer's current
- * `Tracks` object. `id` is just the ordinal position among groups of the
- * same type — it's used as the index argument when calling
+ * `Tracks` object. [index] is the ordinal position among groups of the same
+ * type and is used as the index argument when calling
  * [org.siloserver.silo.common.player.AudioTrackManager.selectAudioTrack] or
- * [org.siloserver.silo.common.player.SubtitleManager.selectSubtitle]. [label]
- * stays the raw Media3 selector label for matching re-prepared subtitle
- * groups; [displayLabel] is the polished user-facing string.
+ * [org.siloserver.silo.common.player.SubtitleManager.selectSubtitle].
+ * [trackId] retains Media3's stable selector identity; [label] is presentation
+ * metadata and [displayLabel] is the polished user-facing string.
  */
 data class PlayerTrackEntry(
     val index: Int,
@@ -112,6 +114,7 @@ data class PlayerTrackEntry(
     val channelCount: Int = 0,
     val isForced: Boolean = false,
     val isHearingImpaired: Boolean = false,
+    val trackId: String? = null,
 )
 
 internal fun selectedServerAudioTrackIndex(
@@ -302,37 +305,25 @@ internal fun resolveInitialSubtitleTrackIndex(
         ?: mountedSubtitles.getOrNull(requestedOrdinal)
         ?: return null
 
-    return subtitleTracks.firstOrNull { it.matchesMountedSubtitle(requested) }?.index
+    return resolveMountedSubtitle(
+        requested,
+        subtitleTracks.map(PlayerTrackEntry::toMountedSubtitleTrack),
+    )?.track?.index
 }
 
-internal fun PlayerTrackEntry.matchesMountedSubtitle(subtitle: PlayerSubtitleInfo): Boolean {
-    val targetLabel = subtitle.label?.trim()?.takeIf { it.isNotBlank() }
-    if (targetLabel != null) {
-        val rawLabel = label.trim()
-        val friendlyLabel = displayLabel.trim()
-        if (rawLabel == targetLabel || friendlyLabel == targetLabel) return true
-        if (
-            rawLabel.equals(targetLabel, ignoreCase = true) ||
-            friendlyLabel.equals(targetLabel, ignoreCase = true)
-        ) {
-            return true
-        }
-    }
+internal fun PlayerTrackEntry.matchesMountedSubtitle(subtitle: PlayerSubtitleInfo): Boolean =
+    resolveMountedSubtitle(subtitle, listOf(toMountedSubtitleTrack())) != null
 
-    val targetLanguage = normalizedSubtitleLanguage(subtitle.language)
-    val trackLanguage = normalizedSubtitleLanguage(language)
-    val targetCodec = normalizedSubtitleCodec(subtitle.codec ?: subtitleCodecFromUrl(subtitle.url))
-    val trackCodec = normalizedSubtitleCodec(codecOrMime)
-    // V3 embedded-bitmap selection metadata intentionally has no synthetic
-    // label/language: those values belong to the real demuxed Media3 track.
-    // In that case the codec family is the stable bridge (dvd_subtitle ->
-    // application/vobsub, for example).
-    if (targetLanguage == null) {
-        return targetCodec != null && trackCodec == targetCodec
-    }
-    if (trackLanguage != targetLanguage) return false
-    return targetCodec == null || trackCodec == null || targetCodec == trackCodec
-}
+private fun PlayerTrackEntry.toMountedSubtitleTrack(): MountedSubtitleTrack =
+    MountedSubtitleTrack(
+        index = index,
+        trackId = trackId,
+        label = label,
+        language = language,
+        codec = codecOrMime,
+        forced = isForced,
+        hearingImpaired = isHearingImpaired,
+    )
 
 /**
  * Holds the stable server subtitle identity across a protocol replan. Replanning
@@ -385,29 +376,6 @@ private fun normalizedSubtitleLanguage(language: String?): String? {
         else -> primary
     }
 }
-
-private fun normalizedSubtitleCodec(codecOrMime: String?): String? {
-    val normalized = codecOrMime
-        ?.trim()
-        ?.takeIf { it.isNotBlank() }
-        ?.filter { it.isLetterOrDigit() }
-        ?.lowercase()
-        ?: return null
-    return when {
-        normalized == "ass" || normalized == "ssa" || normalized.contains("xssa") -> "ssa"
-        normalized == "srt" || normalized.contains("subrip") -> "srt"
-        normalized == "vtt" || normalized == "textvtt" || normalized.contains("webvtt") -> "vtt"
-        normalized.contains("pgs") -> "pgs"
-        normalized.contains("dvd") || normalized.contains("vobsub") -> "vobsub"
-        normalized.contains("dvbsub") -> "dvbsub"
-        else -> normalized
-    }
-}
-
-private fun subtitleCodecFromUrl(url: String): String =
-    url.substringBefore('?')
-        .substringBefore('#')
-        .substringAfterLast('.', "")
 
 /**
  * How the video surface scales to fill the player area. Session-scoped

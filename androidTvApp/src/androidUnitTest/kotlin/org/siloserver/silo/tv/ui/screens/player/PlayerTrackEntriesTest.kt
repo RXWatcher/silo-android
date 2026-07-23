@@ -53,6 +53,37 @@ class PlayerTrackEntriesTest {
     }
 
     @Test
+    fun textTracksRetainMediaIdentityFlagsAndNormalizedCodec() {
+        val group = TrackGroup(
+            subtitle(
+                label = "English SDH",
+                language = "EN",
+                id = "decoder-pgs-7",
+                codec = MimeTypes.APPLICATION_PGS,
+                forced = true,
+                hearingImpaired = true,
+            ),
+        )
+        val tracks = Tracks(
+            listOf(
+                Tracks.Group(
+                    group,
+                    false,
+                    intArrayOf(C.FORMAT_HANDLED),
+                    booleanArrayOf(false),
+                ),
+            ),
+        )
+
+        val entry = extractTrackEntries(tracks, C.TRACK_TYPE_TEXT).single()
+
+        assertEquals("decoder-pgs-7", entry.trackId)
+        assertEquals(MimeTypes.APPLICATION_PGS, entry.codecOrMime)
+        assertTrue(entry.isForced)
+        assertTrue(entry.isHearingImpaired)
+    }
+
+    @Test
     fun subtitleSelectionStateMarksOnlyTheAppliedTrack() {
         val tracks = listOf(
             PlayerTrackEntry(index = 0, label = "English", language = "en", isSelected = false),
@@ -314,6 +345,50 @@ class PlayerTrackEntriesTest {
     }
 
     @Test
+    fun initialSubtitleOrdinalUsesStableIdAcrossSameLabelSidecars() {
+        val tracks = listOf(
+            PlayerTrackEntry(
+                index = 0,
+                trackId = "silo-subtitle:3",
+                label = "Server subtitle",
+                language = "en",
+                isSelected = false,
+                codecOrMime = MimeTypes.TEXT_VTT,
+                isForced = true,
+            ),
+            PlayerTrackEntry(
+                index = 1,
+                trackId = "silo-subtitle:4",
+                label = "Server subtitle",
+                language = "en",
+                isSelected = false,
+                codecOrMime = MimeTypes.TEXT_VTT,
+                isForced = false,
+            ),
+        )
+        val mounted = listOf(
+            PlayerSubtitleInfo(
+                index = 4,
+                language = "en",
+                codec = "webvtt",
+                label = "Server subtitle",
+                source = "server_artifact",
+                forced = false,
+                url = "/stream/s2/subtitles/4.vtt",
+            ),
+        )
+
+        assertEquals(
+            1,
+            resolveInitialSubtitleTrackIndex(
+                requestedOrdinal = 4,
+                subtitleTracks = tracks,
+                mountedSubtitles = mounted,
+            ),
+        )
+    }
+
+    @Test
     fun initialSubtitleOrdinalDoesNotFallThroughToCeaTrack() {
         val tracks = listOf(
             PlayerTrackEntry(
@@ -518,11 +593,19 @@ class PlayerTrackEntriesTest {
     private fun subtitle(
         label: String,
         language: String,
+        id: String? = null,
+        codec: String = MimeTypes.APPLICATION_SUBRIP,
         forced: Boolean = false,
+        hearingImpaired: Boolean = false,
     ): Format = Format.Builder()
+        .setId(id)
         .setLabel(label)
         .setLanguage(language)
-        .setSampleMimeType(MimeTypes.APPLICATION_SUBRIP)
+        .setSampleMimeType(
+            if (codec == MimeTypes.APPLICATION_PGS) "application/x-media3-cues" else codec,
+        )
+        .setCodecs(if (codec == MimeTypes.APPLICATION_PGS) codec else null)
         .setSelectionFlags(if (forced) C.SELECTION_FLAG_FORCED else 0)
+        .setRoleFlags(if (hearingImpaired) C.ROLE_FLAG_CAPTION else 0)
         .build()
 }

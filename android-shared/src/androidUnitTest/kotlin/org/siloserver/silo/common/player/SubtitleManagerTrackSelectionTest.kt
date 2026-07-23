@@ -18,6 +18,46 @@ import kotlin.test.assertTrue
 class SubtitleManagerTrackSelectionTest {
 
     @Test
+    fun serverArtifactConfigurationsCarryStableCombinedIndexes() {
+        val configurations = SubtitleManager().buildSubtitleConfigurations(
+            subtitles = listOf(
+                PlayerSubtitleInfo(3, "en", "webvtt", "Server subtitle", "server_artifact", true, "/3.vtt"),
+                PlayerSubtitleInfo(4, "en", "webvtt", "Server subtitle", "server_artifact", false, "/4.vtt"),
+            ),
+            serverUrl = "https://silo.example",
+        )
+
+        assertEquals(
+            listOf("silo-subtitle:3", "silo-subtitle:4"),
+            configurations.map { it.id },
+        )
+    }
+
+    @Test
+    fun mobileMetadataSelectionUsesStableIdAcrossDuplicateRuntimeLabels() {
+        val forced = TrackGroup(
+            subtitle("Server subtitle", "en", id = "silo-subtitle:3", forced = true),
+        )
+        val full = TrackGroup(
+            subtitle("Server subtitle", "en", id = "silo-subtitle:4", forced = false),
+        )
+        val tracks = Tracks(
+            listOf(
+                Tracks.Group(forced, false, intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(false)),
+                Tracks.Group(full, false, intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(false)),
+            ),
+        )
+
+        val selection = resolveSubtitleSelection(
+            tracks,
+            PlayerSubtitleInfo(4, "en", "webvtt", "Server subtitle", "server_artifact", false, "/4.vtt"),
+        )
+
+        assertSame(full, selection?.mediaTrackGroup)
+        assertEquals(0, selection?.trackIndex)
+    }
+
+    @Test
     fun relativeServerSubtitleUrlsResolveThroughApiStreamMount() {
         assertEquals(
             "https://silo.example/api/v1/stream/session-1/subtitles/0.srt",
@@ -305,11 +345,15 @@ class SubtitleManagerTrackSelectionTest {
         language: String?,
         sampleMimeType: String = MimeTypes.APPLICATION_SUBRIP,
         codecs: String? = null,
+        id: String? = null,
+        forced: Boolean = false,
     ): Format =
         Format.Builder()
+            .setId(id)
             .setLabel(label)
             .setLanguage(language)
             .setSampleMimeType(sampleMimeType)
             .setCodecs(codecs)
+            .setSelectionFlags(if (forced) C.SELECTION_FLAG_FORCED else 0)
             .build()
 }

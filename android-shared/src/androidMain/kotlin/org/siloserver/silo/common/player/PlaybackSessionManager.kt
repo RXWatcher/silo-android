@@ -277,6 +277,21 @@ open class PlaybackSessionManager(
         .filter { it !in protectedSessionIds }
         .also { stagedVideoReplans.clear() }
 
+    private fun drainStagedCandidateSessionsForBaseLocked(
+        baseSessionId: String,
+        protectedSessionIds: Set<String>,
+    ): List<String> {
+        val matchingHandles = stagedVideoReplans.keys
+            .filter { it.baseSessionId == baseSessionId }
+        matchingHandles.forEach { stagedVideoReplans.remove(it) }
+        val remainingCandidateSessionIds = stagedVideoReplans.keys
+            .mapTo(mutableSetOf()) { it.candidateSessionId }
+        return matchingHandles
+            .map { it.candidateSessionId }
+            .distinct()
+            .filter { it !in protectedSessionIds && it !in remainingCandidateSessionIds }
+    }
+
     internal fun activeSessionIdForTest(): String? = activeVideoAttempt.get()?.sessionId
 
     suspend fun replanActiveVideoSession(
@@ -1456,20 +1471,18 @@ open class PlaybackSessionManager(
      * Must be called when exiting the player or when playback completes.
      */
     open suspend fun stopSession(sessionId: String): ApiResult<Unit> = videoAttemptMutex.withLock {
-        var stoppedActiveSession = false
         while (true) {
             val active = activeVideoAttempt.get()
             if (active?.sessionId != sessionId) break
             if (activeVideoAttempt.compareAndSet(active, null)) {
                 emitActiveVideoEvent(active, "stopped")
-                stoppedActiveSession = true
                 break
             }
         }
-        if (stoppedActiveSession) {
-            drainStagedCandidateSessionsLocked(protectedSessionIds = setOf(sessionId))
-                .forEach { playbackRepository.stopPlayback(it) }
-        }
+        drainStagedCandidateSessionsForBaseLocked(
+            baseSessionId = sessionId,
+            protectedSessionIds = setOfNotNull(sessionId, activeVideoAttempt.get()?.sessionId),
+        ).forEach { playbackRepository.stopPlayback(it) }
         playbackRepository.stopPlayback(sessionId)
     }
 

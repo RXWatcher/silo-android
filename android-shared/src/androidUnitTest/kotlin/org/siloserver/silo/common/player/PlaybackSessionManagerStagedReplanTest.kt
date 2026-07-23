@@ -376,6 +376,42 @@ class PlaybackSessionManagerStagedReplanTest {
     }
 
     @Test
+    fun `stale stop drains only matching base owner of shared candidate`() = runTest {
+        val harness = Harness(
+            replanResponse = { index, _ ->
+                response(
+                    sidecarPlan(
+                        sessionId = when (index) {
+                            1 -> "s2"
+                            else -> "s3"
+                        },
+                    ),
+                )
+            },
+        )
+        harness.start()
+        harness.stageSidecar()
+        val replacement = harness.stageSidecar()
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(replacement),
+        )
+        val stagedFromS2 = harness.stageSidecar()
+
+        harness.manager.stopSession("s1")
+
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+        assertEquals(mapOf("s1" to 2), harness.stoppedSessions.groupingBy { it }.eachCount())
+
+        harness.manager.discardStagedVideoReplan(stagedFromS2)
+
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+        assertEquals(
+            mapOf("s1" to 2, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+    }
+
+    @Test
     fun `concurrent immediate replans serialize through both stage and commit`() = runTest {
         val firstEntered = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()
@@ -422,15 +458,20 @@ class PlaybackSessionManagerStagedReplanTest {
     @Test
     fun `immediate terminal response preserves typed outcome and teardown`() = runTest {
         val harness = Harness(
-            replanResponse = { _, _ ->
-                terminalResponse(
-                    sessionId = "s2",
-                    reason = "adaptation_unavailable",
-                    message = "No compatible route.",
-                )
+            replanResponse = { index, _ ->
+                if (index == 0) {
+                    response(sidecarPlan(sessionId = "s2"))
+                } else {
+                    terminalResponse(
+                        sessionId = "s3",
+                        reason = "adaptation_unavailable",
+                        message = "No compatible route.",
+                    )
+                }
             },
         )
         harness.start()
+        val staged = harness.stageSidecar()
 
         val result = harness.manager.replanActiveVideoSession(
             classification = "player_failure",
@@ -445,7 +486,22 @@ class PlaybackSessionManagerStagedReplanTest {
         assertEquals("adaptation_unavailable", terminal.reason)
         assertEquals(null, harness.manager.activeSessionIdForTest())
         assertEquals(
-            mapOf("s1" to 1, "s2" to 1),
+            mapOf("s1" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+
+        harness.manager.stopSession("s1")
+
+        assertEquals(
+            mapOf("s1" to 2, "s2" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+        assertEquals(
+            409,
+            assertIs<ApiResult.Error>(harness.manager.commitStagedVideoReplan(staged)).code,
+        )
+        assertEquals(
+            mapOf("s1" to 2, "s2" to 1, "s3" to 1),
             harness.stoppedSessions.groupingBy { it }.eachCount(),
         )
     }
@@ -478,11 +534,13 @@ class PlaybackSessionManagerStagedReplanTest {
     @Test
     fun `immediate incompatible response preserves server upgrade outcome`() = runTest {
         val harness = Harness(
-            replanResponse = { _, _ ->
-                response(sidecarPlan(sessionId = "s2")).copy(protocolVersion = 2)
+            replanResponse = { index, _ ->
+                val response = response(sidecarPlan(sessionId = if (index == 0) "s2" else "s3"))
+                if (index == 0) response else response.copy(protocolVersion = 2)
             },
         )
         harness.start()
+        val staged = harness.stageSidecar()
 
         val result = harness.manager.replanActiveVideoSession(
             classification = "player_failure",
@@ -495,21 +553,41 @@ class PlaybackSessionManagerStagedReplanTest {
             assertIs<ApiResult.Success<VideoSessionStartV3>>(result).data,
         )
         assertEquals(null, harness.manager.activeSessionIdForTest())
-        assertEquals(listOf("s2"), harness.stoppedSessions)
+        assertEquals(listOf("s3"), harness.stoppedSessions)
+
+        harness.manager.stopSession("s1")
+
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+        assertEquals(
+            409,
+            assertIs<ApiResult.Error>(harness.manager.commitStagedVideoReplan(staged)).code,
+        )
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
     }
 
     @Test
     fun `immediate legacy engine response preserves terminal outcome and cleanup`() = runTest {
         val harness = Harness(
-            replanResponse = { _, _ ->
-                response(
-                    sidecarPlan(sessionId = "s2").copy(
-                        engine = PlaybackEngineKind.MPV_DIRECT,
-                    ),
-                )
+            replanResponse = { index, _ ->
+                if (index == 0) {
+                    response(sidecarPlan(sessionId = "s2"))
+                } else {
+                    response(
+                        sidecarPlan(sessionId = "s3").copy(
+                            engine = PlaybackEngineKind.MPV_DIRECT,
+                        ),
+                    )
+                }
             },
         )
         harness.start()
+        val staged = harness.stageSidecar()
 
         val result = harness.manager.replanActiveVideoSession(
             classification = "player_failure",
@@ -524,7 +602,22 @@ class PlaybackSessionManagerStagedReplanTest {
         assertEquals("unsupported_legacy_engine", terminal.reason)
         assertEquals(null, harness.manager.activeSessionIdForTest())
         assertEquals(
-            mapOf("s1" to 1, "s2" to 1),
+            mapOf("s1" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+
+        harness.manager.stopSession("s1")
+
+        assertEquals(
+            mapOf("s1" to 2, "s2" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+        assertEquals(
+            409,
+            assertIs<ApiResult.Error>(harness.manager.commitStagedVideoReplan(staged)).code,
+        )
+        assertEquals(
+            mapOf("s1" to 2, "s2" to 1, "s3" to 1),
             harness.stoppedSessions.groupingBy { it }.eachCount(),
         )
     }

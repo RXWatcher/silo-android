@@ -148,6 +148,10 @@ test("rejects crates.io-like registry source variants instead of omitting them",
     "registry+https://github.com/rust-lang/crates.io-index#fragment",
     "registry+https://user@github.com/rust-lang/crates.io-index",
     "registry+https://index.crates.io/",
+    ...[4, 8, 9].map(
+      (depth) => `registry+https://github.com/rust-lang/${encodePercentDepth("crates.io-index", depth)}`,
+    ),
+    "registry+https://registry.example.com/%ZZ",
   ];
 
   for (const source of sourceVariants) {
@@ -173,3 +177,11 @@ checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     assert.equal(result.requestBody, undefined);
   }
 });
+
+function encodePercentDepth(value, depth) {
+  let encoded = `%${value.codePointAt(0).toString(16)}${value.slice(1)}`;
+  for (let pass = 1; pass < depth; pass += 1) {
+    encoded = encodeURIComponent(encoded);
+  }
+  return encoded;
+}

@@ -1,0 +1,85 @@
+import assert from "node:assert/strict";
+import { once } from "node:events";
+import http from "node:http";
+import { spawn } from "node:child_process";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const script = fileURLToPath(new URL("./check-rust-osv.mjs", import.meta.url));
+const lockfile = `version = 4
+
+[[package]]
+name = "safe-crate"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "affected-crate"
+version = "4.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "workspace-only"
+version = "0.1.0"
+`;
+
+async function runCheck(response) {
+  let requestBody;
+  const server = http.createServer((request, reply) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      requestBody = JSON.parse(body);
+      reply.writeHead(200, { "content-type": "application/json" });
+      reply.end(JSON.stringify(response));
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address();
+
+  const child = spawn(process.execPath, [script], {
+    env: { ...process.env, OSV_API_URL: `http://127.0.0.1:${port}/v1/querybatch` },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stdin.end(lockfile);
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const [exitCode] = await once(child, "exit");
+  server.close();
+  await once(server, "close");
+  return { exitCode, stdout, stderr, requestBody };
+}
+
+test("submits only crates.io packages and succeeds when none are affected", async () => {
+  const result = await runCheck({ results: [{}, {}] });
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.requestBody, {
+    queries: [
+      { package: { ecosystem: "crates.io", name: "safe-crate" }, version: "1.2.3" },
+      { package: { ecosystem: "crates.io", name: "affected-crate" }, version: "4.5.6" },
+    ],
+  });
+  assert.equal(result.stdout, "No affected crates.io packages found.\n");
+  assert.equal(result.stderr, "");
+});
+
+test("fails affected results and prints package names without advisory details", async () => {
+  const result = await runCheck({
+    results: [{}, { vulns: [{ id: "GHSA-secret", summary: "do not print me" }] }],
+  });
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "Affected crates.io packages:\naffected-crate\n");
+});

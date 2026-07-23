@@ -162,7 +162,7 @@ class SubtitleMountResolverTest {
             ),
             track(
                 index = 1,
-                trackId = "silo-downloaded-subtitle:4",
+                trackId = "silo-downloaded-subtitle:99",
                 label = duplicateLabel,
                 language = "en",
                 codec = "text/vtt",
@@ -227,9 +227,82 @@ class SubtitleMountResolverTest {
                     downloadId = 99,
                     media = downloadedMedia.copy(trackId = "silo-subtitle:3"),
                 ),
-                tracks,
+                listOf(tracks.first(), tracks.last()),
             ),
         )
+    }
+
+    @Test
+    fun downloadedIdentityUsesDomainIdInsteadOfMutableArtifactIndex() {
+        val tracks = listOf(
+            track(
+                index = 0,
+                trackId = "silo-downloaded-subtitle:312",
+                label = "English",
+                language = "en",
+                codec = "text/vtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+            track(
+                index = 1,
+                trackId = "silo-downloaded-subtitle:313",
+                label = "English",
+                language = "en",
+                codec = "text/vtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+        )
+        val identity = SubtitleIdentity.Downloaded(
+            downloadId = 312,
+            media = media(
+                trackId = "silo-downloaded-subtitle:7",
+                label = "English",
+                language = "en",
+                codecFamily = "webvtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+        )
+
+        assertEquals(0, resolveMountedSubtitle(identity, tracks)?.track?.index)
+        assertNull(resolveMountedSubtitle(identity, listOf(tracks[1])))
+    }
+
+    @Test
+    fun legacyDownloadedRowCannotCrossMatchAnyStableDownloadedIdentity() {
+        val row = PlayerSubtitleInfo(
+            index = 4,
+            language = "en",
+            codec = "webvtt",
+            label = "English",
+            source = "downloaded",
+            forced = false,
+            url = "/4.vtt",
+        )
+        val tracks = listOf(
+            track(
+                index = 0,
+                trackId = "silo-downloaded-subtitle:4",
+                label = "English",
+                language = "en",
+                codec = "text/vtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+            track(
+                index = 1,
+                trackId = "silo-downloaded-subtitle:312",
+                label = "English",
+                language = "en",
+                codec = "text/vtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+        )
+
+        assertNull(resolveMountedSubtitle(row, tracks))
     }
 
     @Test

@@ -71,14 +71,16 @@ class SubtitleManager(
                 return@mapNotNull null
             }
 
-            MediaItem.SubtitleConfiguration.Builder(Uri.parse(absoluteUrl))
-                .setId(
-                    if (subtitle.isDownloadedSubtitleArtifact()) {
-                        downloadedSubtitleArtifactTrackId(subtitle.index)
-                    } else {
-                        subtitleArtifactTrackId(subtitle.index)
-                    },
-                )
+            val builder = MediaItem.SubtitleConfiguration.Builder(Uri.parse(absoluteUrl))
+            val stableTrackId = if (subtitle.isDownloadedSubtitleArtifact()) {
+                subtitle.downloadId?.let(::downloadedSubtitleArtifactTrackId)
+            } else {
+                subtitleArtifactTrackId(subtitle.index)
+            }
+            if (stableTrackId != null) {
+                builder.setId(stableTrackId)
+            }
+            builder
                 .setMimeType(mimeType)
                 .setLanguage(subtitle.language)
                 .setLabel(subtitle.label ?: subtitle.language ?: "Track ${subtitle.index}")

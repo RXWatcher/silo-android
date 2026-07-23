@@ -62,6 +62,8 @@ data class PlayerSubtitleInfo(
     @SerialName("catalog_source") val catalogSource: String? = null,
     /** Catalog default marker; playback-session artifact rows do not carry it themselves. */
     @SerialName("default") val isDefault: Boolean? = null,
+    /** Persistent provider download identity; distinct from the mutable combined artifact [index]. */
+    @SerialName("download_id") val downloadId: Int? = null,
 )
 
 /**

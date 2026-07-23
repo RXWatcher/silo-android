@@ -16,8 +16,9 @@ private const val DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX =
 fun subtitleArtifactTrackId(serverIndex: Int): String =
     "$SUBTITLE_ARTIFACT_TRACK_ID_PREFIX$serverIndex"
 
-fun downloadedSubtitleArtifactTrackId(artifactIndex: Int): String =
-    "$DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX$artifactIndex"
+/** Stable Media3 identity derived only from the persistent downloaded-subtitle row ID. */
+fun downloadedSubtitleArtifactTrackId(downloadId: Int): String =
+    "$DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX$downloadId"
 
 /**
  * Complete Media3 subtitle metadata retained by both phone and TV adapters.
@@ -93,11 +94,10 @@ fun resolveMountedSubtitle(
     }
     if (!isEmbedded) {
         val exactIdentity = if (subtitle.isDownloadedSubtitleArtifact()) {
+            val downloadId = subtitle.downloadId ?: return null
             SubtitleIdentity.Downloaded(
-                downloadId = subtitle.index,
-                media = SubtitleMediaIdentity(
-                    trackId = downloadedSubtitleArtifactTrackId(subtitle.index),
-                ),
+                downloadId = downloadId,
+                media = SubtitleMediaIdentity(),
             )
         } else {
             SubtitleIdentity.ServerSidecar(subtitle.index)
@@ -138,7 +138,7 @@ fun resolveMountedSubtitle(
 private fun SubtitleIdentity.expectedMediaTrackId(): String? = when (this) {
     is SubtitleIdentity.ServerSidecar -> subtitleArtifactTrackId(serverIndex)
     is SubtitleIdentity.Embedded -> media.trackId.normalizedNonServerTrackId()
-    is SubtitleIdentity.Downloaded -> media.trackId.normalizedDownloadedTrackId()
+    is SubtitleIdentity.Downloaded -> downloadedSubtitleArtifactTrackId(downloadId)
     is SubtitleIdentity.LocalMedia3 -> media.trackId.normalizedNonServerTrackId()
     SubtitleIdentity.Off,
     is SubtitleIdentity.ServerBurnIn,
@@ -180,10 +180,6 @@ private fun String?.normalizedValue(): String? =
 
 private fun String?.normalizedNonServerTrackId(): String? =
     normalizedValue()?.takeUnless(String::isReservedArtifactTrackId)
-
-private fun String?.normalizedDownloadedTrackId(): String? =
-    normalizedValue()
-        ?.takeIf { it.startsWith(DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX) }
 
 private fun String?.isReservedArtifactTrackId(): Boolean =
     this?.startsWith(SUBTITLE_ARTIFACT_TRACK_ID_PREFIX) == true ||

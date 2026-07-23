@@ -11,6 +11,7 @@ import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -38,7 +39,16 @@ class SubtitleManagerTrackSelectionTest {
         val configurations = SubtitleManager().buildSubtitleConfigurations(
             subtitles = listOf(
                 PlayerSubtitleInfo(3, "en", "webvtt", "English", "server_artifact", false, "/3.vtt"),
-                PlayerSubtitleInfo(4, "en", "webvtt", "English", "downloaded", false, "/4.vtt"),
+                PlayerSubtitleInfo(
+                    index = 4,
+                    language = "en",
+                    codec = "webvtt",
+                    label = "English",
+                    source = "downloaded",
+                    forced = false,
+                    url = "/4.vtt",
+                    downloadId = 312,
+                ),
                 PlayerSubtitleInfo(
                     index = 5,
                     language = "en",
@@ -48,6 +58,7 @@ class SubtitleManagerTrackSelectionTest {
                     forced = false,
                     url = "/5.vtt",
                     catalogSource = "downloaded",
+                    downloadId = 313,
                 ),
                 PlayerSubtitleInfo(
                     index = 6,
@@ -58,6 +69,7 @@ class SubtitleManagerTrackSelectionTest {
                     forced = false,
                     url = "/6.vtt",
                     catalogSource = "downloaded",
+                    downloadId = 314,
                 ),
             ),
             serverUrl = "https://silo.example",
@@ -66,12 +78,56 @@ class SubtitleManagerTrackSelectionTest {
         assertEquals(
             listOf(
                 "silo-subtitle:3",
-                "silo-downloaded-subtitle:4",
-                "silo-downloaded-subtitle:5",
-                "silo-downloaded-subtitle:6",
+                "silo-downloaded-subtitle:312",
+                "silo-downloaded-subtitle:313",
+                "silo-downloaded-subtitle:314",
             ),
             configurations.map { it.id },
         )
+    }
+
+    @Test
+    fun downloadedConfigurationIdSurvivesArtifactReorderDeletionAndCatalogGrowth() {
+        fun mountedId(index: Int): String? =
+            SubtitleManager().buildSubtitleConfigurations(
+                subtitles = listOf(
+                    PlayerSubtitleInfo(
+                        index = index,
+                        language = "en",
+                        codec = "webvtt",
+                        label = "Downloaded English",
+                        source = "downloaded",
+                        forced = false,
+                        url = "/$index.vtt",
+                        downloadId = 312,
+                    ),
+                ),
+                serverUrl = "https://silo.example",
+            ).single().id
+
+        assertEquals("silo-downloaded-subtitle:312", mountedId(index = 1))
+        assertEquals("silo-downloaded-subtitle:312", mountedId(index = 2))
+        assertEquals("silo-downloaded-subtitle:312", mountedId(index = 8))
+    }
+
+    @Test
+    fun legacyDownloadedConfigurationDoesNotFabricateStableIdFromArtifactIndex() {
+        val configuration = SubtitleManager().buildSubtitleConfigurations(
+            subtitles = listOf(
+                PlayerSubtitleInfo(
+                    index = 4,
+                    language = "en",
+                    codec = "webvtt",
+                    label = "Legacy downloaded English",
+                    source = "downloaded",
+                    forced = false,
+                    url = "/4.vtt",
+                ),
+            ),
+            serverUrl = "https://silo.example",
+        ).single()
+
+        assertNull(configuration.id)
     }
 
     @Test
@@ -80,7 +136,7 @@ class SubtitleManagerTrackSelectionTest {
             subtitle("English", "en", id = "silo-subtitle:3"),
         )
         val downloaded = TrackGroup(
-            subtitle("English", "en", id = "silo-downloaded-subtitle:4"),
+            subtitle("English", "en", id = "silo-downloaded-subtitle:312"),
         )
         val tracks = Tracks(
             listOf(
@@ -100,6 +156,7 @@ class SubtitleManagerTrackSelectionTest {
                 forced = false,
                 url = "/4.vtt",
                 catalogSource = "downloaded",
+                downloadId = 312,
             ),
         )
 

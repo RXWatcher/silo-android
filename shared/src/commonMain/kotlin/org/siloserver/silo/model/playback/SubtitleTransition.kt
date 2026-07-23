@@ -40,6 +40,8 @@ data class PendingSubtitle(
     val generation: Long,
     val audioTrackIndex: Int?,
     val qualityPreference: String?,
+    val audioPreferenceSpecified: Boolean = false,
+    val qualityPreferenceSpecified: Boolean = false,
 )
 
 data class SubtitleTransitionState(
@@ -129,12 +131,16 @@ fun reduceSubtitleTransition(
     is UpdateAudioPreference -> state.stageLatest(
         identity = state.pending?.identity ?: state.committed.identity,
         audioTrackIndex = event.audioTrackIndex,
-        qualityPreference = state.pending?.qualityPreference ?: state.committed.qualityPreference,
+        qualityPreference = state.effectiveQualityPreference(),
+        audioPreferenceSpecified = true,
+        qualityPreferenceSpecified = state.pending?.qualityPreferenceSpecified ?: false,
     )
     is UpdateQualityPreference -> state.stageLatest(
         identity = state.pending?.identity ?: state.committed.identity,
-        audioTrackIndex = state.pending?.audioTrackIndex ?: state.committed.audioTrackIndex,
+        audioTrackIndex = state.effectiveAudioTrackIndex(),
         qualityPreference = event.qualityPreference,
+        audioPreferenceSpecified = state.pending?.audioPreferenceSpecified ?: false,
+        qualityPreferenceSpecified = true,
     )
     is StagedSubtitleValidated -> state.validate(event)
     is StagedSubtitleFailed -> state.fail(event)
@@ -147,8 +153,8 @@ fun reduceSubtitleTransition(
 }
 
 private fun SubtitleTransitionState.select(identity: SubtitleIdentity): SubtitleTransitionResult {
-    val audioTrackIndex = pending?.audioTrackIndex ?: committed.audioTrackIndex
-    val qualityPreference = pending?.qualityPreference ?: committed.qualityPreference
+    val audioTrackIndex = effectiveAudioTrackIndex()
+    val qualityPreference = effectiveQualityPreference()
     if (identity is SubtitleIdentity.LocalMedia3 || identity is SubtitleIdentity.Downloaded) {
         val updated = CommittedSubtitle(identity, audioTrackIndex, qualityPreference)
         return SubtitleTransitionResult(
@@ -163,19 +169,29 @@ private fun SubtitleTransitionState.select(identity: SubtitleIdentity): Subtitle
             ),
         )
     }
-    return stageLatest(identity, audioTrackIndex, qualityPreference)
+    return stageLatest(
+        identity = identity,
+        audioTrackIndex = audioTrackIndex,
+        qualityPreference = qualityPreference,
+        audioPreferenceSpecified = pending?.audioPreferenceSpecified ?: false,
+        qualityPreferenceSpecified = pending?.qualityPreferenceSpecified ?: false,
+    )
 }
 
 private fun SubtitleTransitionState.stageLatest(
     identity: SubtitleIdentity,
     audioTrackIndex: Int?,
     qualityPreference: String?,
+    audioPreferenceSpecified: Boolean,
+    qualityPreferenceSpecified: Boolean,
 ): SubtitleTransitionResult {
     val latest = PendingSubtitle(
         identity = identity,
         generation = nextGeneration,
         audioTrackIndex = audioTrackIndex,
         qualityPreference = qualityPreference,
+        audioPreferenceSpecified = audioPreferenceSpecified,
+        qualityPreferenceSpecified = qualityPreferenceSpecified,
     )
     return SubtitleTransitionResult(
         state = copy(
@@ -185,6 +201,12 @@ private fun SubtitleTransitionState.stageLatest(
         effects = listOf(StageSubtitleReplan(latest)),
     )
 }
+
+private fun SubtitleTransitionState.effectiveAudioTrackIndex(): Int? =
+    if (pending != null) pending.audioTrackIndex else committed.audioTrackIndex
+
+private fun SubtitleTransitionState.effectiveQualityPreference(): String? =
+    if (pending != null) pending.qualityPreference else committed.qualityPreference
 
 private fun SubtitleTransitionState.validate(
     event: StagedSubtitleValidated,

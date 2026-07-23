@@ -216,11 +216,90 @@ class SubtitleTransitionTest {
         )
     }
 
+    @Test
+    fun `explicit quality clear survives a later audio update`() {
+        val initial = stateWithPreferences()
+        val qualityCleared = reduceSubtitleTransition(
+            initial,
+            UpdateQualityPreference(qualityPreference = null),
+        )
+
+        val audioUpdated = reduceSubtitleTransition(
+            qualityCleared.state,
+            UpdateAudioPreference(audioTrackIndex = 2),
+        )
+
+        assertEquals(2, audioUpdated.state.pending?.audioTrackIndex)
+        assertNull(audioUpdated.state.pending?.qualityPreference)
+        assertTrue(audioUpdated.state.pending?.qualityPreferenceSpecified == true)
+    }
+
+    @Test
+    fun `explicit quality clear survives a later subtitle selection`() {
+        val initial = stateWithPreferences()
+        val qualityCleared = reduceSubtitleTransition(
+            initial,
+            UpdateQualityPreference(qualityPreference = null),
+        )
+
+        val subtitleSelected = reduceSubtitleTransition(
+            qualityCleared.state,
+            SelectSubtitle(serverSidecar(4)),
+        )
+
+        assertEquals(serverSidecar(4), subtitleSelected.state.pending?.identity)
+        assertNull(subtitleSelected.state.pending?.qualityPreference)
+        assertTrue(subtitleSelected.state.pending?.qualityPreferenceSpecified == true)
+    }
+
+    @Test
+    fun `explicit audio clear survives a later quality update`() {
+        val initial = stateWithPreferences()
+        val audioCleared = reduceSubtitleTransition(
+            initial,
+            UpdateAudioPreference(audioTrackIndex = null),
+        )
+
+        val qualityUpdated = reduceSubtitleTransition(
+            audioCleared.state,
+            UpdateQualityPreference(qualityPreference = "1080p"),
+        )
+
+        assertNull(qualityUpdated.state.pending?.audioTrackIndex)
+        assertEquals("1080p", qualityUpdated.state.pending?.qualityPreference)
+        assertTrue(qualityUpdated.state.pending?.audioPreferenceSpecified == true)
+    }
+
+    @Test
+    fun `explicit audio clear survives a later subtitle selection`() {
+        val initial = stateWithPreferences()
+        val audioCleared = reduceSubtitleTransition(
+            initial,
+            UpdateAudioPreference(audioTrackIndex = null),
+        )
+
+        val subtitleSelected = reduceSubtitleTransition(
+            audioCleared.state,
+            SelectSubtitle(serverSidecar(4)),
+        )
+
+        assertEquals(serverSidecar(4), subtitleSelected.state.pending?.identity)
+        assertNull(subtitleSelected.state.pending?.audioTrackIndex)
+        assertTrue(subtitleSelected.state.pending?.audioPreferenceSpecified == true)
+    }
+
     private fun serverSidecar(index: Int): SubtitleIdentity =
         SubtitleIdentity.ServerSidecar(serverIndex = index)
 
     private fun candidate(id: String): StagedSubtitleCandidate =
         StagedSubtitleCandidate(id)
+
+    private fun stateWithPreferences(): SubtitleTransitionState =
+        SubtitleTransitionState.committed(
+            identity = serverSidecar(3),
+            audioTrackIndex = 7,
+            qualityPreference = "4k",
+        )
 
     private fun media(
         trackId: String? = null,

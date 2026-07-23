@@ -189,21 +189,29 @@ function isCratesIoLikeSource(source) {
     }
     if (hostname === "index.crates.io") return true;
   } catch {
-    // The source syntax check reports malformed non-URLs. Keep the raw
-    // crates.io check below fail-closed for unusual URL parser edge cases.
+    return true;
   }
   return /(?:^|[./@])crates(?:\.|%2e)io(?:[/:?#]|$)/i.test(rawUrl) ||
     /github(?:\.|%2e)com\/rust-lang\/crates(?:\.|%2e)io-index/i.test(rawUrl);
 }
 
 function decodeUrlComponent(value) {
+  const maxPasses = 8;
+  const maxLength = 4096;
+  if (value.length > maxLength) throw new Error("URL component exceeds safe length");
+
   let decoded = value;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < maxPasses; attempt += 1) {
     const next = decodeURIComponent(decoded);
     if (next === decoded) return decoded;
+    if (next.length > decoded.length ||
+        next.length > maxLength ||
+        /[\u0000-\u001f\u007f]/.test(next)) {
+      throw new Error("Suspicious percent-decoding expansion");
+    }
     decoded = next;
   }
-  return decoded;
+  throw new Error("Percent-decoding did not stabilize");
 }
 
 function packageError(packageNumber, field) {

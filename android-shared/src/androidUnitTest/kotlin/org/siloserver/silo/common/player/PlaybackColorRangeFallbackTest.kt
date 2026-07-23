@@ -29,6 +29,16 @@ class PlaybackColorRangeFallbackTest {
     }
 
     @Test
+    fun rejectsSourceRangeForClientLocalNormalization() {
+        assertNull(
+            plan(
+                PlaybackDelivery.CLIENT_LOCAL_NORMALIZATION,
+                "pc",
+            ).validatedColorRangeFallback(),
+        )
+    }
+
+    @Test
     fun rejectsUnknownSourceRange() {
         assertNull(plan(PlaybackDelivery.ORIGINAL_HTTP, "unknown").validatedColorRangeFallback())
     }

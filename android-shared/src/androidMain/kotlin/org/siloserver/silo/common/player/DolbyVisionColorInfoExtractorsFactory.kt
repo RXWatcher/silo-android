@@ -130,9 +130,9 @@ internal class DolbyVisionColorInfoExtractorsFactory(
         override fun format(format: Format) {
             delegate.format(
                 format
+                    .withValidatedColorRange(expectedColorRange)
                     .withValidatedDynamicRangeColorInfo(expectedDynamicRange)
-                    .withDolbyVisionHdrColorInfo()
-                    .withValidatedColorRange(expectedColorRange),
+                    .withDolbyVisionHdrColorInfo(),
             )
         }
 

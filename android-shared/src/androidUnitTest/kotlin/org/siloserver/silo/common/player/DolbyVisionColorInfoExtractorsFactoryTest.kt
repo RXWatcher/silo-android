@@ -44,6 +44,22 @@ class DolbyVisionColorInfoExtractorsFactoryTest {
     }
 
     @Test
+    fun extractorPreservesFullRangeWhileRepairingMissingHlgColorInfo() {
+        val repaired = extractFormat(
+            transformMode = DolbyVisionTransformMode.DISABLED,
+            expectedDynamicRange = "hlg",
+            expectedColorRange = "pc",
+            source = Format.Builder()
+                .setSampleMimeType(MimeTypes.VIDEO_H265)
+                .build(),
+        )
+
+        assertEquals(C.COLOR_SPACE_BT2020, repaired.colorInfo?.colorSpace)
+        assertEquals(C.COLOR_TRANSFER_HLG, repaired.colorInfo?.colorTransfer)
+        assertEquals(C.COLOR_RANGE_FULL, repaired.colorInfo?.colorRange)
+    }
+
+    @Test
     fun transformedDolbyVisionOutputRangeOverridesConflictingSourceFallback() {
         val repaired = extractFormat(
             transformMode = DolbyVisionTransformMode.PROFILE7_TO_PROFILE81,
@@ -242,6 +258,7 @@ class DolbyVisionColorInfoExtractorsFactoryTest {
 
     private fun extractFormat(
         transformMode: DolbyVisionTransformMode,
+        expectedDynamicRange: String? = null,
         expectedColorRange: String,
         source: Format,
     ): Format {
@@ -250,6 +267,7 @@ class DolbyVisionColorInfoExtractorsFactoryTest {
             delegate = ExtractorsFactory { arrayOf(sourceExtractor) },
             transformMode = transformMode,
             converter = DolbyVisionRpuConverter { it },
+            expectedDynamicRange = expectedDynamicRange,
             expectedColorRange = expectedColorRange,
         ).createExtractors().single()
         val output = RecordingExtractorOutput()

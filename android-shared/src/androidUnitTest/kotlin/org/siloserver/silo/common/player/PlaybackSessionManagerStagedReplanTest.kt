@@ -1,0 +1,434 @@
+package org.siloserver.silo.common.player
+
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.client.engine.mock.toByteArray
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
+import io.ktor.serialization.kotlinx.json.json
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import org.siloserver.silo.model.playback.ClientCodecCapabilities
+import org.siloserver.silo.model.playback.ClientPlaybackContext
+import org.siloserver.silo.model.playback.PLAYBACK_PLAN_V3_FEATURE
+import org.siloserver.silo.model.playback.PlaybackDecisionOutcome
+import org.siloserver.silo.model.playback.PlaybackDecisionResponseV3
+import org.siloserver.silo.model.playback.PlaybackDelivery
+import org.siloserver.silo.model.playback.PlaybackEffectiveRecipeV3
+import org.siloserver.silo.model.playback.PlaybackEngineKind
+import org.siloserver.silo.model.playback.PlaybackOutputContext
+import org.siloserver.silo.model.playback.PlaybackPlanV3
+import org.siloserver.silo.model.playback.PlaybackStreamProtocol
+import org.siloserver.silo.model.playback.PlaybackStreamV3
+import org.siloserver.silo.model.playback.PlaybackSubtitleArtifactV3
+import org.siloserver.silo.model.playback.PlaybackSubtitleDecisionV3
+import org.siloserver.silo.model.playback.PlaybackSubtitleModeV3
+import org.siloserver.silo.model.playback.PlaybackTrackIdentityV3
+import org.siloserver.silo.model.playback.SelectedPlaybackTracksV3
+import org.siloserver.silo.model.playback.SubtitleFidelityPreference
+import org.siloserver.silo.network.ApiResult
+import org.siloserver.silo.network.AuthScopeSnapshot
+import org.siloserver.silo.network.SiloJson
+import org.siloserver.silo.network.TokenManager
+import org.siloserver.silo.network.api.PlaybackApi
+import org.siloserver.silo.repository.PlaybackRepository
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+
+class PlaybackSessionManagerStagedReplanTest {
+    @Test
+    fun `staging replacement does not swap attempt or stop old session`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+        )
+        harness.start()
+
+        val staged = harness.manager.stageActiveVideoSessionReplan(
+            classification = "subtitle_track_changed",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = 4,
+        )
+
+        val candidate = assertIs<ApiResult.Success<StagedVideoReplan>>(staged).data
+        assertEquals("s2", candidate.candidateSessionId)
+        assertEquals("s1", harness.manager.activeSessionIdForTest())
+        assertEquals(emptyList(), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `commit swaps once then stops old session`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+        )
+        harness.start()
+        val staged = assertIs<ApiResult.Success<StagedVideoReplan>>(
+            harness.manager.stageActiveVideoSessionReplan(
+                classification = "subtitle_track_changed",
+                positionSeconds = 42.0,
+                audioTrackIndex = 0,
+                subtitleTrackIndex = 4,
+            ),
+        ).data
+
+        val committed = harness.manager.commitStagedVideoReplan(staged)
+
+        assertEquals(
+            "s2",
+            assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(committed).data.session.sessionId,
+        )
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s1"), harness.stoppedSessions)
+
+        val consumed = harness.manager.commitStagedVideoReplan(staged)
+        assertEquals(409, assertIs<ApiResult.Error>(consumed).code)
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s1"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `discard stops only candidate and consumes handle`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+        )
+        harness.start()
+        val staged = assertIs<ApiResult.Success<StagedVideoReplan>>(
+            harness.manager.stageActiveVideoSessionReplan(
+                classification = "subtitle_track_changed",
+                positionSeconds = 42.0,
+                audioTrackIndex = 0,
+                subtitleTrackIndex = 4,
+            ),
+        ).data
+
+        harness.manager.discardStagedVideoReplan(staged)
+        harness.manager.discardStagedVideoReplan(staged)
+
+        assertEquals("s1", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s2"), harness.stoppedSessions)
+        assertEquals(
+            409,
+            assertIs<ApiResult.Error>(harness.manager.commitStagedVideoReplan(staged)).code,
+        )
+        assertEquals(listOf("s2"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `stale handle cannot replace newer committed candidate`() = runTest {
+        val harness = Harness(
+            replanResponse = { index, _ ->
+                response(sidecarPlan(sessionId = if (index == 0) "s2" else "s3"))
+            },
+        )
+        harness.start()
+        val first = harness.stageSidecar()
+        val second = harness.stageSidecar()
+
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(second),
+        )
+        val stale = harness.manager.commitStagedVideoReplan(first)
+
+        assertEquals(409, assertIs<ApiResult.Error>(stale).code)
+        assertEquals("s3", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s1", "s2"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `content reset invalidates staged handle`() = runTest {
+        val harness = Harness(
+            startResponses = listOf(
+                response(basePlan(sessionId = "s1", fileId = 42)),
+                response(basePlan(sessionId = "s3", fileId = 84)),
+            ),
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+        )
+        harness.start(fileId = 42)
+        val staged = harness.stageSidecar()
+
+        harness.start(fileId = 84)
+        val stale = harness.manager.commitStagedVideoReplan(staged)
+
+        assertEquals(409, assertIs<ApiResult.Error>(stale).code)
+        assertEquals("s3", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s2"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `burn in candidate commits without sidecar artifact`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ ->
+                response(
+                    sidecarPlan(sessionId = "s2").copy(
+                        subtitle = PlaybackSubtitleDecisionV3(
+                            mode = PlaybackSubtitleModeV3.BURN_IN,
+                            trackId = subtitleTrackId(fileId = 42, index = 4),
+                        ),
+                    ),
+                )
+            },
+        )
+        harness.start()
+
+        val staged = harness.stageSidecar()
+        val committed = harness.manager.commitStagedVideoReplan(staged)
+
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(committed)
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s1"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `sidecar candidate without artifact is rejected`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ ->
+                response(
+                    sidecarPlan(sessionId = "s2").copy(
+                        subtitle = PlaybackSubtitleDecisionV3(
+                            mode = PlaybackSubtitleModeV3.CONVERT,
+                            trackId = subtitleTrackId(fileId = 42, index = 4),
+                            artifact = null,
+                        ),
+                    ),
+                )
+            },
+        )
+        harness.start()
+
+        val staged = harness.manager.stageActiveVideoSessionReplan(
+            classification = "subtitle_track_changed",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = 4,
+        )
+
+        assertIs<ApiResult.Error>(staged)
+        assertEquals("s1", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s2"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `sidecar candidate for another server index is rejected`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ ->
+                response(
+                    sidecarPlan(sessionId = "s2").copy(
+                        selectedTracks = SelectedPlaybackTracksV3(
+                            audio = audioTrack(fileId = 42),
+                            subtitle = PlaybackTrackIdentityV3(
+                                id = subtitleTrackId(fileId = 42, index = 5),
+                                index = 5,
+                            ),
+                        ),
+                        subtitle = PlaybackSubtitleDecisionV3(
+                            mode = PlaybackSubtitleModeV3.RENDER,
+                            trackId = subtitleTrackId(fileId = 42, index = 5),
+                            artifact = sidecarArtifact(sessionId = "s2", index = 5),
+                        ),
+                    ),
+                )
+            },
+        )
+        harness.start()
+
+        val staged = harness.manager.stageActiveVideoSessionReplan(
+            classification = "subtitle_track_changed",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = 4,
+        )
+
+        assertIs<ApiResult.Error>(staged)
+        assertEquals("s1", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s2"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `immediate replan wrapper stages and commits replacement`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+        )
+        harness.start()
+
+        val replanned = harness.manager.replanActiveVideoSession(
+            classification = "subtitle_track_changed",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = 4,
+        )
+
+        assertEquals(
+            "s2",
+            assertIs<VideoSessionStartV3.Ready>(
+                assertIs<ApiResult.Success<VideoSessionStartV3>>(replanned).data,
+            ).session.sessionId,
+        )
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s1"), harness.stoppedSessions)
+    }
+
+    private class Harness(
+        startResponses: List<PlaybackDecisionResponseV3> = listOf(response(basePlan())),
+        private val replanResponse: suspend (Int, JsonObject) -> PlaybackDecisionResponseV3,
+    ) {
+        val stoppedSessions: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        private val startIndex = AtomicInteger()
+        private val replanIndex = AtomicInteger()
+        private val client = HttpClient(
+            MockEngine { request ->
+                val path = request.url.encodedPath
+                val response = when {
+                    path == "/api/v1/playback/start" -> startResponses[startIndex.getAndIncrement()]
+                    path.endsWith("/replan") -> {
+                        val body = SiloJson.parseToJsonElement(
+                            request.body.toByteArray().decodeToString(),
+                        ).jsonObject
+                        replanResponse(replanIndex.getAndIncrement(), body)
+                    }
+                    request.method == HttpMethod.Delete && path.startsWith("/api/v1/playback/") -> {
+                        stoppedSessions += path.substringAfterLast('/')
+                        null
+                    }
+                    else -> null
+                }
+                respond(
+                    content = response?.let(SiloJson::encodeToString) ?: "{}",
+                    status = HttpStatusCode.OK,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+            },
+        ) {
+            install(ContentNegotiation) { json(SiloJson) }
+        }
+        val manager = PlaybackSessionManager(
+            playbackRepository = PlaybackRepository(PlaybackApi(client)),
+            tokenManager = StagedReplanNoOpTokenManager,
+        )
+
+        suspend fun start(fileId: Int = 42) {
+            assertIs<ApiResult.Success<VideoSessionStartV3>>(
+                manager.startVideoSessionV3(
+                    fileId = fileId,
+                    profileId = "profile-1",
+                    capabilities = ClientCodecCapabilities(
+                        codecsVideo = listOf("hevc"),
+                        codecsAudio = listOf("eac3"),
+                        containers = listOf("mkv"),
+                    ),
+                    clientPlaybackContext = ClientPlaybackContext(
+                        formFactor = "tv",
+                        appVersion = "test",
+                        output = PlaybackOutputContext(outputRouteGeneration = 7),
+                    ),
+                    audioTrackIndex = 0,
+                    subtitleTrackIndex = null,
+                    qualityPreference = "original",
+                    startPosition = 0.0,
+                    subtitleFidelityPreference = SubtitleFidelityPreference.PRESERVE,
+                ),
+            )
+        }
+
+        suspend fun stageSidecar(): StagedVideoReplan = assertIs<ApiResult.Success<StagedVideoReplan>>(
+            manager.stageActiveVideoSessionReplan(
+                classification = "subtitle_track_changed",
+                positionSeconds = 42.0,
+                audioTrackIndex = 0,
+                subtitleTrackIndex = 4,
+            ),
+        ).data
+    }
+
+    private companion object {
+        fun basePlan(
+            sessionId: String = "s1",
+            fileId: Int = 42,
+        ): PlaybackPlanV3 = PlaybackPlanV3(
+            planId = "plan-$sessionId",
+            sessionId = sessionId,
+            delivery = PlaybackDelivery.SERVER_REMUX_HLS,
+            engine = PlaybackEngineKind.MEDIA3_HLS,
+            stream = PlaybackStreamV3(
+                url = "/stream/$sessionId/master.m3u8",
+                protocol = PlaybackStreamProtocol.HLS,
+                container = "mpegts",
+                mimeType = "application/x-mpegURL",
+            ),
+            selectedTracks = SelectedPlaybackTracksV3(audio = audioTrack(fileId)),
+            effectiveRecipe = PlaybackEffectiveRecipeV3(
+                videoCodec = "hevc",
+                audioCodec = "eac3",
+            ),
+            decisionReason = "test",
+            requestedMediaFileId = fileId,
+            effectiveMediaFileId = fileId,
+        )
+
+        fun sidecarPlan(sessionId: String): PlaybackPlanV3 = basePlan(sessionId).copy(
+            selectedTracks = SelectedPlaybackTracksV3(
+                audio = audioTrack(fileId = 42),
+                subtitle = PlaybackTrackIdentityV3(
+                    id = subtitleTrackId(fileId = 42, index = 4),
+                    index = 4,
+                ),
+            ),
+            subtitle = PlaybackSubtitleDecisionV3(
+                mode = PlaybackSubtitleModeV3.CONVERT,
+                trackId = subtitleTrackId(fileId = 42, index = 4),
+                artifact = sidecarArtifact(sessionId = sessionId, index = 4),
+            ),
+        )
+
+        fun sidecarArtifact(sessionId: String, index: Int): PlaybackSubtitleArtifactV3 =
+            PlaybackSubtitleArtifactV3(
+                url = "/stream/$sessionId/subtitles/$index.vtt",
+                mimeType = "text/vtt",
+                format = "webvtt",
+            )
+
+        fun audioTrack(fileId: Int): PlaybackTrackIdentityV3 =
+            PlaybackTrackIdentityV3("file:$fileId:audio:0", 0)
+
+        fun subtitleTrackId(fileId: Int, index: Int): String =
+            "file:$fileId:subtitle:$index"
+
+        fun response(plan: PlaybackPlanV3): PlaybackDecisionResponseV3 =
+            PlaybackDecisionResponseV3(
+                protocolVersion = 3,
+                serverFeatures = listOf(PLAYBACK_PLAN_V3_FEATURE),
+                outcome = PlaybackDecisionOutcome.PLAYABLE,
+                sessionId = plan.sessionId,
+                playbackPlan = plan,
+            )
+    }
+}
+
+private object StagedReplanNoOpTokenManager : TokenManager {
+    override val sessionExpired: SharedFlow<Unit> = MutableSharedFlow()
+    override suspend fun getAccessToken(): String? = null
+    override suspend fun getRefreshToken(): String? = null
+    override suspend fun saveTokens(accessToken: String, refreshToken: String, expiresIn: Long) {}
+    override suspend fun clearTokens() {}
+    override suspend fun invalidateSession() {}
+    override suspend fun getProfileId(): String? = null
+    override suspend fun setProfileId(profileId: String?) {}
+    override suspend fun getProfileToken(): String? = null
+    override suspend fun setProfileToken(token: String?) {}
+    override suspend fun getServerUrl(): String = ""
+    override suspend fun setServerUrl(url: String) {}
+    override suspend fun getCurrentServerId(): String? = null
+    override suspend fun switchActiveServer(serverId: String?) {}
+    override suspend fun signOutCurrentServer() {}
+    override suspend fun snapshotCurrentScope(): AuthScopeSnapshot? = null
+}

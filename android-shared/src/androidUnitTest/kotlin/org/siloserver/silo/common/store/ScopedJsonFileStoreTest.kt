@@ -52,4 +52,51 @@ class ScopedJsonFileStoreTest {
         assertEquals(Payload(name = "b", count = 2), store.read<Payload>(file))
         assertFalse(File(file.parentFile, "${file.name}.tmp").exists())
     }
+
+    @Test
+    fun `unsafe scope values resolve to an encoded contained target`() {
+        val root = tmp.newFolder("root").canonicalFile
+        val store = ScopedJsonFileStore(root, tag = "Test")
+
+        val file = store.fileFor("../server", "profile/name", "content id")
+
+        assertTrue(file.canonicalPath.startsWith(root.canonicalPath + File.separator))
+        assertFalse(file.path.contains("../server"))
+        assertFalse(file.path.contains("profile/name"))
+        assertFalse(file.path.contains("content id"))
+    }
+
+    @Test
+    fun `contained legacy value is read then migrated on the next successful write`() {
+        val root = tmp.newFolder("root")
+        val legacy = File(root, "server id/profile%id/content id.json").apply {
+            parentFile?.mkdirs()
+            writeText("""{"name":"legacy","count":1}""")
+        }
+        val store = ScopedJsonFileStore(root, tag = "Test")
+        val target = store.fileFor("server id", "profile%id", "content id")
+
+        assertFalse(target.exists())
+        assertEquals(Payload(name = "legacy", count = 1), store.read<Payload>(target))
+        assertTrue(legacy.isFile)
+
+        store.write(target, Payload(name = "updated", count = 2))
+
+        assertFalse(legacy.exists())
+        assertEquals(Payload(name = "updated", count = 2), store.read<Payload>(target))
+    }
+
+    @Test
+    fun `read and write reject a target outside the store root`() {
+        val root = tmp.newFolder("root")
+        val sentinel = File(root.parentFile, "sentinel.json").apply {
+            writeText("""{"name":"keep","count":7}""")
+        }
+        val store = ScopedJsonFileStore(root, tag = "Test")
+
+        assertNull(store.read<Payload>(sentinel))
+        store.writeAtomic(sentinel, """{"name":"changed","count":8}""")
+
+        assertEquals("""{"name":"keep","count":7}""", sentinel.readText())
+    }
 }

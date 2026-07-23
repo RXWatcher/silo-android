@@ -9,10 +9,14 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import org.siloserver.silo.common.store.containedLegacyChild
+import org.siloserver.silo.common.store.containedSafeChild
+import org.siloserver.silo.common.store.safePathSegment
 import org.siloserver.silo.model.download.DownloadMediaType
 import java.io.File
 import java.io.OutputStream
 import java.net.URI
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Storage coordinator for downloads. Sidecars live under private [baseDir];
@@ -66,7 +70,6 @@ class DownloadStorage(
         mediaType: String? = null,
     ): DownloadTarget {
         val displayName = localMediaFileName(fileId, fileName, container)
-        publicStore.delete(serverId, profileId, fileId, uriString = null)
         return publicStore.create(
             serverId = serverId,
             profileId = profileId,
@@ -208,9 +211,10 @@ class FileBackedPublicDownloadStore(
         collectionRoots ?: PublicDownloadCollection.entries.associateWith { collection ->
             File(requireNotNull(root) { "root or collectionRoots is required" }, collection.directoryName)
         }
-    private val roots: List<File> = rootsByCollection.values.distinctBy { file ->
-        runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
-    }
+    private val roots: List<File> = rootsByCollection.values
+        .map { file -> runCatching { file.canonicalFile }.getOrDefault(file.absoluteFile) }
+        .distinctBy { file -> file.path }
+    private val pendingReplacedDeletes = ConcurrentHashMap<String, List<File>>()
 
     override fun create(
         serverId: String,
@@ -221,13 +225,27 @@ class FileBackedPublicDownloadStore(
         mediaType: String?,
     ): DownloadTarget {
         val collection = PublicDownloadCollection.forMediaType(mediaType)
-        val dir = File(collectionRoot(collection), "$serverId/$profileId/$fileId").apply {
-            deleteRecursively()
-            mkdirs()
+        val root = collectionRoot(collection)
+        val dir = requireNotNull(containedSafeChild(root, serverId, profileId, fileId.toString())) {
+            "Download path is outside its collection root"
+        }.apply {
+            deleteContainedRecursively(root, this)
+            check(mkdirs() || isDirectory) { "Could not create download directory" }
         }
-        val file = File(dir, displayName)
+        val file = requireNotNull(containedDisplayName(dir, displayName)) {
+            "Download display name is outside its file directory"
+        }
+        val replaced = PublicDownloadCollection.entries
+            .flatMap { candidateCollection ->
+                val candidateRoot = collectionRoot(candidateCollection)
+                downloadCandidates(candidateRoot, serverId, profileId, fileId)
+            }
+            .filter { candidate -> candidate.canonicalPath != dir.canonicalPath && candidate.exists() }
+            .distinctBy { candidate -> candidate.canonicalPath }
+        val uriString = fileUriString(file)
+        if (replaced.isNotEmpty()) pendingReplacedDeletes[uriString] = replaced
         return DownloadTarget(
-            uriString = fileUriString(file),
+            uriString = uriString,
             displayName = displayName,
             openOutputStream = { file.outputStream() },
             sizeBytes = { file.length() },
@@ -238,17 +256,19 @@ class FileBackedPublicDownloadStore(
         if (!uriString.startsWith("file:", ignoreCase = true)) return null
         val file = runCatching { File(URI(uriString)) }.getOrElse {
             File(uriString.removePrefix("file://").removePrefix("file:"))
-        }
-        if (!file.isFile) return null
-        return FileDownloadLocation(uriString, file.name, file.length(), file)
+        }.canonicalFile
+        if (!file.isFile || roots.none { file.isContainedBy(it) }) return null
+        return FileDownloadLocation(fileUriString(file), file.name, file.length(), file)
     }
 
     override fun locateByFileId(serverId: String, profileId: String, fileId: Int): DownloadLocation? {
         PublicDownloadCollection.entries.forEach { collection ->
-            val dir = File(collectionRoot(collection), "$serverId/$profileId/$fileId")
-            val file = dir.listFiles { f -> f.isFile }?.sortedBy { it.name }?.firstOrNull()
-            if (file != null) {
-                return FileDownloadLocation(fileUriString(file), file.name, file.length(), file)
+            val root = collectionRoot(collection)
+            downloadCandidates(root, serverId, profileId, fileId).forEach { dir ->
+                val file = firstContainedFile(root, dir)
+                if (file != null) {
+                    return FileDownloadLocation(fileUriString(file), file.name, file.length(), file)
+                }
             }
         }
         return null
@@ -257,15 +277,24 @@ class FileBackedPublicDownloadStore(
     override fun delete(serverId: String, profileId: String, fileId: Int, uriString: String?): Boolean {
         val fromUri = uriString?.let { locate(it) as? FileDownloadLocation }?.file
         if (fromUri != null) return fromUri.delete()
-        return PublicDownloadCollection.entries.any { collection ->
-            val target = File(collectionRoot(collection), "$serverId/$profileId/$fileId")
-            target.exists() && target.deleteRecursively()
+        var deleted = false
+        PublicDownloadCollection.entries.forEach { collection ->
+            val root = collectionRoot(collection)
+            downloadCandidates(root, serverId, profileId, fileId).forEach { target ->
+                deleted = deleteContainedRecursively(root, target) || deleted
+            }
         }
+        return deleted
     }
 
     override fun complete(uriString: String) {
         val file = (locate(uriString) as? FileDownloadLocation)?.file ?: return
         onFileCompleted(file)
+        pendingReplacedDeletes.remove(uriString).orEmpty().forEach { replaced ->
+            roots.firstOrNull { replaced.isContainedBy(it) }?.let { root ->
+                deleteContainedRecursively(root, replaced)
+            }
+        }
     }
 
     override fun openAppend(uriString: String): OutputStream? {
@@ -279,8 +308,10 @@ class FileBackedPublicDownloadStore(
     override fun deleteAllForProfile(serverId: String, profileId: String): Boolean {
         var deleted = false
         PublicDownloadCollection.entries.forEach { collection ->
-            val target = File(collectionRoot(collection), "$serverId/$profileId")
-            deleted = (target.exists() && target.deleteRecursively()) || deleted
+            val root = collectionRoot(collection)
+            scopedCandidates(root, serverId, profileId).forEach { target ->
+                deleted = deleteContainedRecursively(root, target) || deleted
+            }
         }
         return deleted
     }
@@ -288,8 +319,10 @@ class FileBackedPublicDownloadStore(
     override fun deleteAllForServer(serverId: String): Boolean {
         var deleted = false
         PublicDownloadCollection.entries.forEach { collection ->
-            val target = File(collectionRoot(collection), serverId)
-            deleted = (target.exists() && target.deleteRecursively()) || deleted
+            val root = collectionRoot(collection)
+            scopedCandidates(root, serverId).forEach { target ->
+                deleted = deleteContainedRecursively(root, target) || deleted
+            }
         }
         return deleted
     }
@@ -297,7 +330,7 @@ class FileBackedPublicDownloadStore(
     override fun totalBytesUsed(): Long {
         var total = 0L
         roots.forEach { root ->
-            if (root.exists()) root.walkTopDown().forEach { if (it.isFile) total += it.length() }
+            total += containedBytes(root, root)
         }
         return total
     }
@@ -305,21 +338,97 @@ class FileBackedPublicDownloadStore(
     override fun totalBytesUsed(serverId: String, profileId: String): Long {
         var total = 0L
         PublicDownloadCollection.entries.forEach { collection ->
-            val dir = File(collectionRoot(collection), "$serverId/$profileId")
-            if (dir.exists()) dir.walkTopDown().forEach { if (it.isFile) total += it.length() }
+            val root = collectionRoot(collection)
+            scopedCandidates(root, serverId, profileId).forEach { dir ->
+                total += containedBytes(root, dir)
+            }
         }
         return total
     }
 
     private fun collectionRoot(collection: PublicDownloadCollection): File =
-        rootsByCollection[collection] ?: error("No public download root for $collection")
+        (rootsByCollection[collection] ?: error("No public download root for $collection")).canonicalFile
 
     private fun fileUriString(file: File): String =
         URI("file", "", file.absolutePath, null).toASCIIString()
+
+    private fun downloadCandidates(root: File, serverId: String, profileId: String, fileId: Int): List<File> =
+        distinctCandidates(
+            containedSafeChild(root, serverId, profileId, fileId.toString()),
+            containedLegacyChild(root, serverId, profileId, fileId.toString()),
+        )
+
+    private fun scopedCandidates(root: File, vararg segments: String): List<File> =
+        distinctCandidates(
+            containedSafeChild(root, *segments),
+            containedLegacyChild(root, *segments),
+        )
+
+    private fun distinctCandidates(vararg candidates: File?): List<File> =
+        candidates.filterNotNull().distinctBy { it.canonicalPath }
+
+    private fun containedDisplayName(directory: File, displayName: String): File? =
+        runCatching {
+            File(directory, displayName).canonicalFile.takeIf { candidate ->
+                candidate.parentFile?.canonicalFile == directory.canonicalFile
+            }
+        }.getOrNull()
+
+    private fun firstContainedFile(root: File, directory: File): File? {
+        if (!directory.isContainedBy(root) || !directory.isDirectory) return null
+        return directory.listFiles()
+            ?.asSequence()
+            ?.filter { child ->
+                val canonicalChild = runCatching { child.canonicalFile }.getOrNull()
+                canonicalChild != null &&
+                    child.absoluteFile.path == canonicalChild.path &&
+                    canonicalChild.isContainedBy(root) &&
+                    canonicalChild.isFile
+            }
+            ?.map { it.canonicalFile }
+            ?.sortedBy { it.name }
+            ?.firstOrNull()
+    }
+
+    private fun deleteContainedRecursively(root: File, target: File): Boolean {
+        if (!target.exists()) return false
+        val canonicalTarget = runCatching { target.canonicalFile }.getOrNull() ?: return false
+        if (target.absoluteFile.path != canonicalTarget.path) {
+            return target.delete()
+        }
+        if (!canonicalTarget.isContainedBy(root)) return false
+        var deleted = false
+        if (canonicalTarget.isDirectory) {
+            canonicalTarget.listFiles().orEmpty().forEach { child ->
+                deleted = deleteContainedRecursively(root, child) || deleted
+            }
+        }
+        return canonicalTarget.delete() || deleted
+    }
+
+    private fun containedBytes(root: File, target: File): Long {
+        if (!target.exists()) return 0L
+        val canonicalTarget = runCatching { target.canonicalFile }.getOrNull() ?: return 0L
+        if (target.absoluteFile.path != canonicalTarget.path) return 0L
+        if (!canonicalTarget.isContainedBy(root, allowRoot = true)) return 0L
+        if (canonicalTarget.isFile) return canonicalTarget.length()
+        if (!canonicalTarget.isDirectory) return 0L
+        return canonicalTarget.listFiles().orEmpty().sumOf { child ->
+            containedBytes(root, child)
+        }
+    }
+
+    private fun File.isContainedBy(root: File, allowRoot: Boolean = false): Boolean {
+        val canonicalRoot = runCatching { root.canonicalFile }.getOrNull() ?: return false
+        val canonicalTarget = runCatching { canonicalFile }.getOrNull() ?: return false
+        return (allowRoot && canonicalTarget.path == canonicalRoot.path) ||
+            canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)
+    }
 }
 
 class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
     private val resolver: ContentResolver = context.contentResolver
+    private val pendingReplacedDeletes = ConcurrentHashMap<String, MediaStoreScope>()
 
     override fun create(
         serverId: String,
@@ -329,8 +438,8 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
         container: String?,
         mediaType: String?,
     ): DownloadTarget {
-        delete(serverId, profileId, fileId, uriString = null)
         val collection = PublicDownloadCollection.forMediaType(mediaType)
+        deleteByExactRelativePath(collection, mediaStoreRelativePath(collection, serverId, profileId, fileId))
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeTypeForDownloadName(displayName, container))
@@ -340,6 +449,7 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
             }
         }
         val uri = resolver.insert(collection.contentUri(), values) ?: error("Could not create MediaStore download")
+        pendingReplacedDeletes[uri.toString()] = MediaStoreScope(collection, serverId, profileId, fileId)
         return DownloadTarget(
             uriString = uri.toString(),
             displayName = displayName,
@@ -369,19 +479,21 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
         )
         val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} = ?"
         PublicDownloadCollection.entries.forEach { collection ->
-            resolver.query(
-                collection.contentUri(),
-                projection,
-                selection,
-                arrayOf(mediaStoreRelativePath(collection, serverId, profileId, fileId)),
-                null,
-            )?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val id = cursor.getLong(0)
-                    val name = cursor.getString(1) ?: fileId.toString()
-                    val size = cursor.getLong(2)
-                    val uri = ContentUris.withAppendedId(collection.contentUri(), id)
-                    return DownloadLocation(uri.toString(), name, size)
+            mediaStorePathCandidates(collection, serverId, profileId, fileId).forEach { path ->
+                resolver.query(
+                    collection.contentUri(),
+                    projection,
+                    selection,
+                    arrayOf(path),
+                    null,
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val id = cursor.getLong(0)
+                        val name = cursor.getString(1) ?: fileId.toString()
+                        val size = cursor.getLong(2)
+                        val uri = ContentUris.withAppendedId(collection.contentUri(), id)
+                        return DownloadLocation(uri.toString(), name, size)
+                    }
                 }
             }
         }
@@ -413,18 +525,30 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
         // containing `_` can't wildcard-match a sibling scope's same-fileId row.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
         return deleteAcrossCollections { collection ->
-            deleteByExactRelativePath(collection, mediaStoreRelativePath(collection, serverId, profileId, fileId))
+            var deleted = false
+            mediaStorePathCandidates(collection, serverId, profileId, fileId).forEach { path ->
+                deleted = deleteByExactRelativePath(collection, path) || deleted
+            }
+            deleted
         }
     }
 
     override fun deleteAllForProfile(serverId: String, profileId: String): Boolean =
         deleteAcrossCollections { collection ->
-            deleteByRelativePathPrefix(collection, "${collection.relativeRoot}/Silo/${escapeLike(serverId)}/${escapeLike(profileId)}/%")
+            var deleted = false
+            mediaStorePrefixCandidates(collection, serverId, profileId).forEach { pattern ->
+                deleted = deleteByRelativePathPrefix(collection, pattern) || deleted
+            }
+            deleted
         }
 
     override fun deleteAllForServer(serverId: String): Boolean =
         deleteAcrossCollections { collection ->
-            deleteByRelativePathPrefix(collection, "${collection.relativeRoot}/Silo/${escapeLike(serverId)}/%")
+            var deleted = false
+            mediaStorePrefixCandidates(collection, serverId).forEach { pattern ->
+                deleted = deleteByRelativePathPrefix(collection, pattern) || deleted
+            }
+            deleted
         }
 
     override fun totalBytesUsed(): Long {
@@ -446,14 +570,16 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
         val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? ESCAPE '\\'"
         var total = 0L
         PublicDownloadCollection.entries.forEach { collection ->
-            resolver.query(
-                collection.contentUri(),
-                projection,
-                selection,
-                arrayOf("${collection.relativeRoot}/Silo/${escapeLike(serverId)}/${escapeLike(profileId)}/%"),
-                null,
-            )?.use { cursor ->
-                while (cursor.moveToNext()) total += cursor.getLong(0)
+            mediaStorePrefixCandidates(collection, serverId, profileId).forEach { pattern ->
+                resolver.query(
+                    collection.contentUri(),
+                    projection,
+                    selection,
+                    arrayOf(pattern),
+                    null,
+                )?.use { cursor ->
+                    while (cursor.moveToNext()) total += cursor.getLong(0)
+                }
             }
         }
         return total
@@ -462,7 +588,15 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
     override fun complete(uriString: String) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-        resolver.update(Uri.parse(uriString), values, null, null)
+        if (resolver.update(Uri.parse(uriString), values, null, null) <= 0) return
+        pendingReplacedDeletes.remove(uriString)?.let { scope ->
+            val newPath = mediaStoreRelativePath(scope.collection, scope.serverId, scope.profileId, scope.fileId)
+            PublicDownloadCollection.entries.forEach { collection ->
+                mediaStorePathCandidates(collection, scope.serverId, scope.profileId, scope.fileId)
+                    .filterNot { path -> collection == scope.collection && path == newPath }
+                    .forEach { path -> deleteByExactRelativePath(collection, path) }
+            }
+        }
     }
 
     /** Exact-path delete (no wildcards). Used for single-file deletes. */
@@ -472,7 +606,7 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
         return resolver.delete(collection.contentUri(), selection, arrayOf(path)) > 0
     }
 
-    /** Prefix delete (`.../%`). Caller must pre-escape dynamic segments via [escapeLike]. */
+    /** Prefix delete (`.../%`). Caller must pre-escape dynamic segments via [escapeMediaStoreLike]. */
     private fun deleteByRelativePathPrefix(collection: PublicDownloadCollection, pattern: String): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
         val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? ESCAPE '\\'"
@@ -485,9 +619,6 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
      * otherwise a scoped delete/scan could match a sibling scope. Pair with
      * `ESCAPE '\'`.
      */
-    private fun escapeLike(value: String): String =
-        value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
     private fun deleteAcrossCollections(block: (PublicDownloadCollection) -> Boolean): Boolean {
         var deleted = false
         PublicDownloadCollection.entries.forEach { collection ->
@@ -495,6 +626,13 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
         }
         return deleted
     }
+
+    private data class MediaStoreScope(
+        val collection: PublicDownloadCollection,
+        val serverId: String,
+        val profileId: String,
+        val fileId: Int,
+    )
 }
 
 fun mediaStoreRelativePath(
@@ -502,7 +640,81 @@ fun mediaStoreRelativePath(
     serverId: String,
     profileId: String,
     fileId: Int,
-): String = "${collection.relativeRoot}/Silo/$serverId/$profileId/$fileId/"
+): String = "${collection.relativeRoot}/Silo/${safePathSegment(serverId)}/${safePathSegment(profileId)}/${safePathSegment(fileId.toString())}/"
+
+internal fun mediaStoreRelativePathPrefix(
+    collection: PublicDownloadCollection,
+    serverId: String,
+    profileId: String? = null,
+): String = buildString {
+    append(collection.relativeRoot)
+    append("/Silo/")
+    append(escapeMediaStoreLike(safePathSegment(serverId)))
+    append('/')
+    if (profileId != null) {
+        append(escapeMediaStoreLike(safePathSegment(profileId)))
+        append('/')
+    }
+    append('%')
+}
+
+internal fun escapeMediaStoreLike(value: String): String =
+    value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+private fun legacyMediaStoreRelativePath(
+    collection: PublicDownloadCollection,
+    serverId: String,
+    profileId: String,
+    fileId: Int,
+): String? {
+    if (!isLegacyMediaStoreSegment(serverId) || !isLegacyMediaStoreSegment(profileId)) return null
+    return "${collection.relativeRoot}/Silo/$serverId/$profileId/$fileId/"
+}
+
+private fun mediaStorePathCandidates(
+    collection: PublicDownloadCollection,
+    serverId: String,
+    profileId: String,
+    fileId: Int,
+): List<String> =
+    listOfNotNull(
+        mediaStoreRelativePath(collection, serverId, profileId, fileId),
+        legacyMediaStoreRelativePath(collection, serverId, profileId, fileId),
+    ).distinct()
+
+private fun mediaStorePrefixCandidates(
+    collection: PublicDownloadCollection,
+    serverId: String,
+    profileId: String? = null,
+): List<String> {
+    val encoded = mediaStoreRelativePathPrefix(collection, serverId, profileId)
+    val legacy = if (
+        isLegacyMediaStoreSegment(serverId) &&
+        (profileId == null || isLegacyMediaStoreSegment(profileId))
+    ) {
+        buildString {
+            append(collection.relativeRoot)
+            append("/Silo/")
+            append(escapeMediaStoreLike(serverId))
+            append('/')
+            if (profileId != null) {
+                append(escapeMediaStoreLike(profileId))
+                append('/')
+            }
+            append('%')
+        }
+    } else {
+        null
+    }
+    return listOfNotNull(encoded, legacy).distinct()
+}
+
+private fun isLegacyMediaStoreSegment(value: String): Boolean =
+    value.isNotEmpty() &&
+        value != "." &&
+        value != ".." &&
+        '/' !in value &&
+        '\\' !in value
 
 fun legacyPublicCollectionRoots(): Map<PublicDownloadCollection, File> =
     mapOf(

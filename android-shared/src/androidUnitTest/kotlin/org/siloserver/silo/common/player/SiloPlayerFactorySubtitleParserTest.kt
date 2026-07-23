@@ -2,6 +2,7 @@ package org.siloserver.silo.common.player
 
 import java.io.File
 import kotlin.test.Test
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class SiloPlayerFactorySubtitleParserTest {
@@ -54,6 +55,15 @@ class SiloPlayerFactorySubtitleParserTest {
                 source.contains("subtitleConfigurations.mapTo(sources, ::createSubtitleMediaSource)"),
             "All sidecars must be split from the content source so their source timeline can be corrected independently.",
         )
+    }
+
+    @Test
+    fun correctedContentUsesSubtitleFreeItemBeforeSidecarMerge() {
+        assertTrue(
+            source.contains("mediaSourceFactory(tag).createMediaSource(contentItem)"),
+            "Corrected content must use the subtitle-free item so sidecars are merged once.",
+        )
+        assertFalse(source.contains("mediaSourceFactory(tag).createMediaSource(mediaItem)"))
     }
 
     @Test

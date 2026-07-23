@@ -61,6 +61,7 @@ import org.siloserver.silo.common.player.PlaybackPreflightListener
 import org.siloserver.silo.common.player.RefreshRateMatcher
 import org.siloserver.silo.common.player.SubtitleManager
 import org.siloserver.silo.common.player.VideoPlayerMediaSpec
+import org.siloserver.silo.common.player.validatedColorRangeFallback
 import org.siloserver.silo.common.pip.SiloPictureInPictureCoordinator
 import org.siloserver.silo.common.pip.SiloPictureInPicturePlaybackState
 import org.siloserver.silo.common.pip.SiloPictureInPictureSurface
@@ -522,6 +523,7 @@ fun PlayerScreen(
             audioPassthroughCodecs = plan.validatedPassthroughCodecs(),
             requestHeaders = uiState.requestHeaders,
             expectedDynamicRange = plan?.source?.hdrFormat,
+            expectedColorRange = plan.validatedColorRangeFallback(),
             transformations = plan?.executableMedia3ClientTransformations().orEmpty(),
             runtimeCorrections = plan?.runtimeCorrections.orEmpty(),
         )
@@ -582,6 +584,7 @@ fun PlayerScreen(
             },
             requestHeaders = if (!isLocalMedia) uiState.requestHeaders else emptyMap(),
             expectedDynamicRange = plan?.source?.hdrFormat,
+            expectedColorRange = plan.validatedColorRangeFallback(),
             transformations = plan?.executableMedia3ClientTransformations().orEmpty(),
             runtimeCorrections = plan?.runtimeCorrections.orEmpty(),
         )

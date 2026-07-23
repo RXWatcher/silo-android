@@ -93,6 +93,7 @@ import org.siloserver.silo.common.player.SessionState
 import org.siloserver.silo.common.player.SleepTimerState
 import org.siloserver.silo.common.player.SubtitleManager
 import org.siloserver.silo.common.player.VideoPlayerMediaSpec
+import org.siloserver.silo.common.player.validatedColorRangeFallback
 import org.siloserver.silo.common.pip.SiloPictureInPictureCoordinator
 import org.siloserver.silo.common.pip.SiloPictureInPicturePlaybackState
 import org.siloserver.silo.common.pip.SiloPictureInPictureSurface
@@ -1451,6 +1452,7 @@ fun TvPlayerScreen(
             audioPassthroughCodecs = plan.validatedPassthroughCodecs(),
             requestHeaders = state.requestHeaders,
             expectedDynamicRange = plan?.source?.hdrFormat,
+            expectedColorRange = plan.validatedColorRangeFallback(),
             transformations = plan?.executableMedia3ClientTransformations().orEmpty(),
             runtimeCorrections = plan?.runtimeCorrections.orEmpty(),
         )
@@ -1501,6 +1503,7 @@ fun TvPlayerScreen(
             audioPassthroughCodecs = plan.validatedPassthroughCodecs(),
             requestHeaders = state.requestHeaders,
             expectedDynamicRange = plan?.source?.hdrFormat,
+            expectedColorRange = plan.validatedColorRangeFallback(),
             transformations = plan?.executableMedia3ClientTransformations().orEmpty(),
             runtimeCorrections = plan?.runtimeCorrections.orEmpty(),
         )

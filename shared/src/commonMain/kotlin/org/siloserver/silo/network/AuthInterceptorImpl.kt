@@ -49,25 +49,40 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
     onRequest { request, _ ->
         val skipAuth = request.attributes.getOrNull(SkipSiloAuthAttributeKey) == true
         val diagnosticsScope = request.attributes.getOrNull(DiagnosticsRequestScopeKey)
+        val pinned = request.attributes.getOrNull(AuthScopeAttributeKey)
+        val activeServerIdBefore = if (pinned == null) tokenManager.getCurrentServerId() else null
+        val trustedServerUrl = pinned?.serverUrl ?: tokenManager.getServerUrl()
+
+        // Shared calls are normally relative. Resolve those against the exact
+        // server that owns the credential scope before deciding whether any
+        // Silo header may be attached.
+        if (
+            request.url.encodedPath.startsWith("/api/") &&
+            (request.url.host.isBlank() || request.url.host == "localhost") &&
+            trustedServerUrl.isNotBlank()
+        ) {
+            request.url.rebaseRelativeApiUrl(trustedServerUrl)
+        }
+
+        val sameOrigin = isSameSiloHttpOrigin(trustedServerUrl, request.url)
+        if (skipAuth) {
+            request.removeSiloCredentialHeaders()
+            if (sameOrigin) {
+                request.attachSiloDeviceMetadataHeaders(deviceMetadataProvider)
+            }
+            return@onRequest
+        }
+
+        if (!sameOrigin) {
+            request.removeSiloCredentialHeaders()
+            return@onRequest
+        }
 
         // Pinned (Track B outbox replay): bind this request to a captured scope
         // regardless of the globally-active server/profile, so a mid-drain switch
         // can't send it to the wrong account. Uses the snapshot's URL/profile and
         // the *live* per-server access token (handles rotation).
-        val pinned = request.attributes.getOrNull(AuthScopeAttributeKey)
-        if (pinned != null && !skipAuth) {
-            if (request.url.encodedPath.startsWith("/api/") && pinned.serverUrl.isNotBlank()) {
-                val originalPath = request.url.encodedPath
-                val originalParameters = request.url.parameters.build()
-                val originalFragment = request.url.fragment
-                val originalProtocol = request.url.protocol
-                request.url.takeFrom(pinned.serverUrl)
-                request.url.restoreWebSocketProtocol(originalProtocol)
-                request.url.encodedPath = originalPath
-                request.url.parameters.clear()
-                request.url.parameters.appendAll(originalParameters)
-                request.url.fragment = originalFragment
-            }
+        if (pinned != null) {
             // Replace (never append) the scoped headers; clear the profile token
             // header when the snapshot has none.
             request.headers.remove(HttpHeaders.Authorization)
@@ -85,63 +100,73 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             return@onRequest
         }
 
-        // Shared API calls use relative paths; bind them to the configured server URL
-        // before the request is sent so Ktor doesn't fall back to localhost on iOS.
-        if (request.url.encodedPath.startsWith("/api/") && request.url.host == "localhost") {
-            val serverUrl = tokenManager.getServerUrl()
-            if (serverUrl.isNotBlank()) {
-                val originalPath = request.url.encodedPath
-                val originalParameters = request.url.parameters.build()
-                val originalFragment = request.url.fragment
-                val originalProtocol = request.url.protocol
-
-                request.url.takeFrom(serverUrl)
-                request.url.restoreWebSocketProtocol(originalProtocol)
-                request.url.encodedPath = originalPath
-                request.url.parameters.clear()
-                request.url.parameters.appendAll(originalParameters)
-                request.url.fragment = originalFragment
-            }
-        }
-
-        if (skipAuth) {
-            request.headers.remove(HttpHeaders.Authorization)
-            request.headers.remove("X-Profile-Id")
-            request.headers.remove("X-Profile-Token")
-            request.attachSiloDeviceMetadataHeaders(deviceMetadataProvider)
-            return@onRequest
-        }
-
         // Skip auth headers for the refresh endpoint itself to avoid recursion
         val isRefreshRequest = request.url.encodedPath.endsWith("/auth/refresh")
         if (isRefreshRequest) return@onRequest
 
-        tokenManager.getAccessToken()?.let { token ->
+        val accessToken = tokenManager.getAccessToken()
+        val profileId = tokenManager.getProfileId()
+        val profileToken = tokenManager.getProfileToken()
+        val activeServerIdAfter = tokenManager.getCurrentServerId()
+        val activeServerUrlAfter = tokenManager.getServerUrl()
+        if (
+            activeServerIdBefore != activeServerIdAfter ||
+            !isSameHttpOrigin(trustedServerUrl, activeServerUrlAfter)
+        ) {
+            request.removeSiloCredentialHeaders()
+            return@onRequest
+        }
+
+        accessToken?.let { token ->
             request.header(HttpHeaders.Authorization, "Bearer $token")
         }
 
         request.applyProfileHeaders(
             diagnosticsScope = diagnosticsScope,
-            activeProfileId = tokenManager.getProfileId(),
-            activeProfileToken = tokenManager.getProfileToken(),
+            activeProfileId = profileId,
+            activeProfileToken = profileToken,
         )
 
         request.attachSiloDeviceMetadataHeaders(deviceMetadataProvider)
     }
 
     on(Send) { request ->
-        if (request.attributes.getOrNull(SkipSiloAuthAttributeKey) == true) {
-            return@on proceed(request)
-        }
-
         // Pinned scope (Track B): refresh against the *captured* scope, never the
         // active one, and never invalidate the active UI session — a failed
         // pinned refresh just surfaces the 401 so the outbox keeps the op.
         val pinnedScope = request.attributes.getOrNull(AuthScopeAttributeKey)
+        val normalScope =
+            if (pinnedScope == null) tokenManager.snapshotCurrentScope() else null
+        val activeServerIdBeforeUrl =
+            if (pinnedScope == null) normalScope?.serverId ?: tokenManager.getCurrentServerId() else null
+        val trustedServerUrl =
+            pinnedScope?.serverUrl ?: normalScope?.serverUrl ?: tokenManager.getServerUrl()
+        val activeServerIdBeforeRequest =
+            if (pinnedScope == null) tokenManager.getCurrentServerId() else null
+        if (
+            pinnedScope == null &&
+            activeServerIdBeforeUrl != activeServerIdBeforeRequest
+        ) {
+            request.removeSiloCredentialHeaders()
+            return@on proceed(request)
+        }
+        if (request.attributes.getOrNull(SkipSiloAuthAttributeKey) == true) {
+            if (!isSameSiloHttpOrigin(trustedServerUrl, request.url)) {
+                request.removeSiloCredentialHeaders()
+            }
+            return@on proceed(request)
+        }
+        if (!isSameSiloHttpOrigin(trustedServerUrl, request.url)) {
+            request.removeSiloCredentialHeaders()
+            return@on proceed(request)
+        }
         if (pinnedScope != null) {
             val sentAuth = request.headers[HttpHeaders.Authorization]
             val originalCall = proceed(request)
             if (originalCall.response.status != HttpStatusCode.Unauthorized) {
+                return@on originalCall
+            }
+            if (!isSameSiloHttpOrigin(pinnedScope.serverUrl, originalCall.request.url)) {
                 return@on originalCall
             }
             diagnosticsObserver.safeAuthRefresh("required")
@@ -200,16 +225,33 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             }
         }
 
-        // Capture the access token we will actually SEND with this request.
-        // If the response comes back 401, we compare against this snapshot
+        val refreshScope = normalScope ?: AuthScopeSnapshot(
+            serverId = activeServerIdBeforeRequest.orEmpty(),
+            profileId = null,
+            serverUrl = trustedServerUrl,
+            profileToken = null,
+        )
+
+        // Capture the authorization value we will actually SEND, together with
+        // the server identity and origin that own it. If the response comes back
+        // 401, we compare against this snapshot
         // inside the refresh mutex to detect a concurrent refresh that
         // already happened — so N parallel 401s collapse into ONE refresh.
-        val tokenBeforeRequest = tokenManager.getAccessToken()
+        val authorizationBeforeRequest = request.headers[HttpHeaders.Authorization]
 
         val originalCall = proceed(request)
 
         // Only attempt refresh on 401 for non-auth endpoints
         if (originalCall.response.status != HttpStatusCode.Unauthorized) {
+            return@on originalCall
+        }
+        if (!isSameSiloHttpOrigin(trustedServerUrl, originalCall.request.url)) {
+            return@on originalCall
+        }
+        if (
+            tokenManager.getCurrentServerId() != activeServerIdBeforeRequest ||
+            !isSameHttpOrigin(trustedServerUrl, tokenManager.getServerUrl())
+        ) {
             return@on originalCall
         }
         diagnosticsObserver.safeAuthRefresh("required")
@@ -218,12 +260,6 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
         if (requestPath.endsWith("/auth/refresh") || requestPath.endsWith("/auth/login")) {
             return@on originalCall
         }
-
-        // Capture the server id as well so we can detect a mid-refresh server
-        // switch — without this, a 401-refresh kicked off against server A
-        // could land after the user has switched to server B and write A's
-        // freshly-issued tokens into B's slot.
-        val serverIdBeforeRequest = tokenManager.getCurrentServerId()
 
         // Attempt token refresh with mutex to prevent concurrent refreshes.
         // The mutex guarantees that only one coroutine refreshes at a time;
@@ -236,30 +272,39 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             // "refresh" — the refresh token wouldn't be valid for the new
             // server anyway, and we'd risk persisting cross-server tokens.
             val serverIdNow = tokenManager.getCurrentServerId()
-            if (serverIdNow != serverIdBeforeRequest) {
+            val serverUrlNow = tokenManager.getServerUrl()
+            if (
+                serverIdNow != activeServerIdBeforeRequest ||
+                !isSameHttpOrigin(trustedServerUrl, serverUrlNow)
+            ) {
                 return@withLock false
             }
 
-            val tokenNow = tokenManager.getAccessToken()
-            if (tokenNow != null && tokenNow != tokenBeforeRequest) {
+            val tokenNow = tokenManager.getAccessTokenForScope(refreshScope)
+            if (
+                tokenManager.getCurrentServerId() != activeServerIdBeforeRequest ||
+                !isSameHttpOrigin(trustedServerUrl, tokenManager.getServerUrl())
+            ) {
+                return@withLock false
+            }
+            if (tokenNow != null && "Bearer $tokenNow" != authorizationBeforeRequest) {
                 // Another coroutine already refreshed while we were waiting —
                 // just retry the original request with the new token.
                 return@withLock true
             }
 
-            val refreshToken = tokenManager.getRefreshToken()
+            val refreshToken = tokenManager.getRefreshTokenForScope(refreshScope)
             if (refreshToken.isNullOrBlank()) {
                 return@withLock false
             }
 
             try {
                 diagnosticsObserver.safeAuthRefresh("started")
-                val serverUrl = tokenManager.getServerUrl()
-                if (serverUrl.isBlank()) {
+                if (trustedServerUrl.isBlank()) {
                     return@withLock false
                 }
 
-                val refreshResponse = client.post("$serverUrl/api/v1/auth/refresh") {
+                val refreshResponse = client.post("$trustedServerUrl/api/v1/auth/refresh") {
                     contentType(ContentType.Application.Json)
                     setBody(RefreshRequest(refreshToken))
                 }
@@ -270,7 +315,11 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                 // save time, so a mismatch here means we'd write to the wrong
                 // slot.
                 val serverIdAfterCall = tokenManager.getCurrentServerId()
-                if (serverIdAfterCall != serverIdBeforeRequest) {
+                val serverUrlAfterCall = tokenManager.getServerUrl()
+                if (
+                    serverIdAfterCall != activeServerIdBeforeRequest ||
+                    !isSameHttpOrigin(trustedServerUrl, serverUrlAfterCall)
+                ) {
                     return@withLock false
                 }
 
@@ -280,19 +329,21 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                 // start a refresh with the still-valid refresh token; without
                 // this guard the refresh response lands after clearTokens()
                 // and saveTokens() silently signs the user back in.
-                if (tokenManager.getRefreshToken().isNullOrBlank()) {
+                if (tokenManager.getRefreshTokenForScope(refreshScope).isNullOrBlank()) {
                     return@withLock false
                 }
 
                 if (refreshResponse.status.isSuccess()) {
                     diagnosticsObserver.safeAuthRefresh("succeeded")
                     val tokens = refreshResponse.body<RefreshResponse>()
-                    tokenManager.saveTokens(
+                    tokenManager.saveTokensForScope(
+                        scope = refreshScope,
                         accessToken = tokens.accessToken,
                         refreshToken = tokens.refreshToken,
-                        expiresIn = tokens.expiresIn
+                        expiresIn = tokens.expiresIn,
                     )
-                    true
+                    val after = tokenManager.getAccessTokenForScope(refreshScope)
+                    after != null && "Bearer $after" != authorizationBeforeRequest
                 } else {
                     diagnosticsObserver.safeAuthRefresh("failed")
                     // Only auth rejection proves the refresh token is bad.
@@ -305,7 +356,7 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                         // the UI would stay on Home and keep rendering
                         // "Failed to load..." for every subsequent API call
                         // that now has no credentials.
-                        tokenManager.invalidateSession()
+                        tokenManager.invalidateSessionForScope(refreshScope)
                     }
                     false
                 }
@@ -322,11 +373,23 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             // NOT run a second time, so if we don't update the header here the
             // retry gets sent with the expired Bearer token and the server
             // returns another 401.
-            val newAccessToken = tokenManager.getAccessToken()
-            if (newAccessToken != null) {
-                request.headers.remove(HttpHeaders.Authorization)
-                request.header(HttpHeaders.Authorization, "Bearer $newAccessToken")
+            val retryServerIdBeforeToken = tokenManager.getCurrentServerId()
+            val retryServerUrlBeforeToken = tokenManager.getServerUrl()
+            val newAccessToken = tokenManager.getAccessTokenForScope(refreshScope)
+            val retryServerIdAfterToken = tokenManager.getCurrentServerId()
+            val retryServerUrlAfterToken = tokenManager.getServerUrl()
+            if (
+                retryServerIdBeforeToken != activeServerIdBeforeRequest ||
+                retryServerIdAfterToken != activeServerIdBeforeRequest ||
+                !isSameHttpOrigin(trustedServerUrl, retryServerUrlBeforeToken) ||
+                !isSameHttpOrigin(trustedServerUrl, retryServerUrlAfterToken) ||
+                !isSameSiloHttpOrigin(trustedServerUrl, request.url) ||
+                newAccessToken == null
+            ) {
+                return@on originalCall
             }
+            request.headers.remove(HttpHeaders.Authorization)
+            request.header(HttpHeaders.Authorization, "Bearer $newAccessToken")
             proceed(request)
         } else {
             originalCall
@@ -380,6 +443,50 @@ private suspend fun HttpRequestBuilder.attachSiloDeviceMetadataHeaders(
     device.clientName?.takeIf { it.isNotBlank() }?.let { header("X-Silo-Client", it) }
     device.clientVersion?.takeIf { it.isNotBlank() }?.let { header("X-Silo-Client-Version", it) }
 }
+
+private fun URLBuilder.rebaseRelativeApiUrl(serverUrl: String) {
+    val originalPath = encodedPath
+    val originalParameters = parameters.build()
+    val originalFragment = fragment
+    val originalProtocol = protocol
+
+    takeFrom(serverUrl)
+    restoreWebSocketProtocol(originalProtocol)
+    encodedPath = originalPath
+    parameters.clear()
+    parameters.appendAll(originalParameters)
+    fragment = originalFragment
+}
+
+private fun HttpRequestBuilder.removeSiloCredentialHeaders() {
+    headers.remove(HttpHeaders.Authorization)
+    headers.remove("X-Profile-Id")
+    headers.remove("X-Profile-Token")
+    headers.names()
+        .filter { name -> name.startsWith("X-Silo-", ignoreCase = true) }
+        .forEach(headers::remove)
+}
+
+private fun isSameSiloHttpOrigin(serverUrl: String, requestUrl: URLBuilder): Boolean {
+    val httpRequestUrl = when (requestUrl.protocol) {
+        URLProtocol.WS -> requestUrl.toString().replaceSchemeForOriginCheck("http")
+        URLProtocol.WSS -> requestUrl.toString().replaceSchemeForOriginCheck("https")
+        else -> requestUrl.toString()
+    }
+    return isSameHttpOrigin(serverUrl, httpRequestUrl)
+}
+
+private fun isSameSiloHttpOrigin(serverUrl: String, requestUrl: Url): Boolean {
+    val httpRequestUrl = when (requestUrl.protocol) {
+        URLProtocol.WS -> requestUrl.toString().replaceSchemeForOriginCheck("http")
+        URLProtocol.WSS -> requestUrl.toString().replaceSchemeForOriginCheck("https")
+        else -> requestUrl.toString()
+    }
+    return isSameHttpOrigin(serverUrl, httpRequestUrl)
+}
+
+private fun String.replaceSchemeForOriginCheck(scheme: String): String =
+    "$scheme://${substringAfter("://")}"
 
 /**
  * Re-applies the websocket protocol after a `takeFrom(serverUrl)` rebase.

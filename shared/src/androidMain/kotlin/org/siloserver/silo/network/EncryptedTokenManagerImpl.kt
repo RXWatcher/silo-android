@@ -166,6 +166,57 @@ class EncryptedTokenManagerImpl(
         }
     }
 
+    override suspend fun invalidateSessionForScope(scope: AuthScopeSnapshot): Boolean =
+        tokenWriteMutex.withLock {
+            val matchesBeforeTransition = mutex.withLock {
+                ensureCacheMatchesRegistryLocked()
+                currentScopeMatchesLocked(
+                    scope = scope,
+                    expectedGeneration = scope.identityGeneration,
+                )
+            }
+            if (!matchesBeforeTransition) return@withLock false
+
+            identityTransitions.changing(IdentityTransitionKind.SIGN_OUT) {
+                mutex.withLock {
+                    ensureCacheMatchesRegistryLocked()
+                    // `changing` increments the generation before entering this
+                    // block. Any intervening identity transition therefore
+                    // makes this value larger and the mutation fails closed.
+                    if (
+                        !currentScopeMatchesLocked(
+                            scope = scope,
+                            expectedGeneration = scope.identityGeneration + 1,
+                        )
+                    ) {
+                        return@withLock false
+                    }
+                    val wasTemporary = temporaryScope != null
+                    clearCurrentScopeLocked()
+                    if (!wasTemporary) _sessionExpired.tryEmit(Unit)
+                    true
+                }
+            }
+        }
+
+    private fun currentScopeMatchesLocked(
+        scope: AuthScopeSnapshot,
+        expectedGeneration: Long,
+    ): Boolean {
+        if (identityTransitions.generation.value != expectedGeneration) return false
+        val temporary = temporaryScope
+        val generationId = scope.credentialGenerationId
+        if (generationId != null) {
+            return temporary?.generationId == generationId &&
+                temporary.serverId == scope.serverId &&
+                temporary.serverUrl == scope.serverUrl
+        }
+        if (temporary != null || activeServerId != scope.serverId) return false
+        return registry.entries.value
+            .firstOrNull { it.id == scope.serverId }
+            ?.url == scope.serverUrl
+    }
+
     private fun clearCurrentScopeLocked() {
         if (temporaryScope != null) {
             temporaryScope = null
@@ -336,6 +387,9 @@ class EncryptedTokenManagerImpl(
     }
 
     override suspend fun getAccessTokenForScope(scope: AuthScopeSnapshot): String? = mutex.withLock {
+        if (identityTransitions.generation.value != scope.identityGeneration) {
+            return@withLock null
+        }
         val generationId = scope.credentialGenerationId
         if (generationId == null) {
             persistentAccessToken(scope.serverId)
@@ -347,6 +401,9 @@ class EncryptedTokenManagerImpl(
     }
 
     override suspend fun getRefreshTokenForScope(scope: AuthScopeSnapshot): String? = mutex.withLock {
+        if (identityTransitions.generation.value != scope.identityGeneration) {
+            return@withLock null
+        }
         val generationId = scope.credentialGenerationId
         if (generationId == null) {
             persistentRefreshToken(scope.serverId)
@@ -375,21 +432,26 @@ class EncryptedTokenManagerImpl(
         refreshToken: String,
         expiresIn: Long,
     ) {
-        mutex.withLock {
-            val expiryEpochMs = System.currentTimeMillis() + expiresIn * 1000L
-            val generationId = scope.credentialGenerationId
-            if (generationId == null) {
-                savePersistentTokens(scope.serverId, accessToken, refreshToken, expiryEpochMs)
-                return@withLock
+        tokenWriteMutex.withLock {
+            mutex.withLock {
+                if (identityTransitions.generation.value != scope.identityGeneration) {
+                    return@withLock
+                }
+                val expiryEpochMs = System.currentTimeMillis() + expiresIn * 1000L
+                val generationId = scope.credentialGenerationId
+                if (generationId == null) {
+                    savePersistentTokens(scope.serverId, accessToken, refreshToken, expiryEpochMs)
+                    return@withLock
+                }
+                val temporary = temporaryScope
+                    ?.takeIf { it.generationId == generationId && it.serverId == scope.serverId }
+                    ?: return@withLock
+                temporaryScope = temporary.copy(
+                    accessToken = accessToken,
+                    refreshToken = refreshToken,
+                    expiresAtEpochMs = expiryEpochMs,
+                )
             }
-            val temporary = temporaryScope
-                ?.takeIf { it.generationId == generationId && it.serverId == scope.serverId }
-                ?: return@withLock
-            temporaryScope = temporary.copy(
-                accessToken = accessToken,
-                refreshToken = refreshToken,
-                expiresAtEpochMs = expiryEpochMs,
-            )
         }
     }
 

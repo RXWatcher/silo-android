@@ -3,9 +3,15 @@ package org.siloserver.silo.model.playback
 sealed interface SubtitleIdentity {
     data object Off : SubtitleIdentity
 
-    data class ServerSidecar(val serverIndex: Int) : SubtitleIdentity
+    data class ServerSidecar(
+        val serverIndex: Int,
+        val media: SubtitleMediaIdentity? = null,
+    ) : SubtitleIdentity
 
-    data class ServerBurnIn(val serverIndex: Int) : SubtitleIdentity
+    data class ServerBurnIn(
+        val serverIndex: Int,
+        val media: SubtitleMediaIdentity? = null,
+    ) : SubtitleIdentity
 
     data class Embedded(
         val serverIndex: Int,

@@ -14,6 +14,9 @@ class PlayerViewModelSharedCoordinatorTest {
     private val playerScreenSource = java.io.File(
         "src/androidMain/kotlin/org/siloserver/silo/android/ui/screens/player/PlayerScreen.kt",
     ).readText()
+    private val freshRestoreSource = java.io.File(
+        "src/androidMain/kotlin/org/siloserver/silo/android/ui/screens/player/MobileFreshSubtitleRestore.kt",
+    ).readText()
 
     @Test
     fun mobilePlayerViewModelStartsRemotePlaybackThroughSharedCoordinator() {
@@ -95,6 +98,135 @@ class PlayerViewModelSharedCoordinatorTest {
         assertTrue(
             refreshIndex < coordinatorIndex,
             "Mobile must pull user/device effective settings before choosing remote quality/subtitle defaults",
+        )
+    }
+
+    @Test
+    fun freshPlaybackHydratesDownloadedRowsBeforePersistedSubtitleRestore() {
+        val body = viewModelSource
+            .substringAfter("private suspend fun applyCoordinatorStateToUi(")
+            .substringBefore("private fun startIntroAutoSkipObserver")
+        val hydrateIndex = freshRestoreSource.indexOf("loadDownloadedSubtitles(mediaFileId)")
+        val mergeIndex = freshRestoreSource.indexOf("mergeDownloadedSubtitles(")
+        val restoreIndex = freshRestoreSource.indexOf("decodeSubtitleIdentityPreference(")
+
+        assertTrue(body.contains("prepareMobileFreshSubtitleRestore("))
+        assertTrue(body.contains("loadDownloadedSubtitles = subtitlesRepository::list"))
+        assertTrue(hydrateIndex >= 0, "Fresh remote playback must fetch downloaded subtitle rows")
+        assertTrue(mergeIndex > hydrateIndex, "Fresh remote playback must merge fetched downloads")
+        assertTrue(
+            restoreIndex > mergeIndex,
+            "Persisted Downloaded/legacy Local identity must resolve only after download hydration",
+        )
+        assertTrue(
+            freshRestoreSource.contains("persistedSelectionIdentity"),
+            "Fresh restore must preserve authoritative downloaded subtitle identity",
+        )
+    }
+
+    @Test
+    fun freshPlaybackDownloadHydrationFailureIsBestEffort() {
+        val body = viewModelSource
+            .substringAfter("private suspend fun applyCoordinatorStateToUi(")
+            .substringBefore("private fun startIntroAutoSkipObserver")
+
+        assertTrue(freshRestoreSource.contains("is ApiResult.Success ->"))
+        assertTrue(freshRestoreSource.contains("else -> emptyList()"))
+        assertTrue(body.contains("freshSubtitleRestore.persistedPreferencePresent"))
+        assertTrue(body.contains("MobileSubtitleAutoSelection.NoChange -> null"))
+    }
+
+    @Test
+    fun loadContentCreatesAndCancelsGenerationOwnedJob() {
+        val body = viewModelSource
+            .substringAfter("fun loadContent(")
+            .substringBefore("private fun startIntroAutoSkipObserver")
+
+        assertTrue(viewModelSource.contains("private val loadOwners"))
+        assertTrue(viewModelSource.contains("private var loadJob: Job?"))
+        assertTrue(body.contains("loadJob?.cancel()"))
+        assertTrue(body.contains("loadOwners.begin("))
+    }
+
+    @Test
+    fun staleReadyLoadStopsReturnedSessionBeforePublishing() {
+        val body = viewModelSource
+            .substringAfter("private suspend fun applyCoordinatorStateToUi(")
+            .substringBefore("private fun startIntroAutoSkipObserver")
+        val cleanupBody = viewModelSource
+            .substringAfter("private suspend fun stopStaleReadySession(")
+            .substringBefore("private suspend fun applyCoordinatorStateToUi(")
+
+        assertTrue(body.contains("ownsLoad("))
+        assertTrue(body.contains("stopStaleReadySession("))
+        assertTrue(cleanupBody.contains("playbackSessionManager.stopSession(sessionId)"))
+        assertTrue(body.contains("return"))
+    }
+
+    @Test
+    fun exitAndClearInvalidatePlayerLoadOwner() {
+        val exitBody = viewModelSource
+            .substringAfter("fun onExit()")
+            .substringBefore("private fun scheduleControlsHide")
+        val clearBody = viewModelSource.substringAfter("override fun onCleared()")
+
+        assertTrue(exitBody.contains("loadOwners.invalidate()"))
+        assertTrue(exitBody.contains("loadJob?.cancel()"))
+        assertTrue(clearBody.contains("loadOwners.invalidate()"))
+        assertTrue(clearBody.contains("loadJob?.cancel()"))
+    }
+
+    @Test
+    fun trackPersistenceUsesAtomicLogicalPortWrite() {
+        val persistenceBody = viewModelSource
+            .substringAfter("persistencePort = object : MobileSubtitlePersistencePort")
+            .substringBefore("onSnapshotChanged =")
+
+        assertTrue(persistenceBody.contains("userItemStatePort.recordTrackSelection("))
+        assertFalse(persistenceBody.contains("recordAudioTrackSelection("))
+        assertFalse(persistenceBody.contains("recordSubtitleTrackSelection("))
+    }
+
+    @Test
+    fun subtitleOnlyPersistencePreservesUnresolvedAudioFingerprint() {
+        val persistenceBody = viewModelSource
+            .substringAfter("persistencePort = object : MobileSubtitlePersistencePort")
+            .substringBefore("onSnapshotChanged =")
+
+        assertTrue(persistenceBody.contains("TrackSelectionFingerprintUpdate.Preserve"))
+        assertTrue(persistenceBody.contains("TrackSelectionFingerprintUpdate.Set"))
+        assertTrue(
+            persistenceBody.contains(
+                "subtitleUpdate = TrackSelectionFingerprintUpdate.Set(",
+            ),
+        )
+        assertTrue(
+            persistenceBody.indexOf("TrackSelectionFingerprintUpdate.Preserve") <
+                persistenceBody.indexOf("userItemStatePort.recordTrackSelection("),
+        )
+    }
+
+    @Test
+    fun normalExitAwaitsFinalTrackPreferenceFlushBeforeTeardown() {
+        val exitBody = viewModelSource
+            .substringAfter("fun onExit()")
+            .substringBefore("private fun scheduleControlsHide")
+
+        assertTrue(exitBody.contains("persistCommittedSelectionAndFlush("))
+        assertTrue(
+            exitBody.indexOf("persistCommittedSelectionAndFlush(") <
+                exitBody.indexOf("sessionLifecycle.stop()"),
+        )
+    }
+
+    @Test
+    fun onClearedRequestsContainedNonBlockingTrackPersistenceFallback() {
+        val clearBody = viewModelSource
+            .substringAfter("override fun onCleared()")
+
+        assertTrue(
+            clearBody.contains("requestDurableFinalPersistence("),
+            "onCleared must request a contained non-blocking fallback, not add a main-thread blocking track write",
         )
     }
 

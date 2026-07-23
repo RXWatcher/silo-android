@@ -65,22 +65,15 @@ fun encodeCatalogSubtitlePreference(
     val track = tracks.getOrNull(selectedOrdinal) ?: return null
     val serverIndex = combinedSubtitleSelectionIndexes(tracks).getOrNull(selectedOrdinal)
         ?: return null
+    val media = track.catalogMediaIdentity()
     val identity = when {
         !track.external -> SubtitleIdentity.Embedded(
             serverIndex = serverIndex,
-            media = SubtitleMediaIdentity(
-                label = track.title,
-                language = track.language,
-                codecFamily = track.codec,
-                forced = track.forced,
-                hearingImpaired = track.title
-                    ?.takeIf(::catalogLabelIndicatesHearingImpaired)
-                    ?.let { true },
-            ),
+            media = media,
         )
         track.codec.isCatalogBitmapSubtitle() ->
-            SubtitleIdentity.ServerBurnIn(serverIndex)
-        else -> SubtitleIdentity.ServerSidecar(serverIndex)
+            SubtitleIdentity.ServerBurnIn(serverIndex, media)
+        else -> SubtitleIdentity.ServerSidecar(serverIndex, media)
     }
     return encodeSubtitleIdentityPreference(identity)
 }
@@ -92,6 +85,15 @@ fun resolveCatalogSubtitlePreferenceOrdinal(
     val typed = decodeSubtitleIdentityPreference(preference)
     if (typed != null) {
         if (typed == SubtitleIdentity.Off) return -1
+        val stableMedia = typed.catalogMediaIdentityOrNull()
+        if (stableMedia != null) {
+            if (!stableMedia.hasPositiveCatalogDiscriminator()) return null
+            return tracks.indices
+                .filter { ordinal ->
+                    tracks[ordinal].matchesTypedCatalogIdentity(typed, stableMedia)
+                }
+                .singleOrNull()
+        }
         val serverIndex = when (typed) {
             SubtitleIdentity.Off -> return -1
             is SubtitleIdentity.ServerSidecar -> typed.serverIndex
@@ -113,10 +115,12 @@ private fun SubtitleIdentity.toPersisted(): PersistedSubtitleIdentityV2 = when (
     is SubtitleIdentity.ServerSidecar -> PersistedSubtitleIdentityV2(
         kind = "server_sidecar",
         serverIndex = serverIndex,
+        media = media?.toPersisted(),
     )
     is SubtitleIdentity.ServerBurnIn -> PersistedSubtitleIdentityV2(
         kind = "server_burn_in",
         serverIndex = serverIndex,
+        media = media?.toPersisted(),
     )
     is SubtitleIdentity.Embedded -> PersistedSubtitleIdentityV2(
         kind = "embedded",
@@ -148,8 +152,12 @@ private fun PersistedSubtitleIdentityV2.toIdentity(): SubtitleIdentity? {
     val mediaIdentity = media?.toIdentity()
     return when (kind) {
         "off" -> SubtitleIdentity.Off
-        "server_sidecar" -> serverIndex?.let(SubtitleIdentity::ServerSidecar)
-        "server_burn_in" -> serverIndex?.let(SubtitleIdentity::ServerBurnIn)
+        "server_sidecar" -> serverIndex?.let { index ->
+            SubtitleIdentity.ServerSidecar(index, mediaIdentity)
+        }
+        "server_burn_in" -> serverIndex?.let { index ->
+            SubtitleIdentity.ServerBurnIn(index, mediaIdentity)
+        }
         "embedded" -> serverIndex?.let { index ->
             mediaIdentity?.let { SubtitleIdentity.Embedded(index, it) }
         }
@@ -280,3 +288,87 @@ private fun catalogLabelIndicatesHearingImpaired(label: String): Boolean {
         normalized.contains("hearing-impaired") ||
         Regex("""(^|[^a-z0-9])(cc|sdh|hi)([^a-z0-9]|$)""").containsMatchIn(normalized)
 }
+
+private fun SubtitleTrack.catalogMediaIdentity(): SubtitleMediaIdentity =
+    SubtitleMediaIdentity(
+        label = title,
+        language = canonicalSubtitleLanguage(language),
+        codecFamily = canonicalSubtitleCodecFamily(codec),
+        forced = forced,
+        hearingImpaired = title
+            ?.takeIf(::catalogLabelIndicatesHearingImpaired)
+            ?.let { true },
+    )
+
+private fun SubtitleIdentity.catalogMediaIdentityOrNull(): SubtitleMediaIdentity? = when (this) {
+    is SubtitleIdentity.ServerSidecar -> media
+    is SubtitleIdentity.ServerBurnIn -> media
+    is SubtitleIdentity.Embedded -> media
+    SubtitleIdentity.Off,
+    is SubtitleIdentity.Downloaded,
+    is SubtitleIdentity.LocalMedia3,
+    -> null
+}
+
+private fun SubtitleTrack.matchesTypedCatalogIdentity(
+    identity: SubtitleIdentity,
+    expected: SubtitleMediaIdentity,
+): Boolean {
+    val kindMatches = when (identity) {
+        is SubtitleIdentity.ServerSidecar ->
+            external && !codec.isCatalogBitmapSubtitle()
+        is SubtitleIdentity.ServerBurnIn ->
+            external && codec.isCatalogBitmapSubtitle()
+        is SubtitleIdentity.Embedded -> !external
+        SubtitleIdentity.Off,
+        is SubtitleIdentity.Downloaded,
+        is SubtitleIdentity.LocalMedia3,
+        -> false
+    }
+    if (!kindMatches) return false
+    val actual = catalogMediaIdentity()
+    if (
+        expected.trackId.normalizedTrackField(lowercase = false).isNotEmpty() &&
+        actual.trackId.normalizedTrackField(lowercase = false) !=
+        expected.trackId.normalizedTrackField(lowercase = false)
+    ) {
+        return false
+    }
+    if (
+        expected.label.normalizedTrackField(lowercase = true).isNotEmpty() &&
+        actual.label.normalizedTrackField(lowercase = true) !=
+        expected.label.normalizedTrackField(lowercase = true)
+    ) {
+        return false
+    }
+    val expectedLanguage = canonicalSubtitleLanguage(expected.language)
+    if (
+        expectedLanguage != null &&
+        canonicalSubtitleLanguage(actual.language) != expectedLanguage
+    ) {
+        return false
+    }
+    if (
+        canonicalSubtitleCodecFamily(expected.codecFamily) != null &&
+        canonicalSubtitleCodecFamily(actual.codecFamily) !=
+        canonicalSubtitleCodecFamily(expected.codecFamily)
+    ) {
+        return false
+    }
+    if (expected.forced != null && actual.forced != expected.forced) return false
+    if (
+        expected.hearingImpaired != null &&
+        actual.hearingImpaired != expected.hearingImpaired
+    ) {
+        return false
+    }
+    return true
+}
+
+private fun SubtitleMediaIdentity.hasPositiveCatalogDiscriminator(): Boolean =
+    !trackId.isNullOrBlank() ||
+        !label.isNullOrBlank() ||
+        canonicalSubtitleLanguage(language) != null ||
+        !codecFamily.isNullOrBlank() ||
+        forced == true ||
+        hearingImpaired == true

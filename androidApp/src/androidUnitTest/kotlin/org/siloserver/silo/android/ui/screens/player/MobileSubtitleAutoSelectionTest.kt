@@ -46,6 +46,49 @@ class MobileSubtitleAutoSelectionTest {
     }
 
     @Test
+    fun downloadedSelectionRestoresByUniqueDomainIdAfterMetadataChanges() {
+        val persisted = SubtitleIdentity.Downloaded(
+            downloadId = 312,
+            media = org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                trackId = "silo-downloaded-subtitle:312",
+                label = "English",
+                language = "en",
+                codecFamily = "webvtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+        )
+        val changed = subtitle(
+            index = 8,
+            label = "Français corrigé",
+            language = "fra",
+            codec = "subrip",
+        ).copy(source = "downloaded", downloadId = 312)
+
+        assertEquals(0, resolveMobileSubtitleOrdinal(persisted, listOf(changed)))
+    }
+
+    @Test
+    fun duplicateDownloadedDomainIdSafelyMissesAsAmbiguous() {
+        val persisted = SubtitleIdentity.Downloaded(
+            downloadId = 312,
+            media = org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                label = "English",
+                language = "en",
+                codecFamily = "webvtt",
+            ),
+        )
+        val duplicates = listOf(
+            subtitle(8, "English", "en", codec = "webvtt")
+                .copy(source = "downloaded", downloadId = 312),
+            subtitle(9, "French", "fr", codec = "subrip")
+                .copy(source = "downloaded", downloadId = 312),
+        )
+
+        assertEquals(null, resolveMobileSubtitleOrdinal(persisted, duplicates))
+    }
+
+    @Test
     fun genericLabelKeepsHearingImpairedMetadataUnknown() {
         val identity = mobileSubtitleIdentity(
             subtitle(
@@ -60,7 +103,7 @@ class MobileSubtitleAutoSelectionTest {
     }
 
     @Test
-    fun authoritativeHearingImpairedTrackMatchesOneUnknownRowButNotDuplicates() {
+    fun authoritativeHearingImpairedTrackDoesNotMatchUnknownMetadata() {
         val identity = SubtitleIdentity.LocalMedia3(
             org.siloserver.silo.model.playback.SubtitleMediaIdentity(
                 language = "en",
@@ -74,14 +117,7 @@ class MobileSubtitleAutoSelectionTest {
             downloadId = null,
         )
 
-        assertEquals(0, resolveMobileSubtitleOrdinal(identity, listOf(generic)))
-        assertEquals(
-            null,
-            resolveMobileSubtitleOrdinal(
-                identity,
-                listOf(generic, generic.copy(index = 5)),
-            ),
-        )
+        assertEquals(null, resolveMobileSubtitleOrdinal(identity, listOf(generic)))
     }
 
     @Test
@@ -121,7 +157,11 @@ class MobileSubtitleAutoSelectionTest {
             ),
         )
 
-        assertEquals(SubtitleIdentity.ServerSidecar(7), identity)
+        val sidecar = identity as SubtitleIdentity.ServerSidecar
+        assertEquals(7, sidecar.serverIndex)
+        assertEquals("English", sidecar.media?.label)
+        assertEquals("en", sidecar.media?.language)
+        assertEquals("webvtt", sidecar.media?.codecFamily)
     }
 
     @Test
@@ -135,7 +175,119 @@ class MobileSubtitleAutoSelectionTest {
             ).copy(source = "external", url = ""),
         )
 
-        assertEquals(SubtitleIdentity.ServerBurnIn(8), identity)
+        val burnIn = identity as SubtitleIdentity.ServerBurnIn
+        assertEquals(8, burnIn.serverIndex)
+        assertEquals("English PGS", burnIn.media?.label)
+        assertEquals("en", burnIn.media?.language)
+        assertEquals("pgs", burnIn.media?.codecFamily)
+    }
+
+    @Test
+    fun persistedServerSidecarFollowsMetadataWhenMountedIndicesReorder() {
+        val persisted = mobileSubtitleIdentity(
+            subtitle(
+                index = 4,
+                label = "English",
+                language = "en",
+                codec = "webvtt",
+            ).copy(source = "external"),
+        )
+        val reordered = listOf(
+            subtitle(4, "Deutsch", "de", codec = "webvtt").copy(source = "external"),
+            subtitle(9, "English", "en", codec = "webvtt").copy(source = "external"),
+        )
+
+        assertEquals(1, resolveMobileSubtitleOrdinal(persisted, reordered))
+    }
+
+    @Test
+    fun persistedServerSidecarDoesNotFallBackToStaleIndexAfterMetadataMismatch() {
+        val persisted = mobileSubtitleIdentity(
+            subtitle(
+                index = 4,
+                label = "English",
+                language = "en",
+                codec = "webvtt",
+            ).copy(source = "external"),
+        )
+        val changed = listOf(
+            subtitle(4, "Deutsch", "de", codec = "webvtt").copy(source = "external"),
+        )
+
+        assertEquals(null, resolveMobileSubtitleOrdinal(persisted, changed))
+    }
+
+    @Test
+    fun persistedServerSidecarRequiresEveryStoredMetadataFieldToMatch() {
+        val persisted = SubtitleIdentity.ServerSidecar(
+            serverIndex = 4,
+            media = org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                trackId = "stable-track",
+                label = "English SDH",
+                language = "en",
+                codecFamily = "webvtt",
+                forced = false,
+                hearingImpaired = true,
+            ),
+        )
+        val mismatched = subtitle(
+            index = 9,
+            label = "English",
+            language = "en",
+            codec = "webvtt",
+        ).copy(
+            source = "external",
+            mediaTrackId = "different-track",
+        )
+
+        assertEquals(null, resolveMobileSubtitleOrdinal(persisted, listOf(mismatched)))
+    }
+
+    @Test
+    fun weakTypedMetadataDoesNotRemapToArbitrarySoleMountedRow() {
+        val persisted = SubtitleIdentity.ServerSidecar(
+            serverIndex = 4,
+            media = org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                forced = false,
+            ),
+        )
+        val soleRow = subtitle(
+            index = 9,
+            label = "Deutsch",
+            language = "de",
+        ).copy(source = "external")
+
+        assertEquals(null, resolveMobileSubtitleOrdinal(persisted, listOf(soleRow)))
+    }
+
+    @Test
+    fun legacyServerIdentityWithoutMediaStillUsesStoredIndex() {
+        val legacy = SubtitleIdentity.ServerSidecar(serverIndex = 4)
+        val rows = listOf(
+            subtitle(9, "English", "en").copy(source = "external"),
+            subtitle(4, "Deutsch", "de").copy(source = "external"),
+        )
+
+        assertEquals(1, resolveMobileSubtitleOrdinal(legacy, rows))
+    }
+
+    @Test
+    fun embeddedIdentityWithoutTrackIdFollowsStrictMetadataAfterReorder() {
+        val persisted = SubtitleIdentity.Embedded(
+            serverIndex = 4,
+            media = org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                label = "English",
+                language = "en",
+                codecFamily = "webvtt",
+                forced = false,
+            ),
+        )
+        val rows = listOf(
+            subtitle(4, "Deutsch", "de", codec = "webvtt").copy(source = "embedded", url = ""),
+            subtitle(9, "English", "en", codec = "webvtt").copy(source = "embedded", url = ""),
+        )
+
+        assertEquals(1, resolveMobileSubtitleOrdinal(persisted, rows))
     }
 
     @Test
@@ -146,7 +298,7 @@ class MobileSubtitleAutoSelectionTest {
                 language = "eng",
                 codecFamily = "webvtt",
                 forced = false,
-                hearingImpaired = false,
+                hearingImpaired = null,
             ),
         )
 
@@ -165,7 +317,7 @@ class MobileSubtitleAutoSelectionTest {
     }
 
     @Test
-    fun typedMobileOrdinalUsesExactMediaTrackIdBeforeMetadata() {
+    fun typedMobileOrdinalUsesTrackIdWhenAllStoredMetadataAlsoMatches() {
         val identity = SubtitleIdentity.LocalMedia3(
             org.siloserver.silo.model.playback.SubtitleMediaIdentity(
                 trackId = "decoder-text-9",
@@ -173,7 +325,7 @@ class MobileSubtitleAutoSelectionTest {
                 language = "en",
                 codecFamily = "webvtt",
                 forced = false,
-                hearingImpaired = false,
+                hearingImpaired = null,
             ),
         )
         val rows = listOf(
@@ -182,7 +334,7 @@ class MobileSubtitleAutoSelectionTest {
                 downloadId = null,
                 mediaTrackId = "decoder-text-8",
             ),
-            subtitle(5, "Different", "fr", codec = "srt").copy(
+            subtitle(5, "English", "en", codec = "webvtt").copy(
                 source = "downloaded",
                 downloadId = null,
                 mediaTrackId = "decoder-text-9",

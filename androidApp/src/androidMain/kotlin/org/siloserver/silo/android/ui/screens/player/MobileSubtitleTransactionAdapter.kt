@@ -1,13 +1,22 @@
 package org.siloserver.silo.android.ui.screens.player
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicLong
 import org.siloserver.silo.common.player.PlaybackSessionManager
 import org.siloserver.silo.common.player.StagedVideoReplan
 import org.siloserver.silo.common.player.VideoSessionStartV3
@@ -88,6 +97,14 @@ internal interface MobileSubtitlePersistencePort {
     )
 }
 
+/**
+ * Process-lifetime owner for bounded final preference writes. Keeping this
+ * scope outside each adapter prevents one unbounded SupervisorJob per player.
+ */
+private object MobileSubtitleDurablePersistenceOwner {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+}
+
 internal data class MobileSubtitleTransactionSnapshot(
     val transition: SubtitleTransitionState,
     val pendingIdentity: SubtitleIdentity? = transition.pending?.identity,
@@ -139,6 +156,8 @@ internal class MobileSubtitleTransactionAdapter(
     private val scope: CoroutineScope,
     private val stagedPort: MobileSubtitleStagedReplanPort,
     private val persistencePort: MobileSubtitlePersistencePort,
+    private val durablePersistenceScope: CoroutineScope =
+        MobileSubtitleDurablePersistenceOwner.scope,
     private val onSnapshotChanged: (MobileSubtitleTransactionSnapshot) -> Unit = {},
     private val onCommittedPlayback: suspend (
         MobileSubtitlePlaybackAdoption,
@@ -160,14 +179,28 @@ internal class MobileSubtitleTransactionAdapter(
     )
 
     private data class PersistenceRequest(
+        val sequence: Long,
         val committed: CommittedSubtitle,
         val context: MobileSubtitlePlaybackContext,
+        val completion: CompletableDeferred<Boolean>? = null,
+    ) {
+        val key: PersistenceKey
+            get() = PersistenceKey(context.contentId, context.mediaFileId)
+    }
+
+    private data class PersistenceKey(
+        val contentId: String,
+        val mediaFileId: Int,
     )
 
     private val stagedRequests = Channel<org.siloserver.silo.model.playback.PendingSubtitle>(
         capacity = Channel.CONFLATED,
     )
     private val persistenceRequests = Channel<PersistenceRequest>(capacity = Channel.UNLIMITED)
+    private val persistenceSequence = AtomicLong(0L)
+    private val persistenceWriteMutex = Mutex()
+    private val latestStartedPersistenceSequence = mutableMapOf<PersistenceKey, Long>()
+    private val latestDurablePersistenceSequence = mutableMapOf<PersistenceKey, Long>()
 
     private var transition = SubtitleTransitionState.committed(SubtitleIdentity.Off)
     private var context: MobileSubtitlePlaybackContext? = null
@@ -210,8 +243,28 @@ internal class MobileSubtitleTransactionAdapter(
             }
         }
         scope.launch {
-            for (request in persistenceRequests) {
-                persistencePort.persist(request.committed, request.context)
+            var shutdownCause: CancellationException? = null
+            try {
+                for (request in persistenceRequests) {
+                    try {
+                        val success = writePersistenceRequest(request)
+                        request.completion?.complete(success)
+                    } catch (cancellation: CancellationException) {
+                        request.completion?.completeExceptionally(cancellation)
+                        throw cancellation
+                    }
+                }
+            } catch (cancellation: CancellationException) {
+                shutdownCause = cancellation
+                throw cancellation
+            } finally {
+                val cause = shutdownCause
+                    ?: CancellationException("Subtitle persistence worker stopped.")
+                persistenceRequests.close(cause)
+                while (true) {
+                    val queued = persistenceRequests.tryReceive().getOrNull() ?: break
+                    queued.completion?.completeExceptionally(cause)
+                }
             }
         }
     }
@@ -330,6 +383,31 @@ internal class MobileSubtitleTransactionAdapter(
 
     fun persistCommittedSelection() {
         context?.let { persist(transition.committed, it) }
+    }
+
+    suspend fun persistCommittedSelectionAndFlush(): Boolean {
+        val request = capturePersistenceRequest(
+            completion = CompletableDeferred(),
+        ) ?: return false
+        val primarySucceeded = try {
+            withTimeoutOrNull(PRIMARY_PERSISTENCE_TIMEOUT_MS) {
+                persistenceRequests.send(request)
+                requireNotNull(request.completion).await()
+            } ?: false
+        } catch (_: Exception) {
+            false
+        }
+        if (primarySucceeded) return true
+        return awaitBoundedDurablePersistence(request)
+    }
+
+    fun requestDurableFinalPersistence() {
+        val request = capturePersistenceRequest() ?: return
+        durablePersistenceScope.launch {
+            withTimeoutOrNull(DURABLE_PERSISTENCE_TIMEOUT_MS) {
+                runCatching { writePersistenceRequest(request) }
+            }
+        }
     }
 
     fun restoreCommittedLocalMount() {
@@ -563,7 +641,8 @@ internal class MobileSubtitleTransactionAdapter(
         val staged = try {
             stagedPort.stage(request)
         } catch (cancellation: CancellationException) {
-            throw cancellation
+            if (!currentCoroutineContext().isActive) throw cancellation
+            ApiResult.NetworkError(cancellation)
         } catch (error: Exception) {
             ApiResult.NetworkError(error)
         }
@@ -588,7 +667,7 @@ internal class MobileSubtitleTransactionAdapter(
             expectedSubtitleIndex = request.subtitleTrackIndex,
         )
         if (validationFailure != null) {
-            stagedPort.discard(candidate)
+            discardCandidateBestEffort(candidate)
             fail(requested.generation, validationFailure)
             return
         }
@@ -601,7 +680,7 @@ internal class MobileSubtitleTransactionAdapter(
             ),
         )
         if (validated.state == transition) {
-            stagedPort.discard(candidate)
+            discardCandidateBestEffort(candidate)
             return
         }
 
@@ -610,7 +689,8 @@ internal class MobileSubtitleTransactionAdapter(
             stagedPort.commit(candidate)
         } catch (cancellation: CancellationException) {
             commitInFlight = false
-            throw cancellation
+            if (!currentCoroutineContext().isActive) throw cancellation
+            ApiResult.NetworkError(cancellation)
         } catch (error: Exception) {
             ApiResult.NetworkError(error)
         }
@@ -626,6 +706,7 @@ internal class MobileSubtitleTransactionAdapter(
                 val adoptionContext = context ?: run {
                     abandonCommittedPlayback(committed.data)
                     commitInFlight = false
+                    resetDuringCommit = false
                     return
                 }
                 val playback = committed.data.withRebasedDownloads(adoptionContext)
@@ -730,7 +811,7 @@ internal class MobileSubtitleTransactionAdapter(
             if (transition.committed.identity.requiresLocalMountConfirmation()) {
                 beginLocalRestore(
                     identity = transition.committed.identity,
-                    persistence = PersistenceRequest(
+                    persistence = newPersistenceRequest(
                         committed = transition.committed,
                         context = requireNotNull(context),
                     ),
@@ -761,6 +842,18 @@ internal class MobileSubtitleTransactionAdapter(
         }
     }
 
+    private suspend fun discardCandidateBestEffort(candidate: MobileStagedSubtitleCandidate) {
+        withContext(NonCancellable) {
+            try {
+                stagedPort.discard(candidate)
+            } catch (_: Throwable) {
+                // Discard is cleanup after the reducer has already rejected
+                // this candidate. Its transport failure must not skip the
+                // owned rollback or terminate the serialized worker.
+            }
+        }
+    }
+
     private sealed interface AdoptionOutcome {
         data object Adopted : AdoptionOutcome
         data object Superseded : AdoptionOutcome
@@ -768,6 +861,7 @@ internal class MobileSubtitleTransactionAdapter(
     }
 
     private fun finishFailedCommit(generation: Long, message: String) {
+        resetDuringCommit = false
         if (queuedMutations.isEmpty()) {
             fail(generation, message)
             return
@@ -814,6 +908,9 @@ internal class MobileSubtitleTransactionAdapter(
     }
 
     private fun fail(generation: Long, message: String) {
+        val failedLocalOwner = pendingLocalSelection?.takeIf { owner ->
+            owner.proposedState.pending?.generation == generation
+        }
         val failed = reduceSubtitleTransition(
             transition,
             StagedSubtitleFailed(
@@ -822,9 +919,21 @@ internal class MobileSubtitleTransactionAdapter(
             ),
         )
         if (failed.state == transition && failed.effects.isEmpty()) return
+        if (failedLocalOwner != null) {
+            invalidateLocalMount()
+        }
         transition = failed.state
         failureMessage = message
-        publish()
+        val priorIdentity = transition.committed.identity
+        if (
+            failedLocalOwner?.mountedBeforeAdoption == true &&
+            priorIdentity.requiresLocalMountConfirmation() &&
+            context?.sessionId != null
+        ) {
+            beginLocalRestore(priorIdentity)
+        } else {
+            publish()
+        }
     }
 
     private fun failLocalMount(generation: Long) {
@@ -892,7 +1001,78 @@ internal class MobileSubtitleTransactionAdapter(
         committed: CommittedSubtitle,
         committedContext: MobileSubtitlePlaybackContext,
     ) {
-        persistenceRequests.trySend(PersistenceRequest(committed, committedContext))
+        persistenceRequests.trySend(
+            newPersistenceRequest(
+                committed = committed,
+                context = committedContext,
+            ),
+        )
+    }
+
+    private fun capturePersistenceRequest(
+        completion: CompletableDeferred<Boolean>? = null,
+    ): PersistenceRequest? {
+        val committedContext = context ?: return null
+        return newPersistenceRequest(
+            committed = transition.committed,
+            context = committedContext,
+            completion = completion,
+        )
+    }
+
+    private fun newPersistenceRequest(
+        committed: CommittedSubtitle,
+        context: MobileSubtitlePlaybackContext,
+        completion: CompletableDeferred<Boolean>? = null,
+    ): PersistenceRequest = PersistenceRequest(
+        sequence = persistenceSequence.incrementAndGet(),
+        committed = committed,
+        context = context,
+        completion = completion,
+    )
+
+    private suspend fun writePersistenceRequest(request: PersistenceRequest): Boolean =
+        persistenceWriteMutex.withLock {
+            val latestStarted = latestStartedPersistenceSequence[request.key] ?: 0L
+            if (request.sequence < latestStarted) {
+                return@withLock (
+                    latestDurablePersistenceSequence[request.key] ?: 0L
+                    ) >= request.sequence
+            }
+            latestStartedPersistenceSequence[request.key] = request.sequence
+
+            repeat(PERSISTENCE_ATTEMPTS) {
+                try {
+                    persistencePort.persist(request.committed, request.context)
+                    latestDurablePersistenceSequence[request.key] = request.sequence
+                    return@withLock true
+                } catch (cancellation: CancellationException) {
+                    if (!currentCoroutineContext().isActive) throw cancellation
+                } catch (_: Exception) {
+                    // The bounded loop owns retry and containment.
+                }
+            }
+            false
+        }
+
+    private suspend fun awaitBoundedDurablePersistence(
+        request: PersistenceRequest,
+    ): Boolean {
+        val completion = CompletableDeferred<Boolean>()
+        val job = durablePersistenceScope.launch {
+            val success = withTimeoutOrNull(DURABLE_PERSISTENCE_TIMEOUT_MS) {
+                runCatching { writePersistenceRequest(request) }.getOrDefault(false)
+            } ?: false
+            completion.complete(success)
+        }
+        job.invokeOnCompletion { cause ->
+            if (cause != null) completion.complete(false)
+        }
+        return withContext(NonCancellable) {
+            withTimeoutOrNull(DURABLE_PERSISTENCE_TIMEOUT_MS) {
+                completion.await()
+            } ?: false
+        }
     }
 
     private fun publish() {
@@ -901,6 +1081,9 @@ internal class MobileSubtitleTransactionAdapter(
 
     private companion object {
         const val LOCAL_MOUNT_TIMEOUT_MS = 5_000L
+        const val PERSISTENCE_ATTEMPTS = 2
+        const val PRIMARY_PERSISTENCE_TIMEOUT_MS = 5_000L
+        const val DURABLE_PERSISTENCE_TIMEOUT_MS = 5_000L
     }
 }
 

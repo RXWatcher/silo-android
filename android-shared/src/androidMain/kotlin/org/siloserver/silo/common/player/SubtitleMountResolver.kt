@@ -3,6 +3,8 @@ package org.siloserver.silo.common.player
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.SubtitleMediaIdentity
+import org.siloserver.silo.playback.canonicalSubtitleCodecFamily
+import org.siloserver.silo.playback.canonicalSubtitleLanguage
 
 private const val SUBTITLE_ARTIFACT_TRACK_ID_PREFIX = "silo-subtitle:"
 private const val DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX =
@@ -166,16 +168,16 @@ private fun SubtitleIdentity.fallbackMediaIdentity(): SubtitleMediaIdentity? = w
 }
 
 private fun SubtitleMediaIdentity.hasTypedFallback(): Boolean =
-    normalizedLanguage(language) != null ||
+    canonicalSubtitleLanguage(language) != null ||
         normalizedSubtitleCodecFamily(codecFamily) != null ||
         forced != null ||
         hearingImpaired != null
 
 private fun MountedSubtitleTrack.matchesTypedMetadata(identity: SubtitleMediaIdentity): Boolean {
-    val targetLanguage = normalizedLanguage(identity.language)
+    val targetLanguage = canonicalSubtitleLanguage(identity.language)
     val targetCodec = normalizedSubtitleCodecFamily(identity.codecFamily)
 
-    if (targetLanguage != null && normalizedLanguage(language) != targetLanguage) return false
+    if (targetLanguage != null && canonicalSubtitleLanguage(language) != targetLanguage) return false
     if (targetCodec != null && normalizedSubtitleCodecFamily(codec) != targetCodec) return false
     if (identity.forced != null && forced != identity.forced) return false
     if (identity.hearingImpaired != null && hearingImpaired != identity.hearingImpaired) return false
@@ -205,46 +207,8 @@ private fun PlayerSubtitleInfo.effectiveSubtitleSource(): String? =
 private fun normalizedLabel(label: String?): String? =
     label.normalizedValue()?.lowercase()
 
-private fun normalizedLanguage(language: String?): String? {
-    val primary = language
-        .normalizedValue()
-        ?.takeUnless { it.equals("und", ignoreCase = true) }
-        ?.lowercase()
-        ?.replace('_', '-')
-        ?.substringBefore('-')
-        ?: return null
-    return when (primary) {
-        "eng" -> "en"
-        "spa" -> "es"
-        "fre", "fra" -> "fr"
-        "ger", "deu" -> "de"
-        "dut", "nld" -> "nl"
-        "jpn" -> "ja"
-        "dan" -> "da"
-        else -> primary
-    }
-}
-
 fun normalizedSubtitleCodecFamily(codecOrMime: String?): String? {
-    val normalized = codecOrMime
-        .normalizedValue()
-        ?.filter(Char::isLetterOrDigit)
-        ?.lowercase()
-        ?.takeIf(String::isNotEmpty)
-        ?: return null
-    return when {
-        normalized.contains("pgs") -> "pgs"
-        normalized.contains("vobsub") || normalized.contains("dvdsubtitle") -> "vobsub"
-        normalized.contains("dvbsub") -> "dvbsub"
-        normalized.contains("subrip") || normalized.endsWith("srt") -> "subrip"
-        normalized.contains("webvtt") || normalized == "textvtt" || normalized.endsWith("vtt") -> "webvtt"
-        normalized.contains("tx3g") || normalized.contains("movtext") -> "tx3g"
-        normalized.contains("ssa") || normalized == "ass" -> "ssa"
-        normalized.contains("ttml") -> "ttml"
-        normalized.contains("cea608") || normalized.contains("eia608") -> "cea608"
-        normalized.contains("cea708") -> "cea708"
-        else -> normalized
-    }
+    return canonicalSubtitleCodecFamily(codecOrMime)
 }
 
 fun subtitleLabelIndicatesHearingImpaired(label: String?): Boolean {

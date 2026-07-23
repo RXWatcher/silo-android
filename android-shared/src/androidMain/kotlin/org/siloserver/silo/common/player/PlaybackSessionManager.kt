@@ -35,13 +35,18 @@ import org.siloserver.silo.repository.PlaybackRepository
 import java.util.IdentityHashMap
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.siloserver.silo.common.player.audio.PassthroughSuppressionRegistry
 
 data class StagedVideoReplan(
@@ -103,6 +108,7 @@ open class PlaybackSessionManager(
     private val activeVideoAttempt = AtomicReference<ActiveVideoAttempt?>()
     private val stagedVideoReplans =
         IdentityHashMap<StagedVideoReplan, PreparedStagedVideoReplan>()
+    private val orphanedSessionIds = mutableSetOf<String>()
     private var contentResetInProgress = false
 
     suspend fun startVideoSessionV3(
@@ -256,17 +262,29 @@ open class PlaybackSessionManager(
     }
 
     private suspend fun beginContentReset() {
-        val candidateSessionIds = videoAttemptMutex.withLock {
+        val callerContext = currentCoroutineContext()
+        val (candidateSessionIds, protectedSessionId) = videoAttemptMutex.withLock {
             contentResetInProgress = true
             val activeSessionId = activeVideoAttempt.get()?.sessionId
-            drainStagedCandidateSessionsLocked(protectedSessionIds = setOfNotNull(activeSessionId))
+            drainStagedCandidateSessionsLocked(
+                protectedSessionIds = setOfNotNull(activeSessionId),
+            ) to activeSessionId
         }
-        candidateSessionIds.forEach { playbackRepository.stopPlayback(it) }
+        withContext(NonCancellable) {
+            try {
+                stopSessionsRetainingFailures(candidateSessionIds)
+            } finally {
+                drainOrphanedSessions(protectedSessionIds = setOfNotNull(protectedSessionId))
+            }
+        }
+        callerContext.ensureActive()
     }
 
     private suspend fun finishContentReset() {
-        videoAttemptMutex.withLock {
-            contentResetInProgress = false
+        withContext(NonCancellable) {
+            videoAttemptMutex.withLock {
+                contentResetInProgress = false
+            }
         }
     }
 
@@ -663,25 +681,95 @@ open class PlaybackSessionManager(
         activeSessionId: String,
     ) {
         if (oldSessionId == activeSessionId) return
+        orphanedSessionIds += oldSessionId
         runCatching {
             telemetryScope.launch(start = CoroutineStart.UNDISPATCHED) {
-                try {
-                    playbackRepository.stopPlayback(oldSessionId)
-                } catch (_: Throwable) {
-                    // Ownership already moved to the committed session. Old
-                    // session cleanup must never unwind that committed result.
+                var stopped = false
+                for (attempt in 0 until COMMITTED_SESSION_CLEANUP_ATTEMPTS) {
+                    val result = try {
+                        playbackRepository.stopPlayback(oldSessionId)
+                    } catch (_: CancellationException) {
+                        return@launch
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    if (result is ApiResult.Success) {
+                        stopped = true
+                        break
+                    }
+                }
+                if (stopped) {
+                    videoAttemptMutex.withLock {
+                        orphanedSessionIds -= oldSessionId
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun drainOrphanedSessions(protectedSessionIds: Set<String>) {
+        val orphanIds = videoAttemptMutex.withLock {
+            orphanedSessionIds.filterNot { it in protectedSessionIds }
+        }
+        orphanIds.forEach { sessionId ->
+            val result = try {
+                playbackRepository.stopPlayback(sessionId)
+            } catch (_: CancellationException) {
+                return@forEach
+            } catch (_: Throwable) {
+                null
+            }
+            if (result is ApiResult.Success) {
+                videoAttemptMutex.withLock {
+                    orphanedSessionIds -= sessionId
+                }
+            }
+        }
+    }
+
+    private suspend fun stopSessionsRetainingFailures(sessionIds: Collection<String>) {
+        val uniqueSessionIds = sessionIds.distinct()
+        if (uniqueSessionIds.isEmpty()) return
+        videoAttemptMutex.withLock {
+            orphanedSessionIds += uniqueSessionIds
+        }
+        uniqueSessionIds.forEach { sessionId ->
+            val result = try {
+                playbackRepository.stopPlayback(sessionId)
+            } catch (_: Throwable) {
+                null
+            }
+            if (result is ApiResult.Success) {
+                videoAttemptMutex.withLock {
+                    orphanedSessionIds -= sessionId
                 }
             }
         }
     }
 
     suspend fun discardStagedVideoReplan(staged: StagedVideoReplan) {
-        videoAttemptMutex.withLock {
-            if (stagedVideoReplans.remove(staged) == null) return@withLock
-            stopCandidateSessionIfUnowned(
-                activeVideoAttempt.get()?.sessionId,
-                staged.candidateSessionId,
-            )
+        val candidateSessionId = videoAttemptMutex.withLock {
+            if (stagedVideoReplans.remove(staged) == null) return
+            staged.candidateSessionId?.takeIf { candidateSessionId ->
+                candidateSessionId != activeVideoAttempt.get()?.sessionId &&
+                    stagedVideoReplans.keys.none {
+                        it.candidateSessionId == candidateSessionId
+                    }
+            }?.also { orphanedSessionIds += it }
+        }
+        if (candidateSessionId == null) return
+
+        withContext(NonCancellable) {
+            val result = try {
+                playbackRepository.stopPlayback(candidateSessionId)
+            } catch (_: Throwable) {
+                null
+            }
+            if (result is ApiResult.Success) {
+                videoAttemptMutex.withLock {
+                    orphanedSessionIds -= candidateSessionId
+                }
+            }
         }
     }
 
@@ -1462,6 +1550,7 @@ open class PlaybackSessionManager(
 
     companion object {
         private const val TAG = "PlaybackSessionMgr"
+        private const val COMMITTED_SESSION_CLEANUP_ATTEMPTS = 2
 
         /**
          * Replan classifications that mean a user-initiated track/quality/route
@@ -1492,27 +1581,58 @@ open class PlaybackSessionManager(
      * Stops an active playback session.
      * Must be called when exiting the player or when playback completes.
      */
-    open suspend fun stopSession(sessionId: String): ApiResult<Unit> = videoAttemptMutex.withLock {
-        var stoppedActiveSession = false
-        while (true) {
-            val active = activeVideoAttempt.get()
-            if (active?.sessionId != sessionId) break
-            if (activeVideoAttempt.compareAndSet(active, null)) {
-                emitActiveVideoEvent(active, "stopped")
-                stoppedActiveSession = true
-                break
+    open suspend fun stopSession(sessionId: String): ApiResult<Unit> {
+        val callerContext = currentCoroutineContext()
+        val candidateSessionIds = videoAttemptMutex.withLock {
+            var stoppedActiveSession = false
+            while (true) {
+                val active = activeVideoAttempt.get()
+                if (active?.sessionId != sessionId) break
+                if (activeVideoAttempt.compareAndSet(active, null)) {
+                    emitActiveVideoEvent(active, "stopped")
+                    stoppedActiveSession = true
+                    break
+                }
+            }
+            if (stoppedActiveSession) {
+                drainStagedCandidateSessionsLocked(protectedSessionIds = setOf(sessionId))
+            } else {
+                drainStagedCandidateSessionsForBaseLocked(
+                    baseSessionId = sessionId,
+                    protectedSessionIds = setOfNotNull(
+                        sessionId,
+                        activeVideoAttempt.get()?.sessionId,
+                    ),
+                )
             }
         }
-        val candidateSessionIds = if (stoppedActiveSession) {
-            drainStagedCandidateSessionsLocked(protectedSessionIds = setOf(sessionId))
-        } else {
-            drainStagedCandidateSessionsForBaseLocked(
-                baseSessionId = sessionId,
-                protectedSessionIds = setOfNotNull(sessionId, activeVideoAttempt.get()?.sessionId),
-            )
+        var result: ApiResult<Unit>? = null
+        var requestedFailure: Throwable? = null
+        withContext(NonCancellable) {
+            try {
+                stopSessionsRetainingFailures(candidateSessionIds)
+                videoAttemptMutex.withLock {
+                    orphanedSessionIds += sessionId
+                }
+                try {
+                    result = playbackRepository.stopPlayback(sessionId)
+                    if (result is ApiResult.Success) {
+                        videoAttemptMutex.withLock {
+                            orphanedSessionIds -= sessionId
+                        }
+                    }
+                } catch (failure: Throwable) {
+                    requestedFailure = failure
+                }
+            } finally {
+                drainOrphanedSessions(
+                    protectedSessionIds = setOfNotNull(activeVideoAttempt.get()?.sessionId),
+                )
+            }
         }
-        candidateSessionIds.forEach { playbackRepository.stopPlayback(it) }
-        playbackRepository.stopPlayback(sessionId)
+        callerContext.ensureActive()
+        requestedFailure?.let { throw it }
+        return requireNotNull(result)
     }
 
     /**

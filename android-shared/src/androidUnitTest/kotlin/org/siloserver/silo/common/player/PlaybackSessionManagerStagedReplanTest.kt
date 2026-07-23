@@ -18,6 +18,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
 import kotlinx.serialization.encodeToString
@@ -161,6 +162,138 @@ class PlaybackSessionManagerStagedReplanTest {
     }
 
     @Test
+    fun `failed bounded cleanup remains orphaned until later stop drains it`() = runTest {
+        val oldAttempts = AtomicInteger()
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+            stopBehavior = { sessionId ->
+                if (sessionId == "s1" && oldAttempts.incrementAndGet() <= 2) {
+                    throw IllegalStateException("transient delete failure")
+                }
+            },
+        )
+        harness.start()
+        val staged = harness.stageSidecar()
+
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(staged),
+        )
+        harness.awaitStopAttempts("s1", count = 2)
+
+        harness.manager.stopSession("s2")
+
+        assertEquals(3, oldAttempts.get())
+        assertTrue("s1" in harness.stoppedSessions)
+        assertTrue("s2" in harness.stoppedSessions)
+    }
+
+    @Test
+    fun `cancelled cleanup is eventually drained by content reset`() = runTest {
+        val oldAttempts = AtomicInteger()
+        val harness = Harness(
+            startResponses = listOf(
+                response(basePlan(sessionId = "s1", fileId = 42)),
+                response(basePlan(sessionId = "s3", fileId = 84)),
+            ),
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+            stopBehavior = { sessionId ->
+                if (sessionId == "s1" && oldAttempts.incrementAndGet() == 1) {
+                    throw CancellationException("cleanup cancelled")
+                }
+            },
+        )
+        harness.start(fileId = 42)
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(harness.stageSidecar()),
+        )
+        harness.awaitStopAttempts("s1", count = 1)
+
+        harness.start(fileId = 84)
+
+        assertTrue(oldAttempts.get() >= 2)
+        assertTrue("s1" in harness.stoppedSessions)
+        assertEquals("s3", harness.manager.activeSessionIdForTest())
+    }
+
+    @Test
+    fun `candidate stop exception cannot skip requested stop and is retained for drain`() = runTest {
+        val candidateAttempts = AtomicInteger()
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+            stopBehavior = { sessionId ->
+                if (sessionId == "s2" && candidateAttempts.incrementAndGet() == 1) {
+                    throw IllegalStateException("candidate stop failed")
+                }
+            },
+        )
+        harness.start()
+        harness.stageSidecar()
+
+        assertIs<ApiResult.Success<Unit>>(harness.manager.stopSession("s1"))
+
+        assertTrue("s1" in harness.stoppedSessions)
+        assertTrue("s2" in harness.stoppedSessions)
+        assertEquals(2, candidateAttempts.get())
+    }
+
+    @Test
+    fun `requested stop failure still drains prior orphan`() = runTest {
+        val oldAttempts = AtomicInteger()
+        val requestedAttempts = AtomicInteger()
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+            stopBehavior = { sessionId ->
+                when {
+                    sessionId == "s1" && oldAttempts.incrementAndGet() <= 2 ->
+                        throw IllegalStateException("old cleanup failed")
+                    sessionId == "s2" && requestedAttempts.incrementAndGet() == 1 ->
+                        throw CancellationException("requested stop cancelled locally")
+                }
+            },
+        )
+        harness.start()
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(harness.stageSidecar()),
+        )
+        harness.awaitStopAttempts("s1", count = 2)
+
+        assertIs<ApiResult.NetworkError>(harness.manager.stopSession("s2"))
+
+        assertEquals(3, oldAttempts.get())
+        assertTrue("s1" in harness.stoppedSessions)
+        assertTrue("s2" in harness.stoppedSessions)
+    }
+
+    @Test
+    fun `caller cancellation waits for contained cleanup then rethrows cancellation`() = runTest {
+        val candidateEntered = CompletableDeferred<Unit>()
+        val releaseCandidate = CompletableDeferred<Unit>()
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+            stopBehavior = { sessionId ->
+                if (sessionId == "s2") {
+                    candidateEntered.complete(Unit)
+                    releaseCandidate.await()
+                }
+            },
+        )
+        harness.start()
+        harness.stageSidecar()
+
+        val stopJob = launch {
+            harness.manager.stopSession("s1")
+        }
+        candidateEntered.await()
+        stopJob.cancel(CancellationException("caller stopped"))
+        releaseCandidate.complete(Unit)
+        stopJob.join()
+
+        assertTrue(stopJob.isCancelled)
+        assertTrue("s1" in harness.stoppedSessions)
+        assertTrue("s2" in harness.stoppedSessions)
+    }
+
+    @Test
     fun `discard stops only candidate and consumes handle`() = runTest {
         val harness = Harness(
             replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
@@ -185,6 +318,40 @@ class PlaybackSessionManagerStagedReplanTest {
             assertIs<ApiResult.Error>(harness.manager.commitStagedVideoReplan(staged)).code,
         )
         assertEquals(listOf("s2"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `suspended discard cleanup does not hold staged ownership mutex`() = runTest {
+        val firstStopStarted = CompletableDeferred<Unit>()
+        val releaseFirstStop = CompletableDeferred<Unit>()
+        val harness = Harness(
+            replanResponse = { index, _ ->
+                response(sidecarPlan(sessionId = if (index == 0) "s2" else "s3"))
+            },
+            stopBehavior = { sessionId ->
+                if (sessionId == "s2") {
+                    firstStopStarted.complete(Unit)
+                    releaseFirstStop.await()
+                }
+            },
+        )
+        harness.start()
+        val first = harness.stageSidecar()
+        val second = harness.stageSidecar()
+
+        val firstDiscard = launch { harness.manager.discardStagedVideoReplan(first) }
+        firstStopStarted.await()
+        val secondDiscard = launch { harness.manager.discardStagedVideoReplan(second) }
+        try {
+            repeat(10) { yield() }
+            assertTrue("s3" in harness.stopAttempts)
+        } finally {
+            releaseFirstStop.complete(Unit)
+        }
+        firstDiscard.join()
+        secondDiscard.join()
+
+        assertEquals(setOf("s2", "s3"), harness.stoppedSessions.toSet())
     }
 
     @Test
@@ -737,8 +904,10 @@ class PlaybackSessionManagerStagedReplanTest {
         private val stopBehavior: suspend (String) -> Unit = {},
     ) {
         val stoppedSessions: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        val stopAttempts: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val replanBodies: MutableList<JsonObject> = Collections.synchronizedList(mutableListOf())
         private val stoppedEvents = Channel<String>(Channel.UNLIMITED)
+        private val stopAttemptEvents = Channel<String>(Channel.UNLIMITED)
         private val startIndex = AtomicInteger()
         private val replanIndex = AtomicInteger()
         private val client = HttpClient(
@@ -758,6 +927,8 @@ class PlaybackSessionManagerStagedReplanTest {
                     }
                     request.method == HttpMethod.Delete && path.startsWith("/api/v1/playback/") -> {
                         val sessionId = path.substringAfterLast('/')
+                        stopAttempts += sessionId
+                        stopAttemptEvents.send(sessionId)
                         stopBehavior(sessionId)
                         stoppedSessions += sessionId
                         stoppedEvents.send(sessionId)
@@ -816,6 +987,12 @@ class PlaybackSessionManagerStagedReplanTest {
             if (sessionId in stoppedSessions) return
             while (stoppedEvents.receive() != sessionId) {
                 // Drain unrelated cleanup completions until this owner stops.
+            }
+        }
+
+        suspend fun awaitStopAttempts(sessionId: String, count: Int) {
+            while (stopAttempts.count { it == sessionId } < count) {
+                stopAttemptEvents.receive()
             }
         }
     }

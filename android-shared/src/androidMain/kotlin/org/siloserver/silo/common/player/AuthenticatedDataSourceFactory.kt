@@ -15,6 +15,7 @@ import org.siloserver.silo.common.player.subtitle.normalizeSubripPayloadIfNeeded
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import kotlinx.coroutines.runBlocking
+import org.siloserver.silo.network.isSameHttpOrigin
 
 /**
  * DataSource.Factory that resolves relative stream URLs against the server
@@ -89,7 +90,14 @@ internal class RefreshingHttpDataSource(
         return try {
             first.openWithGuards(dataSpec, failedSnapshot, guardEnabled)
         } catch (error: HttpDataSource.InvalidResponseCodeException) {
-            if (error.responseCode != 401 || !runBlocking { authSession.refreshIfStale(failedSnapshot) }) {
+            if (
+                !shouldRefreshMediaRequest(
+                    serverUrl = failedSnapshot.serverUrl,
+                    requestUrl = dataSpec.uri.toString(),
+                    responseCode = error.responseCode,
+                ) ||
+                !runBlocking { authSession.refreshIfStale(failedSnapshot) }
+            ) {
                 throw error
             }
             first.close()
@@ -190,7 +198,12 @@ internal class RefreshingHttpDataSource(
         // headers as authoritative while filling only missing auth/profile
         // headers from the refreshable Silo session.
         .setHttpRequestHeaders(
-            mergeSessionAuthHeaders(snapshot.asRequestHeaders(), httpRequestHeaders),
+            authenticatedHeadersFor(
+                serverUrl = snapshot.serverUrl,
+                requestUrl = uri.toString(),
+                sessionHeaders = snapshot.asRequestHeaders(),
+                explicitHeaders = httpRequestHeaders,
+            ),
         )
         .build()
 }
@@ -225,6 +238,29 @@ internal fun mergeSessionAuthHeaders(
         put(name, value)
     }
 }
+
+internal fun authenticatedHeadersFor(
+    serverUrl: String,
+    requestUrl: String,
+    sessionHeaders: Map<String, String>,
+    explicitHeaders: Map<String, String>,
+): Map<String, String> {
+    val resolvedRequestUrl = resolveRoutedDataSourceUrl(serverUrl, requestUrl)
+    val scopedSessionHeaders = if (isSameHttpOrigin(serverUrl, resolvedRequestUrl)) {
+        sessionHeaders
+    } else {
+        emptyMap()
+    }
+    return mergeSessionAuthHeaders(scopedSessionHeaders, explicitHeaders)
+}
+
+internal fun shouldRefreshMediaRequest(
+    serverUrl: String,
+    requestUrl: String,
+    responseCode: Int,
+): Boolean =
+    responseCode == 401 &&
+        isSameHttpOrigin(serverUrl, resolveRoutedDataSourceUrl(serverUrl, requestUrl))
 
 /**
  * Picks between a [FileDataSource] (offline media playback) and the shared
@@ -311,6 +347,7 @@ internal fun resolveRoutedDataSourceUrl(serverUrl: String, rawUri: String): Stri
             trimmed.startsWith("https://", ignoreCase = true) ||
             trimmed.startsWith("file://", ignoreCase = true) ||
             trimmed.startsWith("content://", ignoreCase = true) -> trimmed
+        "://" in trimmed -> trimmed
         trimmed.startsWith("/") -> resolvePlaybackStreamUrl(serverUrl, trimmed)
         else -> "${serverUrl.trimEnd('/')}/${trimmed.trimStart('/')}"
     }

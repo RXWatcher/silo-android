@@ -12,18 +12,20 @@ const lockfile = `version = 4
 name = "safe-crate"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 [[package]]
 name = "affected-crate"
 version = "4.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 
 [[package]]
 name = "workspace-only"
 version = "0.1.0"
 `;
 
-async function runCheck(response) {
+async function runCheck(response, input = lockfile) {
   let requestBody;
   const server = http.createServer((request, reply) => {
     let body = "";
@@ -45,7 +47,7 @@ async function runCheck(response) {
     env: { ...process.env, OSV_API_URL: `http://127.0.0.1:${port}/v1/querybatch` },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  child.stdin.end(lockfile);
+  child.stdin.end(input);
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (chunk) => {
@@ -82,4 +84,50 @@ test("fails affected results and prints package names without advisory details",
   assert.equal(result.exitCode, 1);
   assert.equal(result.stdout, "");
   assert.equal(result.stderr, "Affected crates.io packages:\naffected-crate\n");
+});
+
+test("fails closed for malformed OSV results and vulnerability entries", async () => {
+  const malformedResponses = [
+    null,
+    "not-an-object",
+    { results: "not-an-array" },
+    { results: {} },
+    { results: ["not-an-object", {}] },
+    { results: [42, {}] },
+    { results: [{}, { vulns: "not-an-array" }] },
+    { results: [{}, { vulns: [null] }] },
+    { results: [{}, { vulns: [{}] }] },
+    { results: [{}, { vulns: [{ id: "" }] }] },
+  ];
+
+  for (const response of malformedResponses) {
+    const result = await runCheck(response);
+    assert.equal(result.exitCode, 1, JSON.stringify(response));
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Malformed OSV querybatch response/);
+  }
+});
+
+test("fails a mixed lockfile when one crates.io package block is malformed", async () => {
+  const malformedLockfile = `version = 4
+
+[[package]]
+name = "safe-crate"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[package]]
+name = ["silently-skipped"]
+version = "4.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+`;
+
+  const result = await runCheck({ results: [{}] }, malformedLockfile);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Invalid Cargo\.lock package block 2: name/);
+  assert.equal(result.requestBody, undefined);
 });

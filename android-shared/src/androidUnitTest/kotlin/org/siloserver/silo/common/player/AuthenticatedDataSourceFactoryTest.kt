@@ -2,6 +2,7 @@ package org.siloserver.silo.common.player
 
 import android.net.Uri
 import androidx.media3.common.C
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
@@ -18,6 +19,7 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.siloserver.silo.common.io.ContentLimitExceeded
 import org.siloserver.silo.network.TokenManagerImpl
 
 @RunWith(RobolectricTestRunner::class)
@@ -391,6 +393,52 @@ class AuthenticatedDataSourceFactoryTest {
         assertTrue(unauthorized.closed)
     }
 
+    @Test
+    fun subtitleLimitIs32MiB() {
+        assertEquals(32L * 1024 * 1024, MAX_SUBTITLE_BYTES)
+    }
+
+    @Test
+    fun subripNormalizationAcceptsExactlyTheStreamLimit() {
+        val upstream = ByteArrayDataSource(byteArrayOf(1, 2, 3, 4))
+        val source = SubripNormalizingDataSource(upstream, maxBytes = 4)
+
+        assertEquals(4, source.open(subripDataSpec()))
+        assertTrue(upstream.closed)
+    }
+
+    @Test
+    fun subripNormalizationRejectsDeclaredLimitPlusOneBeforeReading() {
+        val upstream = ByteArrayDataSource(
+            bytes = byteArrayOf(1),
+            declaredLength = 5,
+        )
+        val source = SubripNormalizingDataSource(upstream, maxBytes = 4)
+
+        assertFailsWith<ContentLimitExceeded> {
+            source.open(subripDataSpec())
+        }
+        assertEquals(0, upstream.readCalls)
+        assertTrue(upstream.closed)
+    }
+
+    @Test
+    fun subripNormalizationRejectsStreamedLimitPlusOneAndClosesUpstream() {
+        val upstream = ByteArrayDataSource(
+            bytes = byteArrayOf(1, 2, 3, 4, 5),
+            declaredLength = C.LENGTH_UNSET.toLong(),
+        )
+        val source = SubripNormalizingDataSource(upstream, maxBytes = 4)
+
+        assertFailsWith<ContentLimitExceeded> {
+            source.open(subripDataSpec())
+        }
+        assertTrue(upstream.closed)
+    }
+
+    private fun subripDataSpec(): DataSpec =
+        DataSpec(Uri.parse("https://silo.example/subtitles/1.srt"))
+
     private fun refreshingSource(
         vararg dataSources: FakeHttpDataSource,
         isResumableDirectPlayUri: (Uri) -> Boolean = { true },
@@ -444,6 +492,34 @@ class AuthenticatedDataSourceFactoryTest {
         override fun clearRequestProperty(name: String) = Unit
 
         override fun clearAllRequestProperties() = Unit
+
+        override fun close() {
+            closed = true
+        }
+    }
+
+    private class ByteArrayDataSource(
+        private val bytes: ByteArray,
+        private val declaredLength: Long = bytes.size.toLong(),
+    ) : DataSource {
+        private var position = 0
+        var readCalls = 0
+        var closed = false
+
+        override fun addTransferListener(transferListener: TransferListener) = Unit
+
+        override fun open(dataSpec: DataSpec): Long = declaredLength
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            readCalls += 1
+            if (position == bytes.size) return C.RESULT_END_OF_INPUT
+            val count = minOf(length, bytes.size - position)
+            bytes.copyInto(buffer, offset, position, position + count)
+            position += count
+            return count
+        }
+
+        override fun getUri(): Uri = Uri.parse("https://silo.example/subtitles/1.srt")
 
         override fun close() {
             closed = true

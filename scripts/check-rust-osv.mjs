@@ -26,11 +26,9 @@ for (let offset = 0; offset < packages.length; offset += 1000) {
   }
 
   const payload = await response.json();
-  if (!Array.isArray(payload.results) || payload.results.length !== batch.length) {
-    throw new Error("OSV querybatch returned an unexpected result count");
-  }
-  payload.results.forEach((result, index) => {
-    if (Array.isArray(result.vulns) && result.vulns.length > 0) {
+  const results = validateOsvResponse(payload, batch.length);
+  results.forEach((vulnerabilities, index) => {
+    if (vulnerabilities.length > 0) {
       affected.push(batch[index].name);
     }
   });
@@ -44,21 +42,170 @@ if (affected.length > 0) {
 }
 
 function parseCratesIoPackages(lockfile) {
-  const packages = [];
-  for (const block of lockfile.split(/^\[\[package\]\]\s*$/m).slice(1)) {
-    const name = readTomlString(block, "name");
-    const version = readTomlString(block, "version");
-    const source = readTomlString(block, "source");
-    if (name && version && source?.startsWith("registry+https://github.com/rust-lang/crates.io-index")) {
-      packages.push({ name, version });
+  const lines = lockfile.split(/\r?\n/);
+  const packageHeaders = [];
+  let lockVersion;
+  let sawPackage = false;
+
+  lines.forEach((line, index) => {
+    if (/^\s*\[\[package/.test(line) && !/^\s*\[\[package\]\]\s*(?:#.*)?$/.test(line)) {
+      throw new Error(`Invalid Cargo.lock package header at line ${index + 1}`);
     }
+    if (/^\s*\[\[package\]\]\s*(?:#.*)?$/.test(line)) {
+      sawPackage = true;
+      packageHeaders.push(index);
+      return;
+    }
+    if (!sawPackage) {
+      if (/^\s*(?:#.*)?$/.test(line)) return;
+      const versionMatch = line.match(/^\s*version\s*=\s*(\d+)\s*(?:#.*)?$/);
+      if (!versionMatch || lockVersion !== undefined) {
+        throw new Error(`Invalid Cargo.lock preamble at line ${index + 1}`);
+      }
+      lockVersion = Number(versionMatch[1]);
+    }
+  });
+  if (lockVersion !== 4) {
+    throw new Error("Invalid Cargo.lock: expected lockfile version 4");
   }
+  if (packageHeaders.length === 0) {
+    throw new Error("Invalid Cargo.lock: no package blocks");
+  }
+
+  const packages = [];
+  const identities = new Set();
+  packageHeaders.forEach((headerIndex, packageIndex) => {
+    const end = packageHeaders[packageIndex + 1] ?? lines.length;
+    const fields = parsePackageBlock(lines.slice(headerIndex + 1, end), packageIndex + 1);
+    const identity = `${fields.source ?? "local"}\0${fields.name}\0${fields.version}`;
+    if (identities.has(identity)) {
+      throw new Error(`Invalid Cargo.lock package block ${packageIndex + 1}: duplicate package identity`);
+    }
+    identities.add(identity);
+
+    if (isCratesIoSource(fields.source)) {
+      packages.push({ name: fields.name, version: fields.version });
+    }
+  });
   return packages;
 }
 
-function readTomlString(block, key) {
-  const match = block.match(new RegExp(`^${key} = "([^"\\\\]*)"\\s*$`, "m"));
-  return match?.[1];
+function parsePackageBlock(lines, packageNumber) {
+  const fields = {};
+  let inDependencies = false;
+
+  for (const line of lines) {
+    if (inDependencies) {
+      if (/^\s*\]\s*(?:#.*)?$/.test(line)) {
+        inDependencies = false;
+        continue;
+      }
+      const dependency = line.match(/^\s*("(?:[^"\\]|\\.)*")\s*,?\s*(?:#.*)?$/);
+      if (!dependency) {
+        throw packageError(packageNumber, "dependencies");
+      }
+      parseTomlString(dependency[1], packageNumber, "dependencies");
+      continue;
+    }
+
+    if (/^\s*(?:#.*)?$/.test(line)) continue;
+    const assignment = line.match(/^\s*([A-Za-z][A-Za-z0-9_-]*)\s*=\s*(.*?)\s*$/);
+    if (!assignment) {
+      throw packageError(packageNumber, "syntax");
+    }
+    const [, key, value] = assignment;
+    if (!["name", "version", "source", "checksum", "dependencies"].includes(key)) {
+      throw packageError(packageNumber, `unexpected field ${key}`);
+    }
+    if (Object.hasOwn(fields, key)) {
+      throw packageError(packageNumber, `duplicate ${key}`);
+    }
+    if (key === "dependencies") {
+      fields.dependencies = true;
+      if (value === "[]") continue;
+      if (value !== "[") throw packageError(packageNumber, "dependencies");
+      inDependencies = true;
+      continue;
+    }
+    fields[key] = parseTomlString(value, packageNumber, key);
+  }
+  if (inDependencies) throw packageError(packageNumber, "unterminated dependencies");
+
+  for (const key of ["name", "version"]) {
+    if (!Object.hasOwn(fields, key)) throw packageError(packageNumber, `missing ${key}`);
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(fields.name)) {
+    throw packageError(packageNumber, "name");
+  }
+  if (!isSemver(fields.version)) {
+    throw packageError(packageNumber, "version");
+  }
+  if (fields.source !== undefined &&
+      !/^(?:registry|git)\+https?:\/\/\S+$/.test(fields.source)) {
+    throw packageError(packageNumber, "source");
+  }
+  if (isCratesIoSource(fields.source)) {
+    if (!/^[a-f0-9]{64}$/.test(fields.checksum ?? "")) {
+      throw packageError(packageNumber, "checksum");
+    }
+  } else if (fields.checksum !== undefined && fields.source === undefined) {
+    throw packageError(packageNumber, "checksum without source");
+  }
+  return fields;
+}
+
+function parseTomlString(value, packageNumber, key) {
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed !== "string") throw new Error();
+    return parsed;
+  } catch {
+    throw packageError(packageNumber, key);
+  }
+}
+
+function isSemver(version) {
+  return /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version);
+}
+
+function isCratesIoSource(source) {
+  return source === "registry+https://github.com/rust-lang/crates.io-index" ||
+    source === "registry+https://index.crates.io/";
+}
+
+function packageError(packageNumber, field) {
+  return new Error(`Invalid Cargo.lock package block ${packageNumber}: ${field}`);
+}
+
+function validateOsvResponse(payload, expectedLength) {
+  if (!isObject(payload) ||
+      !Array.isArray(payload.results) ||
+      payload.results.length !== expectedLength) {
+    throw new Error("Malformed OSV querybatch response: invalid results array");
+  }
+  return payload.results.map((result, resultIndex) => {
+    if (!isObject(result)) {
+      throw new Error(`Malformed OSV querybatch response: result ${resultIndex + 1}`);
+    }
+    if (!Object.hasOwn(result, "vulns")) return [];
+    if (!Array.isArray(result.vulns)) {
+      throw new Error(`Malformed OSV querybatch response: result ${resultIndex + 1} vulns`);
+    }
+    result.vulns.forEach((vulnerability, vulnerabilityIndex) => {
+      if (!isObject(vulnerability) ||
+          typeof vulnerability.id !== "string" ||
+          !/^\S+$/.test(vulnerability.id)) {
+        throw new Error(
+          `Malformed OSV querybatch response: result ${resultIndex + 1} vulnerability ${vulnerabilityIndex + 1}`,
+        );
+      }
+    });
+    return result.vulns;
+  });
+}
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function readStdin() {

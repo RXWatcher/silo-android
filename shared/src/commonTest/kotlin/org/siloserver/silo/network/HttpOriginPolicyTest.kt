@@ -83,6 +83,53 @@ class HttpOriginPolicyTest {
     }
 
     @Test
+    fun backslashAuthorityConfusionFailsClosed() {
+        listOf(
+            "https://\\attacker.example",
+            "https://attacker.example\\path",
+            "https://localhost\\@attacker.example",
+            "https://attacker.example\u0001.evil",
+        ).forEach { raw ->
+            assertNull(httpOrigin(raw), "Expected a confused authority to be rejected: '$raw'")
+        }
+        assertFalse(
+            isSameHttpOrigin(
+                serverUrl = "https://localhost",
+                requestUrl = "https://\\attacker.example",
+            ),
+        )
+    }
+
+    @Test
+    fun malformedBracketedAuthoritiesFailClosed() {
+        listOf(
+            "https://[]/",
+            "https://[x]/",
+            "https://[::1/",
+            "https://[[::1]]/",
+            "https://[:::1]/",
+            "https://[::1]extra/",
+        ).forEach { raw ->
+            assertNull(httpOrigin(raw), "Expected an invalid bracketed host to be rejected: '$raw'")
+        }
+    }
+
+    @Test
+    fun validatedIpv6AuthoritiesArePreserved() {
+        assertEquals(
+            HttpOrigin(scheme = "https", host = "[::1]", port = 443),
+            httpOrigin("HTTPS://[::1]"),
+        )
+        assertTrue(isSameHttpOrigin("https://[::1]", "https://[::1]:443/a"))
+        assertTrue(
+            isSameHttpOrigin(
+                "http://[2001:db8:0:1::1]:8080",
+                "http://[2001:DB8:0:1::1]:8080/a",
+            ),
+        )
+    }
+
+    @Test
     fun invalidOriginsNeverCompareEqual() {
         assertFalse(isSameHttpOrigin("", ""))
         assertFalse(isSameHttpOrigin("/server", "/request"))

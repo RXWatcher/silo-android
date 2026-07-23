@@ -18,6 +18,7 @@
 - Subtitle configurations are removed from the content item and merged once as sidecar sources.
 - Phone and TV must share the same delivery and range policy.
 - Do not change SiloCast or observability code.
+- Do not trigger GitHub Actions; the final HEAD pushed to #86 must contain `[skip ci]`.
 
 ---
 
@@ -348,7 +349,7 @@ Expected: the first command is silent and the second returns no matches.
 
 ```bash
 git add androidApp/src androidTvApp/src
-git commit -m "fix(playback): wire native color range on Android"
+git commit -m "fix(playback): wire native color range on Android [skip ci]"
 ```
 
 - [ ] **Step 5: Install the arm64 TV APK without launching**

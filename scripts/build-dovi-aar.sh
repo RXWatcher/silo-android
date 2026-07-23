@@ -19,7 +19,8 @@ fi
 rm -rf "$WORK"
 mkdir -p "$WORK/aar/jni"
 mkdir -p "$WORK/aar/META-INF"
-printf '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.siloserver.silo.dovi" />\n' > "$WORK/aar/AndroidManifest.xml"
+cp "$ROOT/android-shared/src/native/dovi/AndroidManifest.xml" \
+  "$WORK/aar/AndroidManifest.xml"
 cp "$ROOT/android-shared/src/native/dovi/THIRD_PARTY_NOTICES.txt" \
   "$WORK/aar/META-INF/SILO_DOVI_NOTICES.txt"
 

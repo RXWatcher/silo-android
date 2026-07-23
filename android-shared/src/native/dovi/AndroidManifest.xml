@@ -1,0 +1,5 @@
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.siloserver.silo.dovi">
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="35" />
+</manifest>

@@ -23,6 +23,12 @@ checksum = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 [[package]]
 name = "workspace-only"
 version = "0.1.0"
+
+[[package]]
+name = "other-registry"
+version = "7.8.9"
+source = "registry+https://registry.example.com/index"
+checksum = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 `;
 
 async function runCheck(response, input = lockfile) {
@@ -130,4 +136,40 @@ checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /Invalid Cargo\.lock package block 2: name/);
   assert.equal(result.requestBody, undefined);
+});
+
+test("rejects crates.io-like registry source variants instead of omitting them", async () => {
+  const sourceVariants = [
+    "registry+https://github.com/rust-lang/crates.io-index/",
+    "registry+https://GitHub.com/rust-lang/crates.io-index",
+    "registry+https://github.com/rust-lang/%63rates.io-index",
+    "registry+https://github.com:443/rust-lang/crates.io-index",
+    "registry+https://github.com/rust-lang/crates.io-index?mirror=1",
+    "registry+https://github.com/rust-lang/crates.io-index#fragment",
+    "registry+https://user@github.com/rust-lang/crates.io-index",
+    "registry+https://index.crates.io/",
+  ];
+
+  for (const source of sourceVariants) {
+    const variantLockfile = `version = 4
+
+[[package]]
+name = "safe-crate"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[package]]
+name = "lookalike-crate"
+version = "4.5.6"
+source = "${source}"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+`;
+    const result = await runCheck({ results: [{}] }, variantLockfile);
+
+    assert.equal(result.exitCode, 1, source);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Invalid Cargo\.lock package block 2: source/);
+    assert.equal(result.requestBody, undefined);
+  }
 });

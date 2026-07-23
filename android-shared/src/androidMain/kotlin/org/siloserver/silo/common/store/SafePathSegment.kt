@@ -51,14 +51,21 @@ internal fun containedSafeChild(root: File, vararg segments: String): File? {
 
 /**
  * Resolves an old, unencoded path only when its canonical target is a strict
- * descendant of [root]. This is for read/delete compatibility only.
+ * descendant of [root]. Values beginning with the reserved encoded namespace
+ * marker (`~`) are deliberately never probed as raw legacy names, preventing a
+ * raw identity from aliasing a different identity's encoded path. This is for
+ * read/delete compatibility only.
  */
 internal fun containedLegacyChild(root: File, vararg segments: String): File? =
-    runCatching {
-        val canonicalRoot = root.canonicalFile
-        val child = segments.fold(canonicalRoot) { parent, value -> File(parent, value) }.canonicalFile
-        child.takeIf { it.isContainedBy(canonicalRoot, allowRoot = false) }
-    }.getOrNull()
+    if (segments.any { it.startsWith(ENCODED_PREFIX) }) {
+        null
+    } else {
+        runCatching {
+            val canonicalRoot = root.canonicalFile
+            val child = segments.fold(canonicalRoot) { parent, value -> File(parent, value) }.canonicalFile
+            child.takeIf { it.isContainedBy(canonicalRoot, allowRoot = false) }
+        }.getOrNull()
+    }
 
 private fun containsTraversalComponent(value: String): Boolean =
     value.replace('\\', '/').split('/').any { component -> component == "." || component == ".." }

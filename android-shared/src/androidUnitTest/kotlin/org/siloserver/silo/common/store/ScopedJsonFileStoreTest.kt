@@ -5,6 +5,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.nio.file.Files
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
@@ -98,5 +99,33 @@ class ScopedJsonFileStoreTest {
         store.writeAtomic(sentinel, """{"name":"changed","count":8}""")
 
         assertEquals("""{"name":"keep","count":7}""", sentinel.readText())
+    }
+
+    @Test
+    fun `raw reserved namespace identity cannot read another identity encoded target`() {
+        val store = ScopedJsonFileStore(tmp.newFolder("root"), tag = "Test")
+        val encodedQuestion = store.fileFor("?", "prof", "content")
+        store.write(encodedQuestion, Payload(name = "question", count = 1))
+
+        val rawReserved = store.fileFor("~Pw", "prof", "content")
+
+        assertNull(store.read<Payload>(rawReserved))
+        assertEquals(Payload(name = "question", count = 1), store.read<Payload>(encodedQuestion))
+    }
+
+    @Test
+    fun `atomic write does not follow predictable temp symlink outside root`() {
+        val root = tmp.newFolder("root")
+        val store = ScopedJsonFileStore(root, tag = "Test")
+        val target = store.fileFor("server", "profile", "content")
+        target.parentFile?.mkdirs()
+        val sentinel = File(root.parentFile, "sentinel.json").apply { writeText("keep") }
+        val predictableTmp = File(target.parentFile, "${target.name}.tmp")
+        Files.createSymbolicLink(predictableTmp.toPath(), sentinel.toPath())
+
+        store.write(target, Payload(name = "safe", count = 2))
+
+        assertEquals("keep", sentinel.readText())
+        assertEquals(Payload(name = "safe", count = 2), store.read<Payload>(target))
     }
 }

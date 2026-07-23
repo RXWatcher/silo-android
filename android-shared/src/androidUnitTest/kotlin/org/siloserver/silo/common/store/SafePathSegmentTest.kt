@@ -63,4 +63,12 @@ class SafePathSegmentTest {
         assertTrue("server id" !in child.path)
         assertTrue("profile%id" !in child.path)
     }
+
+    @Test
+    fun `reserved encoded namespace is never probed as a raw legacy segment`() {
+        val root = tmp.newFolder("root")
+
+        assertNull(containedLegacyChild(root, "~Pw"))
+        assertNull(containedLegacyChild(root, "server", "~Pw.json"))
+    }
 }

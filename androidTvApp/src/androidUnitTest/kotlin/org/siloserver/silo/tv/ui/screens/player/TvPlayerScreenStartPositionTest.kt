@@ -36,8 +36,14 @@ class TvPlayerScreenStartPositionTest {
             "TV player must not call the raw Media3 mounter directly",
         )
         assertTrue(
-            source.contains("durationSeconds = state.duration"),
-            "TV player media specs must carry known duration into system media metadata",
+            source.contains(
+                "durationSeconds = viewModel.uiState.value.duration.takeIf { it > 0.0 }",
+            ),
+            "TV player media specs must snapshot known duration outside presentation state",
+        )
+        assertTrue(
+            source.contains("?: mediaController?.duration"),
+            "TV player media specs must fall back to the mounted controller duration",
         )
         assertTrue(
             source.countOccurrences("timelineOffsetSeconds = plan?.timeline?.timelineOffsetSeconds ?: 0.0") >= 2,

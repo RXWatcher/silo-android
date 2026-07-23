@@ -38,7 +38,6 @@ class SectionRepository internal constructor(
             HomeRequestScope(
                 serverId = snapshot.serverId,
                 profileId = profileId,
-                profileToken = snapshot.profileToken,
                 credentialGenerationId = snapshot.credentialGenerationId,
                 identityGeneration = snapshot.identityGeneration,
             )

@@ -2,6 +2,7 @@ package org.siloserver.silo.repository
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,7 +19,6 @@ import kotlin.time.TimeSource
 internal data class HomeRequestScope(
     val serverId: String,
     val profileId: String,
-    val profileToken: String? = null,
     val credentialGenerationId: String? = null,
     val identityGeneration: Long = 0L,
 )
@@ -27,6 +27,11 @@ internal enum class HomeRequestPolicy { NORMAL, FORCE }
 
 private class HomeRequestScopeChangedException :
     IllegalStateException("Home request identity changed before completion")
+
+internal data class HomeGateEntryCounts(
+    val inFlight: Int,
+    val cached: Int,
+)
 
 internal class HomeSectionsRequestGate(
     private val freshnessWindow: Duration = 10.seconds,
@@ -47,6 +52,19 @@ internal class HomeSectionsRequestGate(
     private val inFlight = mutableMapOf<HomeRequestScope, Deferred<ApiResult<SectionsResponse>>>()
     private val cached = mutableMapOf<HomeRequestScope, CachedResult>()
 
+    internal suspend fun entryCountsForTest(): HomeGateEntryCounts = mutex.withLock {
+        HomeGateEntryCounts(inFlight = inFlight.size, cached = cached.size)
+    }
+
+    private suspend fun scopeIsCurrent(isScopeCurrent: suspend () -> Boolean): Boolean =
+        try {
+            isScopeCurrent()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Throwable) {
+            false
+        }
+
     suspend fun execute(
         scopeKey: HomeRequestScope?,
         policy: HomeRequestPolicy,
@@ -64,9 +82,25 @@ internal class HomeSectionsRequestGate(
         isScopeCurrent: suspend () -> Boolean,
         fetch: suspend () -> ApiResult<SectionsResponse>,
     ): ApiResult<SectionsResponse> {
-        if (scopeKey == null) return fetch()
+        if (scopeKey == null) {
+            val result = fetch()
+            return if (scopeIsCurrent(isScopeCurrent)) {
+                result
+            } else {
+                ApiResult.NetworkError(HomeRequestScopeChangedException())
+            }
+        }
 
         val selection = mutex.withLock {
+            cached.entries.removeAll { (_, entry) ->
+                (entry.completedAt + freshnessWindow).hasPassedNow()
+            }
+            cached.keys.removeAll { key ->
+                key.serverId == scopeKey.serverId &&
+                    key.profileId == scopeKey.profileId &&
+                    key.identityGeneration != scopeKey.identityGeneration
+            }
+
             inFlight[scopeKey]?.let { return@withLock Selection.Pending(it) }
 
             cached[scopeKey]
@@ -80,7 +114,7 @@ internal class HomeSectionsRequestGate(
             created = workerScope.async(start = CoroutineStart.LAZY) {
                 try {
                     val result = fetch()
-                    if (!runCatching { isScopeCurrent() }.getOrDefault(false)) {
+                    if (!scopeIsCurrent(isScopeCurrent)) {
                         return@async ApiResult.NetworkError(HomeRequestScopeChangedException())
                     }
                     if (result is ApiResult.Success) {
@@ -100,9 +134,14 @@ internal class HomeSectionsRequestGate(
             Selection.Pending(created)
         }
 
-        return when (selection) {
+        val result = when (selection) {
             is Selection.Ready -> selection.result
             is Selection.Pending -> selection.result.await()
+        }
+        return if (scopeIsCurrent(isScopeCurrent)) {
+            result
+        } else {
+            ApiResult.NetworkError(HomeRequestScopeChangedException())
         }
     }
 }

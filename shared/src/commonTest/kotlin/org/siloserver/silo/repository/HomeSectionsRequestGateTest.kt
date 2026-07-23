@@ -1,6 +1,7 @@
 package org.siloserver.silo.repository
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -11,6 +12,8 @@ import org.siloserver.silo.model.section.SectionsResponse
 import org.siloserver.silo.network.ApiResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TestTimeSource
@@ -110,6 +113,38 @@ class HomeSectionsRequestGateTest {
     }
 
     @Test
+    fun staleWaiterRejectsSharedResultWithoutCancellingOwner() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+        val owner = async {
+            gate.execute(
+                scopeKey = scopeA,
+                policy = HomeRequestPolicy.NORMAL,
+                isScopeCurrent = { true },
+            ) {
+                release.await()
+                success("shared")
+            }
+        }
+        runCurrent()
+        val staleWaiter = async {
+            gate.execute(
+                scopeKey = scopeA,
+                policy = HomeRequestPolicy.NORMAL,
+                isScopeCurrent = { false },
+            ) {
+                success("must-not-run")
+            }
+        }
+        runCurrent()
+
+        release.complete(Unit)
+
+        assertEquals("shared", firstId(owner.await()))
+        assertIs<ApiResult.NetworkError>(staleWaiter.await())
+    }
+
+    @Test
     fun successfulNormalResultIsReusedForExactlyTenSeconds() = runTest {
         val clock = TestTimeSource()
         val gate = HomeSectionsRequestGate(timeSource = clock, workerScope = backgroundScope)
@@ -125,6 +160,40 @@ class HomeSectionsRequestGateTest {
         clock += 1.seconds
         assertEquals("call-2", firstId(gate.execute(scopeA, HomeRequestPolicy.NORMAL, ::fetch)))
         assertEquals(2, calls)
+    }
+
+    @Test
+    fun expiredCompletedEntriesArePhysicallyPruned() = runTest {
+        val clock = TestTimeSource()
+        val gate = HomeSectionsRequestGate(timeSource = clock, workerScope = backgroundScope)
+
+        gate.execute(scopeA, HomeRequestPolicy.NORMAL) { success("a") }
+        assertEquals(HomeGateEntryCounts(inFlight = 0, cached = 1), gate.entryCountsForTest())
+
+        clock += 11.seconds
+        gate.execute(scopeB, HomeRequestPolicy.NORMAL) { success("b") }
+
+        assertEquals(HomeGateEntryCounts(inFlight = 0, cached = 1), gate.entryCountsForTest())
+    }
+
+    @Test
+    fun supersededIdentityEntriesArePhysicallyPruned() = runTest {
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+        val priorIdentity = HomeRequestScope(
+            serverId = "server-a",
+            profileId = "profile-a",
+            credentialGenerationId = "credential-generation-a",
+            identityGeneration = 4L,
+        )
+        val currentIdentity = priorIdentity.copy(
+            credentialGenerationId = "credential-generation-b",
+            identityGeneration = 6L,
+        )
+
+        gate.execute(priorIdentity, HomeRequestPolicy.NORMAL) { success("prior") }
+        gate.execute(currentIdentity, HomeRequestPolicy.NORMAL) { success("current") }
+
+        assertEquals(HomeGateEntryCounts(inFlight = 0, cached = 1), gate.entryCountsForTest())
     }
 
     @Test
@@ -201,7 +270,7 @@ class HomeSectionsRequestGateTest {
         val priorIdentity = HomeRequestScope(
             serverId = "server-a",
             profileId = "profile-a",
-            profileToken = "profile-token-a",
+            credentialGenerationId = "credential-generation-a",
             identityGeneration = 4L,
         )
         val reauthenticatedIdentity = priorIdentity.copy(identityGeneration = 6L)
@@ -219,6 +288,71 @@ class HomeSectionsRequestGateTest {
         assertEquals("prior", firstId(prior))
         assertEquals("current", firstId(current))
         assertEquals(2, calls)
+    }
+
+    @Test
+    fun cachedResultIsRejectedAfterScopeBecomesStale() = runTest {
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+        var current = true
+        assertEquals(
+            "cached",
+            firstId(
+                gate.execute(scopeA, HomeRequestPolicy.NORMAL, { current }) {
+                    success("cached")
+                },
+            ),
+        )
+
+        current = false
+        assertIs<ApiResult.NetworkError>(
+            gate.execute(scopeA, HomeRequestPolicy.NORMAL, { current }) {
+                success("must-not-run")
+            },
+        )
+    }
+
+    @Test
+    fun fetchedScopeValidationCancellationPropagates() = runTest {
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+
+        assertFailsWith<CancellationException> {
+            gate.execute(
+                scopeKey = scopeA,
+                policy = HomeRequestPolicy.NORMAL,
+                isScopeCurrent = { throw CancellationException("cancelled") },
+            ) {
+                success("fetched")
+            }
+        }
+    }
+
+    @Test
+    fun cachedScopeValidationCancellationPropagates() = runTest {
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+        gate.execute(scopeA, HomeRequestPolicy.NORMAL) { success("cached") }
+
+        assertFailsWith<CancellationException> {
+            gate.execute(
+                scopeKey = scopeA,
+                policy = HomeRequestPolicy.NORMAL,
+                isScopeCurrent = { throw CancellationException("cancelled") },
+            ) {
+                success("must-not-run")
+            }
+        }
+    }
+
+    @Test
+    fun homeScopeContainsNoProfileToken() {
+        val scope = HomeRequestScope(
+            serverId = "server-a",
+            profileId = "profile-a",
+            credentialGenerationId = "credential-generation",
+            identityGeneration = 4L,
+        )
+
+        assertFalse(scope.toString().contains("profileToken", ignoreCase = true))
+        assertFalse(scope.toString().contains("profile-secret"))
     }
 
     @Test
@@ -259,6 +393,38 @@ class HomeSectionsRequestGateTest {
             ),
         )
         assertEquals(2, calls)
+    }
+
+    @Test
+    fun missingScopeFetchIsRejectedWhenIdentityChanges() = runTest {
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+        var current = true
+
+        val result = gate.execute(
+            scopeKey = null,
+            policy = HomeRequestPolicy.NORMAL,
+            isScopeCurrent = { current },
+        ) {
+            current = false
+            success("stale")
+        }
+
+        assertIs<ApiResult.NetworkError>(result)
+    }
+
+    @Test
+    fun missingScopeValidationCancellationPropagates() = runTest {
+        val gate = HomeSectionsRequestGate(workerScope = backgroundScope)
+
+        assertFailsWith<CancellationException> {
+            gate.execute(
+                scopeKey = null,
+                policy = HomeRequestPolicy.NORMAL,
+                isScopeCurrent = { throw CancellationException("cancelled") },
+            ) {
+                success("fetched")
+            }
+        }
     }
 
     @Test

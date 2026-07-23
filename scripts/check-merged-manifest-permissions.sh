@@ -9,6 +9,10 @@ case "$VARIANT" in
     TASK_VARIANT="Debug"
     OUTPUT_VARIANT="debug"
     ;;
+  release)
+    TASK_VARIANT="Release"
+    OUTPUT_VARIANT="release"
+    ;;
   *)
     echo "Unsupported variant: $VARIANT" >&2
     exit 2

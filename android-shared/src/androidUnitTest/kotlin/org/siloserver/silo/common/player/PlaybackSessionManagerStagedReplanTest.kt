@@ -347,6 +347,37 @@ class PlaybackSessionManagerStagedReplanTest {
     }
 
     @Test
+    fun `stopping active replacement drains stale older base handle`() = runTest {
+        val harness = Harness(
+            replanResponse = { index, _ ->
+                response(sidecarPlan(sessionId = if (index == 0) "s2" else "s3"))
+            },
+        )
+        harness.start()
+        val stale = harness.stageSidecar()
+        val replacement = harness.stageSidecar()
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(replacement),
+        )
+
+        harness.manager.stopSession("s3")
+
+        assertEquals(null, harness.manager.activeSessionIdForTest())
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+        assertEquals(
+            409,
+            assertIs<ApiResult.Error>(harness.manager.commitStagedVideoReplan(stale)).code,
+        )
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+    }
+
+    @Test
     fun `delayed stop for stale session leaves active staged transaction untouched`() = runTest {
         val harness = Harness(
             replanResponse = { index, _ ->

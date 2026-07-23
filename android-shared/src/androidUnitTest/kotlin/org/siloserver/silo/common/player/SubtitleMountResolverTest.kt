@@ -2,11 +2,61 @@ package org.siloserver.silo.common.player
 
 import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.SubtitleMediaIdentity
+import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class SubtitleMountResolverTest {
+
+    @Test
+    fun blankExplicitExternalRowCannotMatchEmbeddedMetadata() {
+        val row = PlayerSubtitleInfo(
+            index = 4,
+            language = "en",
+            codec = "hdmv_pgs_subtitle",
+            label = "English",
+            source = "external",
+            forced = false,
+            url = "",
+        )
+        val embedded = track(
+            index = 0,
+            trackId = "decoder-pgs-7",
+            label = "English",
+            language = "en",
+            codec = "application/pgs",
+            forced = false,
+            hearingImpaired = false,
+        )
+
+        assertNull(resolveMountedSubtitle(row, listOf(embedded)))
+    }
+
+    @Test
+    fun blankCatalogExternalRowCannotMatchEmbeddedMetadata() {
+        val row = PlayerSubtitleInfo(
+            index = 4,
+            language = "en",
+            codec = "hdmv_pgs_subtitle",
+            label = "English",
+            source = null,
+            forced = false,
+            url = "",
+            catalogSource = "external",
+        )
+        val embedded = track(
+            index = 0,
+            trackId = "decoder-pgs-7",
+            label = "English",
+            language = "en",
+            codec = "application/pgs",
+            forced = false,
+            hearingImpaired = false,
+        )
+
+        assertNull(resolveMountedSubtitle(row, listOf(embedded)))
+    }
 
     @Test
     fun serverSidecarResolvesExactStableIdAcrossSameLabelTracks() {
@@ -55,6 +105,46 @@ class SubtitleMountResolverTest {
         )
 
         assertEquals(1, resolveMountedSubtitle(identity, tracks)?.track?.index)
+    }
+
+    @Test
+    fun nonServerIdentitiesCannotClaimReservedServerArtifactId() {
+        val media = media(
+            trackId = "silo-subtitle:4",
+            label = "English",
+            language = "en",
+            codecFamily = "webvtt",
+            forced = false,
+            hearingImpaired = false,
+        )
+        val serverSidecar = track(
+            index = 4,
+            trackId = "silo-subtitle:4",
+            label = "English",
+            language = "en",
+            codec = "text/vtt",
+            forced = false,
+            hearingImpaired = false,
+        )
+        val identities = listOf(
+            SubtitleIdentity.Embedded(serverIndex = 4, media = media),
+            SubtitleIdentity.Downloaded(downloadId = 9, media = media),
+            SubtitleIdentity.LocalMedia3(media),
+        )
+
+        identities.forEach { identity ->
+            assertNull(
+                resolveMountedSubtitle(identity, listOf(serverSidecar)),
+                "reserved ID must not resolve for $identity",
+            )
+        }
+        assertEquals(
+            4,
+            resolveMountedSubtitle(
+                SubtitleIdentity.ServerSidecar(serverIndex = 4),
+                listOf(serverSidecar),
+            )?.track?.index,
+        )
     }
 
     @Test

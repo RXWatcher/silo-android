@@ -11,6 +11,7 @@ import org.siloserver.silo.model.catalog.AudioTrack
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(UnstableApi::class)
@@ -386,6 +387,76 @@ class PlayerTrackEntriesTest {
                 mountedSubtitles = mounted,
             ),
         )
+    }
+
+    @Test
+    fun fullSnapshotResolverRejectsAmbiguousForcedAndFullPgsTracks() {
+        val tracks = listOf(
+            PlayerTrackEntry(
+                index = 0,
+                trackId = "decoder-pgs-full",
+                label = "English",
+                language = "en",
+                isSelected = true,
+                codecOrMime = MimeTypes.APPLICATION_PGS,
+                isForced = false,
+            ),
+            PlayerTrackEntry(
+                index = 1,
+                trackId = "decoder-pgs-forced",
+                label = "English",
+                language = "en",
+                isSelected = false,
+                codecOrMime = MimeTypes.APPLICATION_PGS,
+                isForced = true,
+            ),
+        )
+        val ambiguousRow = PlayerSubtitleInfo(
+            index = 7,
+            language = "en",
+            codec = "hdmv_pgs_subtitle",
+            label = "English",
+            source = "embedded",
+            forced = null,
+            url = "",
+        )
+
+        assertNull(resolveMountedSubtitleTrack(ambiguousRow, tracks))
+        assertNull(resolveMountedSubtitleRow(tracks.first(), tracks, listOf(ambiguousRow)))
+        assertTrue(resolvedMountedSubtitleTrackIndexes(tracks, listOf(ambiguousRow)).isEmpty())
+    }
+
+    @Test
+    fun fullSnapshotResolverUsesForcedFlagAcrossDuplicatePgsTracks() {
+        val full = PlayerTrackEntry(
+            index = 0,
+            trackId = "decoder-pgs-full",
+            label = "English",
+            language = "en",
+            isSelected = false,
+            codecOrMime = MimeTypes.APPLICATION_PGS,
+            isForced = false,
+        )
+        val forced = full.copy(
+            index = 1,
+            trackId = "decoder-pgs-forced",
+            isSelected = true,
+            isForced = true,
+        )
+        val forcedRow = PlayerSubtitleInfo(
+            index = 7,
+            language = "en",
+            codec = "hdmv_pgs_subtitle",
+            label = "English",
+            source = "embedded",
+            forced = true,
+            url = "",
+        )
+        val tracks = listOf(full, forced)
+
+        assertEquals(1, resolveMountedSubtitleTrack(forcedRow, tracks)?.index)
+        assertEquals(7, resolveMountedSubtitleRow(forced, tracks, listOf(forcedRow))?.index)
+        assertEquals(setOf(1), resolvedMountedSubtitleTrackIndexes(tracks, listOf(forcedRow)))
     }
 
     @Test

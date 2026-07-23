@@ -562,9 +562,8 @@ private fun HudInfoPane(
         // Built label ("Danish SRT (External)") via the mounted row — the raw
         // Media3 displayLabel echoes sidecar filenames.
         val subLabel = sub?.let { sel ->
-            subtitleUrls.withIndex()
-                .firstOrNull { (_, row) -> sel.matchesMountedSubtitle(row) }
-                ?.let { (i, row) -> subtitleChoiceLabel(row, i) }
+            resolveMountedSubtitleRow(sel, subtitleTracks, subtitleUrls)
+                ?.let { row -> subtitleChoiceLabel(row, subtitleUrls.indexOf(row)) }
                 ?: sel.displayLabel.ifBlank { "On" }
         } ?: "Off"
         add("Subtitles" to subLabel)
@@ -1234,9 +1233,8 @@ private fun HudSubtitlesPane(
                     // Media3 labels echo server identity strings (sidecar
                     // filenames) verbatim.
                     value = selectedSub?.let { sel ->
-                        subtitleUrls.withIndex()
-                            .firstOrNull { (_, row) -> sel.matchesMountedSubtitle(row) }
-                            ?.let { (i, row) -> subtitleChoiceLabel(row, i) }
+                        resolveMountedSubtitleRow(sel, subtitleTracks, subtitleUrls)
+                            ?.let { row -> subtitleChoiceLabel(row, subtitleUrls.indexOf(row)) }
                             ?: sel.displayLabel.ifBlank { "On" }
                     } ?: "Off",
                     enabled = enabled,
@@ -1256,8 +1254,10 @@ private fun HudSubtitlesPane(
                             // CEA-608) — keep them selectable alongside the
                             // catalog, tagged "media:" so onSelect routes them
                             // to the Media3-index path instead of a replan.
-                            val embeddedOnly = subtitleTracks.filter { t ->
-                                subtitleUrls.none { t.matchesMountedSubtitle(it) }
+                            val mountedTrackIndexes =
+                                resolvedMountedSubtitleTrackIndexes(subtitleTracks, subtitleUrls)
+                            val embeddedOnly = subtitleTracks.filterNot {
+                                it.index in mountedTrackIndexes
                             }
                             val options = buildList {
                                 add(HudPickerOption(id = "-1", label = "Off"))
@@ -1279,7 +1279,9 @@ private fun HudSubtitlesPane(
                                 }
                             }
                             val selectedId = selectedSub?.let { sel ->
-                                subtitleUrls.firstOrNull { sel.matchesMountedSubtitle(it) }?.index?.toString()
+                                resolveMountedSubtitleRow(sel, subtitleTracks, subtitleUrls)
+                                    ?.index
+                                    ?.toString()
                                     ?: "media:${sel.index}"
                             } ?: "-1"
                             onPresentPicker(

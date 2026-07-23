@@ -305,14 +305,36 @@ internal fun resolveInitialSubtitleTrackIndex(
         ?: mountedSubtitles.getOrNull(requestedOrdinal)
         ?: return null
 
-    return resolveMountedSubtitle(
-        requested,
-        subtitleTracks.map(PlayerTrackEntry::toMountedSubtitleTrack),
-    )?.track?.index
+    return resolveMountedSubtitleTrack(requested, subtitleTracks)?.index
 }
 
-internal fun PlayerTrackEntry.matchesMountedSubtitle(subtitle: PlayerSubtitleInfo): Boolean =
-    resolveMountedSubtitle(subtitle, listOf(toMountedSubtitleTrack())) != null
+internal fun resolveMountedSubtitleTrack(
+    subtitle: PlayerSubtitleInfo,
+    subtitleTracks: List<PlayerTrackEntry>,
+): PlayerTrackEntry? {
+    val match = resolveMountedSubtitle(
+        subtitle,
+        subtitleTracks.map(PlayerTrackEntry::toMountedSubtitleTrack),
+    ) ?: return null
+    return subtitleTracks.firstOrNull { it.index == match.track.index }
+}
+
+internal fun resolveMountedSubtitleRow(
+    track: PlayerTrackEntry,
+    subtitleTracks: List<PlayerTrackEntry>,
+    mountedSubtitles: List<PlayerSubtitleInfo>,
+): PlayerSubtitleInfo? =
+    mountedSubtitles
+        .filter { resolveMountedSubtitleTrack(it, subtitleTracks)?.index == track.index }
+        .singleOrNull()
+
+internal fun resolvedMountedSubtitleTrackIndexes(
+    subtitleTracks: List<PlayerTrackEntry>,
+    mountedSubtitles: List<PlayerSubtitleInfo>,
+): Set<Int> =
+    mountedSubtitles
+        .mapNotNull { resolveMountedSubtitleTrack(it, subtitleTracks)?.index }
+        .toSet()
 
 private fun PlayerTrackEntry.toMountedSubtitleTrack(): MountedSubtitleTrack =
     MountedSubtitleTrack(
@@ -347,7 +369,7 @@ internal class SubtitleRemountReselection {
             return -1
         }
         val mounted = mountedSubtitles.firstOrNull { it.index == serverIndex } ?: return null
-        val track = subtitleTracks.firstOrNull { it.matchesMountedSubtitle(mounted) } ?: return null
+        val track = resolveMountedSubtitleTrack(mounted, subtitleTracks) ?: return null
         pendingServerSubtitleIndex = null
         return track.index
     }
@@ -1564,9 +1586,11 @@ class TvPlayerViewModel(
         // embedded CEA-608 the player discovered, not in the sidecar list) returns
         // null = keep-current, so a server-recovery transcode preserves the user's
         // subtitles instead of forcing them Off.
-        return state.subtitleUrls
-            .firstOrNull { selected.matchesMountedSubtitle(it) }
-            ?.index
+        return resolveMountedSubtitleRow(
+            track = selected,
+            subtitleTracks = state.subtitleTracks,
+            mountedSubtitles = state.subtitleUrls,
+        )?.index
     }
 
     fun onPositionChanged(positionMs: Long, durationMs: Long) {
@@ -2397,7 +2421,7 @@ class TvPlayerViewModel(
             val mounted = resolveMountedSubtitleOrdinal(_uiState.value.subtitleUrls, fingerprint)
                 ?.let { _uiState.value.subtitleUrls.getOrNull(it) }
                 ?: return
-            subtitle.firstOrNull { it.matchesMountedSubtitle(mounted) }
+            resolveMountedSubtitleTrack(mounted, subtitle)
                 ?.let {
                     manualSubtitleSelectionApplied = true
                     _subtitleSelectRequests.tryEmit(it.index)
@@ -2536,7 +2560,11 @@ class TvPlayerViewModel(
             // across sessions (phone parity). Map the selected flat track onto its
             // mounted server subtitle before fingerprinting.
             val selected = state.subtitleTracks.firstOrNull { it.index == index } ?: return
-            val mounted = state.subtitleUrls.firstOrNull { selected.matchesMountedSubtitle(it) } ?: return
+            val mounted = resolveMountedSubtitleRow(
+                track = selected,
+                subtitleTracks = state.subtitleTracks,
+                mountedSubtitles = state.subtitleUrls,
+            ) ?: return
             subtitleTrackFingerprint(mounted)
         }
         viewModelScope.launch {
@@ -2556,7 +2584,7 @@ class TvPlayerViewModel(
     fun onSelectCatalogSubtitle(serverIndex: Int): Int? {
         val state = _uiState.value
         val row = state.subtitleUrls.firstOrNull { it.index == serverIndex } ?: return null
-        state.subtitleTracks.firstOrNull { it.matchesMountedSubtitle(row) }?.let { return it.index }
+        resolveMountedSubtitleTrack(row, state.subtitleTracks)?.let { return it.index }
         pendingSubtitleSelectServerIndex = serverIndex
         pendingSubtitleSelectLabel = row.label?.trim()?.takeIf { it.isNotBlank() }
             ?: row.language?.trim()?.takeIf { it.isNotBlank() }
@@ -2618,7 +2646,7 @@ class TvPlayerViewModel(
         val serverIndex = pendingSubtitleSelectServerIndex
         val match = if (serverIndex != null) {
             _uiState.value.subtitleUrls.firstOrNull { it.index == serverIndex }
-                ?.let { row -> subtitle.firstOrNull { it.matchesMountedSubtitle(row) } }
+                ?.let { row -> resolveMountedSubtitleTrack(row, subtitle) }
         } else {
             val label = pendingSubtitleSelectLabel ?: return
             subtitle.firstOrNull { it.label == label || it.displayLabel == label }

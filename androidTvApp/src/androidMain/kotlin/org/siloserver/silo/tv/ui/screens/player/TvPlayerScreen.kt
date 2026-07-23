@@ -2491,7 +2491,8 @@ private fun TvQuickSubtitlePicker(
     // Embedded player-discovered tracks not in the server catalog (e.g. in-stream
     // CEA-608) stay selectable, tagged "media:" for the Media3-index path.
     val embeddedOnly = if (useServerList) {
-        tracks.filter { t -> subtitleUrls.none { t.matchesMountedSubtitle(it) } }
+        val mountedTrackIndexes = resolvedMountedSubtitleTrackIndexes(tracks, subtitleUrls)
+        tracks.filterNot { it.index in mountedTrackIndexes }
     } else {
         emptyList()
     }
@@ -2527,7 +2528,7 @@ private fun TvQuickSubtitlePicker(
     }
     val selectedId = if (useServerList) {
         selectedTrack?.let { sel ->
-            subtitleUrls.firstOrNull { sel.matchesMountedSubtitle(it) }?.index?.toString()
+            resolveMountedSubtitleRow(sel, tracks, subtitleUrls)?.index?.toString()
                 ?: "media:${sel.index}"
         } ?: "-1"
     } else {

@@ -92,20 +92,29 @@ fun resolveMountedSubtitle(
         explicitSource != null -> false
         else -> subtitle.url.isBlank()
     }
+    val isDownloadedArtifact = subtitle.isDownloadedSubtitleArtifact()
     if (!isEmbedded) {
-        val exactIdentity = if (subtitle.isDownloadedSubtitleArtifact()) {
-            val downloadId = subtitle.downloadId ?: return null
-            SubtitleIdentity.Downloaded(
-                downloadId = downloadId,
-                media = SubtitleMediaIdentity(),
-            )
+        if (isDownloadedArtifact) {
+            // Modern downloaded rows are domain-ID exact only. Legacy rows
+            // without that optional field continue below to non-reserved typed
+            // metadata matching; no downloaded identity is synthesized.
+            subtitle.downloadId?.let { downloadId ->
+                return resolveMountedSubtitle(
+                    SubtitleIdentity.Downloaded(
+                        downloadId = downloadId,
+                        media = SubtitleMediaIdentity(),
+                    ),
+                    tracks,
+                )
+            }
         } else {
-            SubtitleIdentity.ServerSidecar(subtitle.index)
+            resolveMountedSubtitle(SubtitleIdentity.ServerSidecar(subtitle.index), tracks)
+                ?.let { return it }
         }
-        resolveMountedSubtitle(exactIdentity, tracks)
-            ?.let { return it }
         if (subtitle.url.isBlank()) return null
-        if (tracks.any(MountedSubtitleTrack::hasReservedArtifactId)) return null
+        if (!isDownloadedArtifact && tracks.any(MountedSubtitleTrack::hasReservedArtifactId)) {
+            return null
+        }
     }
 
     val codecFamilies = listOfNotNull(
@@ -125,10 +134,10 @@ fun resolveMountedSubtitle(
                 ?.takeIf(::subtitleLabelIndicatesHearingImpaired)
                 ?.let { true },
         )
-        val identity = when {
-            isEmbedded -> SubtitleIdentity.Embedded(subtitle.index, media)
-            subtitle.isDownloadedSubtitleArtifact() -> return null
-            else -> SubtitleIdentity.LocalMedia3(media)
+        val identity = if (isEmbedded) {
+            SubtitleIdentity.Embedded(subtitle.index, media)
+        } else {
+            SubtitleIdentity.LocalMedia3(media)
         }
         resolveMountedSubtitle(identity, tracks)?.let { return it }
     }

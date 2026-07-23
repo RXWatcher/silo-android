@@ -390,6 +390,41 @@ class PlayerTrackEntriesTest {
     }
 
     @Test
+    fun initialSubtitleOrdinalResolvesUniqueLegacyDownloadedTrackByMetadata() {
+        val tracks = listOf(
+            PlayerTrackEntry(
+                index = 2,
+                trackId = null,
+                label = "Legacy English",
+                language = "en",
+                isSelected = false,
+                codecOrMime = MimeTypes.TEXT_VTT,
+                isForced = false,
+            ),
+        )
+        val mounted = listOf(
+            PlayerSubtitleInfo(
+                index = 4,
+                language = "en",
+                codec = "webvtt",
+                label = "Legacy English",
+                source = "downloaded",
+                forced = false,
+                url = "/4.vtt",
+            ),
+        )
+
+        assertEquals(
+            2,
+            resolveInitialSubtitleTrackIndex(
+                requestedOrdinal = 4,
+                subtitleTracks = tracks,
+                mountedSubtitles = mounted,
+            ),
+        )
+    }
+
+    @Test
     fun fullSnapshotResolverRejectsAmbiguousForcedAndFullPgsTracks() {
         val tracks = listOf(
             PlayerTrackEntry(

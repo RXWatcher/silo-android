@@ -271,7 +271,59 @@ class SubtitleMountResolverTest {
     }
 
     @Test
-    fun legacyDownloadedRowCannotCrossMatchAnyStableDownloadedIdentity() {
+    fun legacyDownloadedRowSelectsUniqueOrdinaryTrackByTypedMetadata() {
+        val row = PlayerSubtitleInfo(
+            index = 4,
+            language = "en",
+            codec = "webvtt",
+            label = "Legacy English",
+            source = "downloaded",
+            forced = false,
+            url = "/4.vtt",
+        )
+        val ordinary = track(
+            index = 2,
+            trackId = null,
+            label = "Legacy English",
+            language = "en",
+            codec = "text/vtt",
+            forced = false,
+            hearingImpaired = false,
+        )
+        val reserved = ordinary.copy(
+            index = 0,
+            trackId = "silo-downloaded-subtitle:312",
+        )
+
+        assertEquals(2, resolveMountedSubtitle(row, listOf(reserved, ordinary))?.track?.index)
+    }
+
+    @Test
+    fun legacyDownloadedRowRejectsSameMetadataOrdinaryTrackAmbiguity() {
+        val row = PlayerSubtitleInfo(
+            index = 4,
+            language = "en",
+            codec = "webvtt",
+            label = "Legacy English",
+            source = "downloaded",
+            forced = false,
+            url = "/4.vtt",
+        )
+        val ordinary = track(
+            index = 2,
+            trackId = null,
+            label = "Legacy English",
+            language = "en",
+            codec = "text/vtt",
+            forced = false,
+            hearingImpaired = false,
+        )
+
+        assertNull(resolveMountedSubtitle(row, listOf(ordinary, ordinary.copy(index = 3))))
+    }
+
+    @Test
+    fun legacyDownloadedRowCannotClaimAnyReservedArtifactIdentity() {
         val row = PlayerSubtitleInfo(
             index = 4,
             language = "en",
@@ -284,7 +336,7 @@ class SubtitleMountResolverTest {
         val tracks = listOf(
             track(
                 index = 0,
-                trackId = "silo-downloaded-subtitle:4",
+                trackId = "silo-subtitle:4",
                 label = "English",
                 language = "en",
                 codec = "text/vtt",
@@ -293,6 +345,15 @@ class SubtitleMountResolverTest {
             ),
             track(
                 index = 1,
+                trackId = "silo-downloaded-subtitle:4",
+                label = "English",
+                language = "en",
+                codec = "text/vtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+            track(
+                index = 2,
                 trackId = "silo-downloaded-subtitle:312",
                 label = "English",
                 language = "en",
@@ -302,7 +363,37 @@ class SubtitleMountResolverTest {
             ),
         )
 
-        assertNull(resolveMountedSubtitle(row, tracks))
+        tracks.forEach { reserved ->
+            assertNull(
+                resolveMountedSubtitle(row, listOf(reserved)),
+                "legacy row must not claim reserved track ${reserved.trackId}",
+            )
+        }
+    }
+
+    @Test
+    fun modernDownloadedRowRemainsExactDomainIdOnly() {
+        val row = PlayerSubtitleInfo(
+            index = 4,
+            language = "en",
+            codec = "webvtt",
+            label = "English",
+            source = "downloaded",
+            forced = false,
+            url = "/4.vtt",
+            downloadId = 312,
+        )
+        val ordinary = track(
+            index = 2,
+            trackId = null,
+            label = "English",
+            language = "en",
+            codec = "text/vtt",
+            forced = false,
+            hearingImpaired = false,
+        )
+
+        assertNull(resolveMountedSubtitle(row, listOf(ordinary)))
     }
 
     @Test

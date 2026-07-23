@@ -131,6 +131,43 @@ class SubtitleManagerTrackSelectionTest {
     }
 
     @Test
+    fun mobileSelectionResolvesUniqueLegacyDownloadedTrackWithoutStableId() {
+        val ordinary = TrackGroup(
+            subtitle(
+                label = "Legacy English",
+                language = "en",
+                sampleMimeType = MimeTypes.TEXT_VTT,
+            ),
+        )
+        val tracks = Tracks(
+            listOf(
+                Tracks.Group(
+                    ordinary,
+                    false,
+                    intArrayOf(C.FORMAT_HANDLED),
+                    booleanArrayOf(false),
+                ),
+            ),
+        )
+
+        val selection = resolveSubtitleSelection(
+            tracks,
+            PlayerSubtitleInfo(
+                index = 4,
+                language = "en",
+                codec = "webvtt",
+                label = "Legacy English",
+                source = "downloaded",
+                forced = false,
+                url = "/4.vtt",
+            ),
+        )
+
+        assertSame(ordinary, selection?.mediaTrackGroup)
+        assertEquals(0, selection?.trackIndex)
+    }
+
+    @Test
     fun mobileSelectionUsesDownloadedStableIdAcrossDuplicateLabels() {
         val server = TrackGroup(
             subtitle("English", "en", id = "silo-subtitle:3"),

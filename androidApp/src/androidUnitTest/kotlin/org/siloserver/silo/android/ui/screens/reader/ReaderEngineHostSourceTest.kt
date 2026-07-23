@@ -158,8 +158,19 @@ class ReaderEngineHostSourceTest {
         assertTrue(webViewSource.contains("currentOnCrash()"))
         assertTrue(webViewSource.contains("currentOnEvent(event)"))
         assertTrue(readerSource.contains("var webViewResetKey by remember(source)"))
-        assertTrue(readerSource.contains("key(webViewResetKey)"))
+        assertTrue(readerSource.contains("key(source, webViewResetKey)"))
         assertTrue(readerSource.contains("webViewResetKey += 1"))
+    }
+
+    @Test
+    fun replacingReflowSourceRemountsWebViewAndDeliversANewController() {
+        val readerSource = reflowSourceFile.readText()
+
+        assertTrue(
+            readerSource.contains("key(source, webViewResetKey)"),
+            "A retained, already-ready WebView cannot deliver its controller after remember(source) clears it.",
+        )
+        assertTrue(readerSource.contains("var controller by remember(source)"))
     }
 
     @Test

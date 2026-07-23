@@ -12,9 +12,12 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -33,6 +36,7 @@ import org.siloserver.silo.model.playback.PlaybackStreamV3
 import org.siloserver.silo.model.playback.PlaybackSubtitleArtifactV3
 import org.siloserver.silo.model.playback.PlaybackSubtitleDecisionV3
 import org.siloserver.silo.model.playback.PlaybackSubtitleModeV3
+import org.siloserver.silo.model.playback.PlaybackTerminalV3
 import org.siloserver.silo.model.playback.PlaybackTrackIdentityV3
 import org.siloserver.silo.model.playback.SelectedPlaybackTracksV3
 import org.siloserver.silo.model.playback.SubtitleFidelityPreference
@@ -278,22 +282,262 @@ class PlaybackSessionManagerStagedReplanTest {
         assertEquals(listOf("s1"), harness.stoppedSessions)
     }
 
+    @Test
+    fun `content start rejects stage registration until replacement is installed`() = runTest {
+        val replacementEntered = CompletableDeferred<Unit>()
+        val releaseReplacement = CompletableDeferred<Unit>()
+        val starts = listOf(
+            response(basePlan(sessionId = "s1", fileId = 42)),
+            response(basePlan(sessionId = "s3", fileId = 84)),
+        )
+        val harness = Harness(
+            startResponses = starts,
+            startResponseOverride = { index ->
+                if (index == 1) {
+                    replacementEntered.complete(Unit)
+                    releaseReplacement.await()
+                }
+                starts[index]
+            },
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+        )
+        harness.start(fileId = 42)
+
+        val replacement = async { harness.start(fileId = 84) }
+        replacementEntered.await()
+        val duringReset = harness.manager.stageActiveVideoSessionReplan(
+            classification = "subtitle_track_changed",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = 4,
+        )
+        releaseReplacement.complete(Unit)
+        replacement.await()
+
+        assertEquals("content_reset_in_progress", assertIs<ApiResult.Error>(duringReset).error)
+        assertEquals(emptyList(), harness.replanBodies)
+        assertEquals("s3", harness.manager.activeSessionIdForTest())
+        assertEquals(emptyList(), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `stop session invalidates and stops every distinct staged candidate`() = runTest {
+        val harness = Harness(
+            replanResponse = { index, _ ->
+                response(sidecarPlan(sessionId = if (index == 0) "s2" else "s3"))
+            },
+        )
+        harness.start()
+        val first = harness.stageSidecar()
+        val second = harness.stageSidecar()
+
+        harness.manager.stopSession("s1")
+
+        assertEquals(null, harness.manager.activeSessionIdForTest())
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+        assertEquals(409, assertIs<ApiResult.Error>(harness.manager.commitStagedVideoReplan(first)).code)
+        assertEquals(409, assertIs<ApiResult.Error>(harness.manager.commitStagedVideoReplan(second)).code)
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1, "s3" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+    }
+
+    @Test
+    fun `concurrent immediate replans serialize through both stage and commit`() = runTest {
+        val firstEntered = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val harness = Harness(
+            replanResponse = { index, _ ->
+                if (index == 0) {
+                    firstEntered.complete(Unit)
+                    releaseFirst.await()
+                }
+                response(sidecarPlan(sessionId = if (index == 0) "s2" else "s3"))
+            },
+        )
+        harness.start()
+
+        val first = async {
+            harness.manager.replanActiveVideoSession(
+                classification = "subtitle_track_changed",
+                positionSeconds = 42.0,
+                audioTrackIndex = 0,
+                subtitleTrackIndex = 4,
+            )
+        }
+        firstEntered.await()
+        val second = async {
+            harness.manager.replanActiveVideoSession(
+                classification = "subtitle_track_changed",
+                positionSeconds = 43.0,
+                audioTrackIndex = 0,
+                subtitleTrackIndex = 4,
+            )
+        }
+        repeat(3) { yield() }
+        releaseFirst.complete(Unit)
+
+        assertIs<ApiResult.Success<VideoSessionStartV3>>(first.await())
+        assertIs<ApiResult.Success<VideoSessionStartV3>>(second.await())
+        assertEquals("s3", harness.manager.activeSessionIdForTest())
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+    }
+
+    @Test
+    fun `immediate terminal response preserves typed outcome and teardown`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ ->
+                terminalResponse(
+                    sessionId = "s2",
+                    reason = "adaptation_unavailable",
+                    message = "No compatible route.",
+                )
+            },
+        )
+        harness.start()
+
+        val result = harness.manager.replanActiveVideoSession(
+            classification = "player_failure",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = null,
+        )
+
+        val terminal = assertIs<VideoSessionStartV3.Terminal>(
+            assertIs<ApiResult.Success<VideoSessionStartV3>>(result).data,
+        )
+        assertEquals("adaptation_unavailable", terminal.reason)
+        assertEquals(null, harness.manager.activeSessionIdForTest())
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+    }
+
+    @Test
+    fun `staged terminal response rejects candidate but keeps active attempt`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ ->
+                terminalResponse(
+                    sessionId = "s2",
+                    reason = "adaptation_unavailable",
+                    message = "No compatible route.",
+                )
+            },
+        )
+        harness.start()
+
+        val result = harness.manager.stageActiveVideoSessionReplan(
+            classification = "subtitle_track_changed",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = 4,
+        )
+
+        assertIs<ApiResult.Error>(result)
+        assertEquals("s1", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s2"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `immediate incompatible response preserves server upgrade outcome`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ ->
+                response(sidecarPlan(sessionId = "s2")).copy(protocolVersion = 2)
+            },
+        )
+        harness.start()
+
+        val result = harness.manager.replanActiveVideoSession(
+            classification = "player_failure",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = null,
+        )
+
+        assertIs<VideoSessionStartV3.ServerUpgradeRequired>(
+            assertIs<ApiResult.Success<VideoSessionStartV3>>(result).data,
+        )
+        assertEquals(null, harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("s2"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `immediate legacy engine response preserves terminal outcome and cleanup`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ ->
+                response(
+                    sidecarPlan(sessionId = "s2").copy(
+                        engine = PlaybackEngineKind.MPV_DIRECT,
+                    ),
+                )
+            },
+        )
+        harness.start()
+
+        val result = harness.manager.replanActiveVideoSession(
+            classification = "player_failure",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = 4,
+        )
+
+        val terminal = assertIs<VideoSessionStartV3.Terminal>(
+            assertIs<ApiResult.Success<VideoSessionStartV3>>(result).data,
+        )
+        assertEquals("unsupported_legacy_engine", terminal.reason)
+        assertEquals(null, harness.manager.activeSessionIdForTest())
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+    }
+
+    @Test
+    fun `shared candidate session remains alive until last staged owner discards`() = runTest {
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+        )
+        harness.start()
+        val first = harness.stageSidecar()
+        val second = harness.stageSidecar()
+
+        harness.manager.discardStagedVideoReplan(first)
+        assertEquals(emptyList(), harness.stoppedSessions)
+
+        harness.manager.discardStagedVideoReplan(second)
+        assertEquals(listOf("s2"), harness.stoppedSessions)
+    }
+
     private class Harness(
         startResponses: List<PlaybackDecisionResponseV3> = listOf(response(basePlan())),
+        private val startResponseOverride: (suspend (Int) -> PlaybackDecisionResponseV3)? = null,
         private val replanResponse: suspend (Int, JsonObject) -> PlaybackDecisionResponseV3,
     ) {
         val stoppedSessions: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        val replanBodies: MutableList<JsonObject> = Collections.synchronizedList(mutableListOf())
         private val startIndex = AtomicInteger()
         private val replanIndex = AtomicInteger()
         private val client = HttpClient(
             MockEngine { request ->
                 val path = request.url.encodedPath
                 val response = when {
-                    path == "/api/v1/playback/start" -> startResponses[startIndex.getAndIncrement()]
+                    path == "/api/v1/playback/start" -> {
+                        val index = startIndex.getAndIncrement()
+                        startResponseOverride?.invoke(index) ?: startResponses[index]
+                    }
                     path.endsWith("/replan") -> {
                         val body = SiloJson.parseToJsonElement(
                             request.body.toByteArray().decodeToString(),
                         ).jsonObject
+                        replanBodies += body
                         replanResponse(replanIndex.getAndIncrement(), body)
                     }
                     request.method == HttpMethod.Delete && path.startsWith("/api/v1/playback/") -> {
@@ -411,6 +655,22 @@ class PlaybackSessionManagerStagedReplanTest {
                 sessionId = plan.sessionId,
                 playbackPlan = plan,
             )
+
+        fun terminalResponse(
+            sessionId: String,
+            reason: String,
+            message: String,
+        ): PlaybackDecisionResponseV3 = PlaybackDecisionResponseV3(
+            protocolVersion = 3,
+            serverFeatures = listOf(PLAYBACK_PLAN_V3_FEATURE),
+            outcome = PlaybackDecisionOutcome.ADAPTATION_UNAVAILABLE,
+            sessionId = sessionId,
+            terminal = PlaybackTerminalV3(
+                reason = reason,
+                message = message,
+                retryable = false,
+            ),
+        )
     }
 }
 

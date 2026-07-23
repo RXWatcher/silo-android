@@ -72,7 +72,13 @@ class SubtitleManager(
             }
 
             MediaItem.SubtitleConfiguration.Builder(Uri.parse(absoluteUrl))
-                .setId(subtitleArtifactTrackId(subtitle.index))
+                .setId(
+                    if (subtitle.isDownloadedSubtitleArtifact()) {
+                        downloadedSubtitleArtifactTrackId(subtitle.index)
+                    } else {
+                        subtitleArtifactTrackId(subtitle.index)
+                    },
+                )
                 .setMimeType(mimeType)
                 .setLanguage(subtitle.language)
                 .setLabel(subtitle.label ?: subtitle.language ?: "Track ${subtitle.index}")

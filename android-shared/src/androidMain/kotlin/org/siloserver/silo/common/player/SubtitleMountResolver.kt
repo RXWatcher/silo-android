@@ -5,6 +5,8 @@ import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.SubtitleMediaIdentity
 
 private const val SUBTITLE_ARTIFACT_TRACK_ID_PREFIX = "silo-subtitle:"
+private const val DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX =
+    "silo-downloaded-subtitle:"
 
 /**
  * Stable Media3 identity for a server-authored subtitle artifact.
@@ -13,6 +15,9 @@ private const val SUBTITLE_ARTIFACT_TRACK_ID_PREFIX = "silo-subtitle:"
  */
 fun subtitleArtifactTrackId(serverIndex: Int): String =
     "$SUBTITLE_ARTIFACT_TRACK_ID_PREFIX$serverIndex"
+
+fun downloadedSubtitleArtifactTrackId(artifactIndex: Int): String =
+    "$DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX$artifactIndex"
 
 /**
  * Complete Media3 subtitle metadata retained by both phone and TV adapters.
@@ -54,7 +59,7 @@ fun resolveMountedSubtitle(
 
     val typedMatches = tracks
         .asSequence()
-        .filterNot { it.hasServerArtifactId() }
+        .filterNot { it.hasReservedArtifactId() }
         .filter { it.matchesTypedMetadata(media) }
         .toList()
     if (typedMatches.isEmpty()) return null
@@ -80,18 +85,27 @@ fun resolveMountedSubtitle(
     subtitle: PlayerSubtitleInfo,
     tracks: List<MountedSubtitleTrack>,
 ): MountedSubtitleMatch? {
-    val explicitSource = subtitle.source.normalizedValue()
-        ?: subtitle.catalogSource.normalizedValue()
+    val explicitSource = subtitle.effectiveSubtitleSource()
     val isEmbedded = when {
         explicitSource.equals("embedded", ignoreCase = true) -> true
         explicitSource != null -> false
         else -> subtitle.url.isBlank()
     }
     if (!isEmbedded) {
-        resolveMountedSubtitle(SubtitleIdentity.ServerSidecar(subtitle.index), tracks)
+        val exactIdentity = if (subtitle.isDownloadedSubtitleArtifact()) {
+            SubtitleIdentity.Downloaded(
+                downloadId = subtitle.index,
+                media = SubtitleMediaIdentity(
+                    trackId = downloadedSubtitleArtifactTrackId(subtitle.index),
+                ),
+            )
+        } else {
+            SubtitleIdentity.ServerSidecar(subtitle.index)
+        }
+        resolveMountedSubtitle(exactIdentity, tracks)
             ?.let { return it }
         if (subtitle.url.isBlank()) return null
-        if (tracks.any(MountedSubtitleTrack::hasServerArtifactId)) return null
+        if (tracks.any(MountedSubtitleTrack::hasReservedArtifactId)) return null
     }
 
     val codecFamilies = listOfNotNull(
@@ -111,10 +125,10 @@ fun resolveMountedSubtitle(
                 ?.takeIf(::subtitleLabelIndicatesHearingImpaired)
                 ?.let { true },
         )
-        val identity = if (isEmbedded) {
-            SubtitleIdentity.Embedded(subtitle.index, media)
-        } else {
-            SubtitleIdentity.LocalMedia3(media)
+        val identity = when {
+            isEmbedded -> SubtitleIdentity.Embedded(subtitle.index, media)
+            subtitle.isDownloadedSubtitleArtifact() -> return null
+            else -> SubtitleIdentity.LocalMedia3(media)
         }
         resolveMountedSubtitle(identity, tracks)?.let { return it }
     }
@@ -124,7 +138,7 @@ fun resolveMountedSubtitle(
 private fun SubtitleIdentity.expectedMediaTrackId(): String? = when (this) {
     is SubtitleIdentity.ServerSidecar -> subtitleArtifactTrackId(serverIndex)
     is SubtitleIdentity.Embedded -> media.trackId.normalizedNonServerTrackId()
-    is SubtitleIdentity.Downloaded -> media.trackId.normalizedNonServerTrackId()
+    is SubtitleIdentity.Downloaded -> media.trackId.normalizedDownloadedTrackId()
     is SubtitleIdentity.LocalMedia3 -> media.trackId.normalizedNonServerTrackId()
     SubtitleIdentity.Off,
     is SubtitleIdentity.ServerBurnIn,
@@ -132,12 +146,12 @@ private fun SubtitleIdentity.expectedMediaTrackId(): String? = when (this) {
 }
 
 private fun SubtitleIdentity.fallbackMediaIdentity(): SubtitleMediaIdentity? = when (this) {
-    is SubtitleIdentity.Embedded -> media
-    is SubtitleIdentity.Downloaded -> media
-    is SubtitleIdentity.LocalMedia3 -> media
+    is SubtitleIdentity.Embedded -> media.takeUnless { it.trackId.isReservedArtifactTrackId() }
+    is SubtitleIdentity.LocalMedia3 -> media.takeUnless { it.trackId.isReservedArtifactTrackId() }
     SubtitleIdentity.Off,
     is SubtitleIdentity.ServerSidecar,
     is SubtitleIdentity.ServerBurnIn,
+    is SubtitleIdentity.Downloaded,
     -> null
 }
 
@@ -158,14 +172,29 @@ private fun MountedSubtitleTrack.matchesTypedMetadata(identity: SubtitleMediaIde
     return true
 }
 
-private fun MountedSubtitleTrack.hasServerArtifactId(): Boolean =
-    trackId?.startsWith(SUBTITLE_ARTIFACT_TRACK_ID_PREFIX) == true
+private fun MountedSubtitleTrack.hasReservedArtifactId(): Boolean =
+    trackId.isReservedArtifactTrackId()
 
 private fun String?.normalizedValue(): String? =
     this?.trim()?.takeIf(String::isNotEmpty)
 
 private fun String?.normalizedNonServerTrackId(): String? =
-    normalizedValue()?.takeUnless { it.startsWith(SUBTITLE_ARTIFACT_TRACK_ID_PREFIX) }
+    normalizedValue()?.takeUnless(String::isReservedArtifactTrackId)
+
+private fun String?.normalizedDownloadedTrackId(): String? =
+    normalizedValue()
+        ?.takeIf { it.startsWith(DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX) }
+
+private fun String?.isReservedArtifactTrackId(): Boolean =
+    this?.startsWith(SUBTITLE_ARTIFACT_TRACK_ID_PREFIX) == true ||
+        this?.startsWith(DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX) == true
+
+internal fun PlayerSubtitleInfo.isDownloadedSubtitleArtifact(): Boolean =
+    source.normalizedValue().equals("downloaded", ignoreCase = true) ||
+        catalogSource.normalizedValue().equals("downloaded", ignoreCase = true)
+
+private fun PlayerSubtitleInfo.effectiveSubtitleSource(): String? =
+    source.normalizedValue() ?: catalogSource.normalizedValue()
 
 private fun normalizedLabel(label: String?): String? =
     label.normalizedValue()?.lowercase()

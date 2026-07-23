@@ -34,6 +34,80 @@ class SubtitleManagerTrackSelectionTest {
     }
 
     @Test
+    fun serverAndDownloadedConfigurationsUseDisjointStableIds() {
+        val configurations = SubtitleManager().buildSubtitleConfigurations(
+            subtitles = listOf(
+                PlayerSubtitleInfo(3, "en", "webvtt", "English", "server_artifact", false, "/3.vtt"),
+                PlayerSubtitleInfo(4, "en", "webvtt", "English", "downloaded", false, "/4.vtt"),
+                PlayerSubtitleInfo(
+                    index = 5,
+                    language = "en",
+                    codec = "webvtt",
+                    label = "English",
+                    source = null,
+                    forced = false,
+                    url = "/5.vtt",
+                    catalogSource = "downloaded",
+                ),
+                PlayerSubtitleInfo(
+                    index = 6,
+                    language = "en",
+                    codec = "webvtt",
+                    label = "English",
+                    source = "server_artifact",
+                    forced = false,
+                    url = "/6.vtt",
+                    catalogSource = "downloaded",
+                ),
+            ),
+            serverUrl = "https://silo.example",
+        )
+
+        assertEquals(
+            listOf(
+                "silo-subtitle:3",
+                "silo-downloaded-subtitle:4",
+                "silo-downloaded-subtitle:5",
+                "silo-downloaded-subtitle:6",
+            ),
+            configurations.map { it.id },
+        )
+    }
+
+    @Test
+    fun mobileSelectionUsesDownloadedStableIdAcrossDuplicateLabels() {
+        val server = TrackGroup(
+            subtitle("English", "en", id = "silo-subtitle:3"),
+        )
+        val downloaded = TrackGroup(
+            subtitle("English", "en", id = "silo-downloaded-subtitle:4"),
+        )
+        val tracks = Tracks(
+            listOf(
+                Tracks.Group(server, false, intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(false)),
+                Tracks.Group(downloaded, false, intArrayOf(C.FORMAT_HANDLED), booleanArrayOf(false)),
+            ),
+        )
+
+        val selection = resolveSubtitleSelection(
+            tracks,
+            PlayerSubtitleInfo(
+                index = 4,
+                language = "en",
+                codec = "webvtt",
+                label = "English",
+                source = "server_artifact",
+                forced = false,
+                url = "/4.vtt",
+                catalogSource = "downloaded",
+            ),
+        )
+
+        assertSame(downloaded, selection?.mediaTrackGroup)
+        assertEquals(0, selection?.trackIndex)
+    }
+
+    @Test
     fun mobileMetadataSelectionUsesStableIdAcrossDuplicateRuntimeLabels() {
         val forced = TrackGroup(
             subtitle("Server subtitle", "en", id = "silo-subtitle:3", forced = true),

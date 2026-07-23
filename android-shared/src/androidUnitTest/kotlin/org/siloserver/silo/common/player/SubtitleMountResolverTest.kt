@@ -148,6 +148,91 @@ class SubtitleMountResolverTest {
     }
 
     @Test
+    fun serverDownloadedAndOrdinaryIdentityNamespacesCannotCrossMatch() {
+        val duplicateLabel = "English"
+        val tracks = listOf(
+            track(
+                index = 0,
+                trackId = "silo-subtitle:3",
+                label = duplicateLabel,
+                language = "en",
+                codec = "text/vtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+            track(
+                index = 1,
+                trackId = "silo-downloaded-subtitle:4",
+                label = duplicateLabel,
+                language = "en",
+                codec = "text/vtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+            track(
+                index = 2,
+                trackId = "decoder-text-5",
+                label = duplicateLabel,
+                language = "en",
+                codec = "text/vtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+        )
+        val downloadedMedia = media(
+            trackId = "silo-downloaded-subtitle:4",
+            label = duplicateLabel,
+            language = "en",
+            codecFamily = "webvtt",
+            forced = false,
+            hearingImpaired = false,
+        )
+
+        assertEquals(
+            0,
+            resolveMountedSubtitle(SubtitleIdentity.ServerSidecar(3), tracks)?.track?.index,
+        )
+        assertEquals(
+            1,
+            resolveMountedSubtitle(
+                SubtitleIdentity.Downloaded(downloadId = 99, media = downloadedMedia),
+                tracks,
+            )?.track?.index,
+        )
+        assertEquals(
+            2,
+            resolveMountedSubtitle(
+                SubtitleIdentity.LocalMedia3(
+                    downloadedMedia.copy(trackId = "decoder-text-5"),
+                ),
+                tracks,
+            )?.track?.index,
+        )
+
+        assertNull(
+            resolveMountedSubtitle(
+                SubtitleIdentity.LocalMedia3(downloadedMedia),
+                tracks,
+            ),
+        )
+        assertNull(
+            resolveMountedSubtitle(
+                SubtitleIdentity.Embedded(serverIndex = 4, media = downloadedMedia),
+                tracks,
+            ),
+        )
+        assertNull(
+            resolveMountedSubtitle(
+                SubtitleIdentity.Downloaded(
+                    downloadId = 99,
+                    media = downloadedMedia.copy(trackId = "silo-subtitle:3"),
+                ),
+                tracks,
+            ),
+        )
+    }
+
+    @Test
     fun localIdChangeFallsBackToCompleteTypedMetadata() {
         val identity = SubtitleIdentity.LocalMedia3(
             media(

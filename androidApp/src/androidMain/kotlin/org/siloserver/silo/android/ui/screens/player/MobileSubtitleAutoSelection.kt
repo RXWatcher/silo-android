@@ -1,9 +1,14 @@
 package org.siloserver.silo.android.ui.screens.player
 
 import org.siloserver.silo.common.player.isBitmapSubtitleCodecOrMime
+import org.siloserver.silo.common.player.downloadedSubtitleArtifactTrackId
+import org.siloserver.silo.common.player.normalizedSubtitleCodecFamily
+import org.siloserver.silo.common.player.subtitleLabelIndicatesHearingImpaired
 import org.siloserver.silo.model.catalog.AudioTrack
 import org.siloserver.silo.model.catalog.SubtitleTrack
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
+import org.siloserver.silo.model.playback.SubtitleMediaIdentity
 
 private val hearingImpairedSubtitleTokenRegex = Regex(
     pattern = """(^|[^a-z0-9])(cc|sdh|hi)([^a-z0-9]|$)""",
@@ -14,6 +19,51 @@ internal sealed class MobileSubtitleAutoSelection {
     data object NoChange : MobileSubtitleAutoSelection()
     data object Disable : MobileSubtitleAutoSelection()
     data class Select(val ordinal: Int) : MobileSubtitleAutoSelection()
+}
+
+internal fun mobileSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdentity {
+    val source = subtitle.source?.trim()?.lowercase()
+    val catalogSource = subtitle.catalogSource?.trim()?.lowercase()
+    val downloaded = source == "downloaded" || catalogSource == "downloaded"
+    val media = SubtitleMediaIdentity(
+        trackId = subtitle.downloadId?.let(::downloadedSubtitleArtifactTrackId),
+        label = subtitle.catalogLabel ?: subtitle.label,
+        language = subtitle.language,
+        codecFamily = normalizedSubtitleCodecFamily(
+            subtitle.codec ?: subtitleCodecFromUrl(subtitle.url),
+        ),
+        forced = subtitle.forced,
+        hearingImpaired = subtitle.label
+            ?.takeIf(::subtitleLabelIndicatesHearingImpaired)
+            ?.let { true },
+    )
+    if (downloaded) {
+        val downloadId = subtitle.downloadId
+        return if (downloadId != null) {
+            SubtitleIdentity.Downloaded(downloadId, media)
+        } else {
+            SubtitleIdentity.LocalMedia3(media.copy(trackId = null))
+        }
+    }
+
+    val embedded = (source == "embedded" && subtitle.url.isBlank()) ||
+        (source == null && catalogSource == "embedded" && subtitle.url.isBlank())
+    if (embedded) {
+        return SubtitleIdentity.Embedded(
+            serverIndex = subtitle.index,
+            media = media.copy(trackId = null),
+        )
+    }
+
+    val external = source == "external" ||
+        catalogSource == "external" ||
+        source == "server_artifact" ||
+        subtitle.url.isNotBlank()
+    return if (external && isBitmapSubtitleCodecOrMime(media.codecFamily)) {
+        SubtitleIdentity.ServerBurnIn(subtitle.index)
+    } else {
+        SubtitleIdentity.ServerSidecar(subtitle.index)
+    }
 }
 
 internal fun resolveMobileAutoSubtitleSelection(

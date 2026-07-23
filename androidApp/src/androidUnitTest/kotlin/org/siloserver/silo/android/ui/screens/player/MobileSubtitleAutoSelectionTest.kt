@@ -2,10 +2,82 @@ package org.siloserver.silo.android.ui.screens.player
 
 import org.siloserver.silo.model.catalog.AudioTrack
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class MobileSubtitleAutoSelectionTest {
+
+    @Test
+    fun downloadedSelectionUsesPersistentDownloadIdentity() {
+        val identity = mobileSubtitleIdentity(
+            subtitle(
+                index = 9,
+                label = "English",
+                language = "en",
+            ).copy(source = "downloaded", downloadId = 312),
+        )
+
+        assertEquals(
+            SubtitleIdentity.Downloaded::class,
+            identity::class,
+        )
+        assertEquals(312, (identity as SubtitleIdentity.Downloaded).downloadId)
+    }
+
+    @Test
+    fun embeddedSelectionRetainsCombinedServerIndexAndTypedMetadata() {
+        val identity = mobileSubtitleIdentity(
+            subtitle(
+                index = 7,
+                label = "English Forced",
+                language = "en",
+                forced = true,
+                codec = "hdmv_pgs_subtitle",
+            ).copy(source = "embedded", url = ""),
+        )
+
+        assertEquals(
+            SubtitleIdentity.Embedded(
+                serverIndex = 7,
+                media = identity.let { (it as SubtitleIdentity.Embedded).media },
+            ),
+            identity,
+        )
+        assertEquals("pgs", (identity as SubtitleIdentity.Embedded).media.codecFamily)
+        assertEquals(true, identity.media.forced)
+    }
+
+    @Test
+    fun extractedEmbeddedTextArtifactUsesServerSidecarTransaction() {
+        val identity = mobileSubtitleIdentity(
+            subtitle(
+                index = 7,
+                label = "English",
+                language = "en",
+                codec = "webvtt",
+            ).copy(
+                source = "embedded",
+                url = "/stream/s1/subtitles/7.vtt",
+            ),
+        )
+
+        assertEquals(SubtitleIdentity.ServerSidecar(7), identity)
+    }
+
+    @Test
+    fun externalBitmapSelectionRequestsBurnIn() {
+        val identity = mobileSubtitleIdentity(
+            subtitle(
+                index = 8,
+                label = "English PGS",
+                language = "en",
+                codec = "hdmv_pgs_subtitle",
+            ).copy(source = "external", url = ""),
+        )
+
+        assertEquals(SubtitleIdentity.ServerBurnIn(8), identity)
+    }
 
     @Test
     fun autoSubtitlePreferenceDemotesClosedCaptionTitledTracksWhenPlainDialogueExists() {

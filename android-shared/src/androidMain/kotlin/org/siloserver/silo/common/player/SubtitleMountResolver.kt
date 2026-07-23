@@ -224,7 +224,7 @@ private fun normalizedLanguage(language: String?): String? {
     }
 }
 
-internal fun normalizedSubtitleCodecFamily(codecOrMime: String?): String? {
+fun normalizedSubtitleCodecFamily(codecOrMime: String?): String? {
     val normalized = codecOrMime
         .normalizedValue()
         ?.filter(Char::isLetterOrDigit)
@@ -246,7 +246,7 @@ internal fun normalizedSubtitleCodecFamily(codecOrMime: String?): String? {
     }
 }
 
-internal fun subtitleLabelIndicatesHearingImpaired(label: String?): Boolean {
+fun subtitleLabelIndicatesHearingImpaired(label: String?): Boolean {
     val value = label?.lowercase() ?: return false
     if (
         value.contains("closed caption") ||

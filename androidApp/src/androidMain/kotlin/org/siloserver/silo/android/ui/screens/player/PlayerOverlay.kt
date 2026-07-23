@@ -469,6 +469,10 @@ fun PlayerOverlay(
         selectedAudioIndex = state.selectedAudioIndex,
         subtitles = state.subtitleTracks,
         selectedSubtitleIndex = state.selectedSubtitleIndex,
+        pendingSubtitleIndex = state.pendingSubtitleIdentity?.let {
+            committedSubtitleOrdinal(it, state.subtitleTracks)
+        },
+        subtitleApplying = state.subtitleApplying,
         onSelectAudio = onSelectAudio,
         onSelectSubtitle = onSelectSubtitle,
         onDismiss = { tracksSheetVisible = false },

@@ -75,6 +75,7 @@ import org.siloserver.silo.model.playback.PlayMethod
 import org.siloserver.silo.model.playback.PlaybackSourceMetadata
 import org.siloserver.silo.model.playback.PlaybackExecutionPlan
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.executableMedia3ClientTransformations
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.player.DolbyVisionDetection
@@ -95,6 +96,41 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.unit.sp
 
 private const val TAG = "PlayerScreen"
+
+private fun media3TextTrackSnapshotKey(tracks: androidx.media3.common.Tracks): String? {
+    val textGroups = tracks.groups.filter {
+        it.type == androidx.media3.common.C.TRACK_TYPE_TEXT
+    }
+    if (textGroups.isEmpty()) return null
+    return textGroups.mapIndexed { groupIndex, group ->
+        buildString {
+            append(groupIndex)
+            val mediaTrackGroup = group.mediaTrackGroup
+            for (trackIndex in 0 until mediaTrackGroup.length) {
+                val format = mediaTrackGroup.getFormat(trackIndex)
+                append('|')
+                append(format.id.orEmpty())
+                append(':')
+                append(format.label.orEmpty())
+                append(':')
+                append(format.language.orEmpty())
+                append(':')
+                append(format.sampleMimeType.orEmpty())
+                append(':')
+                append(format.codecs.orEmpty())
+                append(':')
+                append(format.selectionFlags)
+                append(':')
+                append(format.roleFlags)
+            }
+        }
+    }.joinToString(separator = ";")
+}
+
+private fun SubtitleIdentity.requiresMountedMobileSelection(): Boolean =
+    this is SubtitleIdentity.LocalMedia3 ||
+        this is SubtitleIdentity.Downloaded ||
+        this is SubtitleIdentity.Embedded
 
 /**
  * Full-screen video player screen.
@@ -705,10 +741,26 @@ fun PlayerScreen(
                     // auto-selected downloaded/AI track never engages. Reads the
                     // live VM state — `uiState` here can be a stale closure capture.
                     val liveState = viewModel.uiState.value
-                    videoBackend?.selectMountedSubtitle(
-                        subtitles = liveState.subtitleTracks,
-                        selectedIndex = liveState.selectedSubtitleIndex,
-                    )
+                    val pendingIdentity = liveState.localSubtitleMountIdentity
+                    val pendingIndex = pendingIdentity?.let {
+                        committedSubtitleOrdinal(it, liveState.subtitleTracks)
+                    }
+                    val selectedIndex = pendingIndex ?: liveState.selectedSubtitleIndex
+                    val selected = if (pendingIdentity != null && pendingIndex == -1) {
+                        false
+                    } else {
+                        videoBackend?.selectMountedSubtitle(
+                            subtitles = liveState.subtitleTracks,
+                            selectedIndex = selectedIndex,
+                        ) == true
+                    }
+                    if (pendingIdentity != null) {
+                        viewModel.onPendingSubtitleMountResult(
+                            identity = pendingIdentity,
+                            selected = selected,
+                            snapshotKey = media3TextTrackSnapshotKey(tracks),
+                        )
+                    }
                 }
             }
             controller.addListener(listener)
@@ -852,10 +904,39 @@ fun PlayerScreen(
     }
 
     // Handle subtitle selection
-    LaunchedEffect(videoBackend, uiState.subtitleTracks, uiState.selectedSubtitleIndex) {
+    LaunchedEffect(
+        videoBackend,
+        uiState.subtitleTracks,
+        uiState.selectedSubtitleIndex,
+        uiState.localSubtitleMountIdentity,
+    ) {
         val backend = videoBackend ?: return@LaunchedEffect
-        if (backend.selectSubtitle(subtitleTrackEntry(uiState.subtitleTracks, uiState.selectedSubtitleIndex))) {
-            viewModel.onSubtitleSelectionApplied(uiState.selectedSubtitleIndex)
+        val pendingIdentity = uiState.localSubtitleMountIdentity
+        val pendingIndex = pendingIdentity?.let {
+            committedSubtitleOrdinal(it, uiState.subtitleTracks)
+        }
+        val selectedIndex = pendingIndex ?: uiState.selectedSubtitleIndex
+        val selectedIdentity = pendingIdentity ?: uiState.subtitleTracks
+            .getOrNull(selectedIndex)
+            ?.let(::mobileSubtitleIdentity)
+        if (selectedIdentity?.requiresMountedMobileSelection() == true) {
+            val selected = if (pendingIdentity != null && pendingIndex == -1) {
+                false
+            } else {
+                backend.selectMountedSubtitle(
+                    subtitles = uiState.subtitleTracks,
+                    selectedIndex = selectedIndex,
+                )
+            }
+            if (pendingIdentity != null) {
+                viewModel.onPendingSubtitleMountResult(
+                    identity = pendingIdentity,
+                    selected = selected,
+                    snapshotKey = media3TextTrackSnapshotKey(backend.player.currentTracks),
+                )
+            }
+        } else {
+            backend.selectSubtitle(subtitleTrackEntry(uiState.subtitleTracks, selectedIndex))
         }
     }
 

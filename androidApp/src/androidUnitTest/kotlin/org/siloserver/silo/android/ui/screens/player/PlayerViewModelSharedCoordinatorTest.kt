@@ -11,6 +11,9 @@ class PlayerViewModelSharedCoordinatorTest {
     private val moduleSource = java.io.File(
         "src/androidMain/kotlin/org/siloserver/silo/android/di/AndroidModule.kt",
     ).readText()
+    private val playerScreenSource = java.io.File(
+        "src/androidMain/kotlin/org/siloserver/silo/android/ui/screens/player/PlayerScreen.kt",
+    ).readText()
 
     @Test
     fun mobilePlayerViewModelStartsRemotePlaybackThroughSharedCoordinator() {
@@ -130,6 +133,60 @@ class PlayerViewModelSharedCoordinatorTest {
         assertTrue(body.contains("sessionLifecycle.adoptActiveSession("))
         assertTrue(body.contains("decision.plan.stream.headers"))
         assertFalse(body.contains("startTranscodeFallback"))
+    }
+
+    @Test
+    fun mobileSubtitleSelectionDelegatesToTransactionalAdapterWithoutOptimisticMutation() {
+        val body = viewModelSource
+            .substringAfter("fun onSelectSubtitle(index: Int)")
+            .substringBefore("/** Select an audio track")
+
+        assertTrue(body.contains("mobileSubtitleTransactions.select("))
+        assertFalse(body.contains("selectedSubtitleIndex = index"))
+        assertFalse(body.contains("startProtocolV3Replan("))
+        assertFalse(body.contains("recordSubtitleTrackSelection("))
+    }
+
+    @Test
+    fun mobileSubtitleRefreshUsesFullOwnerAndReducerAutoSelection() {
+        val body = viewModelSource
+            .substringAfter("private suspend fun doRefreshSubtitles(")
+            .substringBefore("/** Refresh the transcription quota")
+
+        assertTrue(body.contains("mobileSubtitleTransactions.beginRefresh()"))
+        assertTrue(body.contains("mobileSubtitleTransactions.ownsRefresh(owner)"))
+        assertTrue(body.contains("mobileSubtitleTransactions.selectFromRefresh("))
+        assertFalse(body.contains("selectedSubtitleIndex = autoIndex"))
+    }
+
+    @Test
+    fun mobilePlayerPublishesCommittedAndPendingSubtitleStateSeparately() {
+        assertTrue(viewModelSource.contains("val pendingSubtitleIdentity: SubtitleIdentity? = null"))
+        assertTrue(viewModelSource.contains("val localSubtitleMountIdentity: SubtitleIdentity? = null"))
+        assertTrue(viewModelSource.contains("val subtitleApplying: Boolean = false"))
+        assertTrue(viewModelSource.contains("selectedSubtitleIndex = committedSubtitleOrdinal("))
+        assertTrue(viewModelSource.contains("pendingSubtitleIdentity = snapshot.pendingIdentity"))
+        assertTrue(viewModelSource.contains("localSubtitleMountIdentity = snapshot.localMountIdentity"))
+    }
+
+    @Test
+    fun mobilePlayerCommitsLocalSubtitleOnlyAfterMountedResolverConfirmation() {
+        assertTrue(
+            viewModelSource.contains("mobileSubtitleTransactions.reportMountedSelection("),
+            "PlayerViewModel must report the actual Media3 mount result to the transaction adapter",
+        )
+        assertTrue(
+            playerScreenSource.contains("liveState.localSubtitleMountIdentity"),
+            "Track resolution must target the provisional local subtitle, not the prior committed row",
+        )
+        assertTrue(
+            playerScreenSource.contains("viewModel.onPendingSubtitleMountResult("),
+            "PlayerScreen must return mounted resolver success or failure to PlayerViewModel",
+        )
+        assertTrue(
+            playerScreenSource.contains("media3TextTrackSnapshotKey("),
+            "Failed mount retries must be bounded by distinct real Media3 track snapshots",
+        )
     }
 
     @Test

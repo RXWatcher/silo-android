@@ -144,6 +144,9 @@ function parsePackageBlock(lines, packageNumber) {
       !/^(?:registry|git)\+https?:\/\/\S+$/.test(fields.source)) {
     throw packageError(packageNumber, "source");
   }
+  if (isCratesIoLikeSource(fields.source)) {
+    throw packageError(packageNumber, "source");
+  }
   if (isCratesIoSource(fields.source)) {
     if (!/^[a-f0-9]{64}$/.test(fields.checksum ?? "")) {
       throw packageError(packageNumber, "checksum");
@@ -169,8 +172,38 @@ function isSemver(version) {
 }
 
 function isCratesIoSource(source) {
-  return source === "registry+https://github.com/rust-lang/crates.io-index" ||
-    source === "registry+https://index.crates.io/";
+  return source === "registry+https://github.com/rust-lang/crates.io-index";
+}
+
+function isCratesIoLikeSource(source) {
+  if (source === undefined || isCratesIoSource(source) || !source.startsWith("registry+")) {
+    return false;
+  }
+  const rawUrl = source.slice("registry+".length);
+  try {
+    const url = new URL(rawUrl);
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    const pathname = decodeUrlComponent(url.pathname).toLowerCase().replace(/\/+$/, "");
+    if (hostname === "github.com" && pathname === "/rust-lang/crates.io-index") {
+      return true;
+    }
+    if (hostname === "index.crates.io") return true;
+  } catch {
+    // The source syntax check reports malformed non-URLs. Keep the raw
+    // crates.io check below fail-closed for unusual URL parser edge cases.
+  }
+  return /(?:^|[./@])crates(?:\.|%2e)io(?:[/:?#]|$)/i.test(rawUrl) ||
+    /github(?:\.|%2e)com\/rust-lang\/crates(?:\.|%2e)io-index/i.test(rawUrl);
+}
+
+function decodeUrlComponent(value) {
+  let decoded = value;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const next = decodeURIComponent(decoded);
+    if (next === decoded) return decoded;
+    decoded = next;
+  }
+  return decoded;
 }
 
 function packageError(packageNumber, field) {

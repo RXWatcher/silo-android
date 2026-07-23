@@ -68,6 +68,10 @@ class TvPlayerViewModelPlaybackPositionTest {
     @Test
     fun ordinaryExitIsNonBlockingAndTeardownNeverUsesRunBlocking() {
         assertTrue(source.contains("fun stopSessionForExitAsync()"))
+        assertTrue(source.contains("private var finalPositionScope: PlaybackWriteScope? = null"))
+        assertTrue(source.contains("finalPositionScope = finalPlaybackPositionWriter.captureScope()"))
+        assertTrue(source.contains("val scope = finalPositionScope"))
+        assertTrue(source.contains("scope = scope,"))
         assertTrue(source.contains("finalPlaybackPositionWriter.submit("))
         assertFalse(source.contains("runBlocking("))
     }

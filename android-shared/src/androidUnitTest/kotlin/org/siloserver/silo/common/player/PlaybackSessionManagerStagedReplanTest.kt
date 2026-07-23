@@ -347,6 +347,35 @@ class PlaybackSessionManagerStagedReplanTest {
     }
 
     @Test
+    fun `delayed stop for stale session leaves active staged transaction untouched`() = runTest {
+        val harness = Harness(
+            replanResponse = { index, _ ->
+                response(sidecarPlan(sessionId = if (index == 0) "s2" else "s3"))
+            },
+        )
+        harness.start()
+        val replacement = harness.stageSidecar()
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(replacement),
+        )
+        val stagedFromS2 = harness.stageSidecar()
+
+        harness.manager.stopSession("s1")
+
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+        assertEquals(mapOf("s1" to 2), harness.stoppedSessions.groupingBy { it }.eachCount())
+
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(stagedFromS2),
+        )
+        assertEquals("s3", harness.manager.activeSessionIdForTest())
+        assertEquals(
+            mapOf("s1" to 2, "s2" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
+    }
+
+    @Test
     fun `concurrent immediate replans serialize through both stage and commit`() = runTest {
         val firstEntered = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()

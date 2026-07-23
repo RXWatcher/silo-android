@@ -1456,16 +1456,20 @@ open class PlaybackSessionManager(
      * Must be called when exiting the player or when playback completes.
      */
     open suspend fun stopSession(sessionId: String): ApiResult<Unit> = videoAttemptMutex.withLock {
+        var stoppedActiveSession = false
         while (true) {
             val active = activeVideoAttempt.get()
             if (active?.sessionId != sessionId) break
             if (activeVideoAttempt.compareAndSet(active, null)) {
                 emitActiveVideoEvent(active, "stopped")
+                stoppedActiveSession = true
                 break
             }
         }
-        drainStagedCandidateSessionsLocked(protectedSessionIds = setOf(sessionId))
-            .forEach { playbackRepository.stopPlayback(it) }
+        if (stoppedActiveSession) {
+            drainStagedCandidateSessionsLocked(protectedSessionIds = setOf(sessionId))
+                .forEach { playbackRepository.stopPlayback(it) }
+        }
         playbackRepository.stopPlayback(sessionId)
     }
 

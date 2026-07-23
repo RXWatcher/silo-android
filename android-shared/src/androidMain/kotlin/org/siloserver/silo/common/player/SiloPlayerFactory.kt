@@ -402,6 +402,7 @@ class SiloPlayerFactory(
         timelineOffsetSeconds: Double = 0.0,
         requestHeaders: Map<String, String> = emptyMap(),
         expectedDynamicRange: String? = null,
+        expectedColorRange: String? = null,
         transformations: List<String> = emptyList(),
         runtimeCorrections: List<String> = emptyList(),
     ): MediaItem {
@@ -428,6 +429,7 @@ class SiloPlayerFactory(
                         else -> DolbyVisionTransformMode.DISABLED
                     },
                     expectedDynamicRange = expectedDynamicRange,
+                    expectedColorRange = expectedColorRange,
                 ),
             )
 

@@ -183,6 +183,43 @@ class SubtitleTransitionTest {
     }
 
     @Test
+    fun `audio then downloaded remains one pending server and mount transaction`() {
+        val downloaded = SubtitleIdentity.Downloaded(
+            downloadId = 42,
+            media = media(trackId = "silo-downloaded-subtitle:42"),
+        )
+        val audio = reduceSubtitleTransition(
+            SubtitleTransitionState.committed(serverSidecar(3), audioTrackIndex = 2),
+            UpdateAudioPreference(audioTrackIndex = 7),
+        )
+
+        val selected = reduceSubtitleTransition(audio.state, SelectSubtitle(downloaded))
+
+        assertEquals(serverSidecar(3), selected.state.committed.identity)
+        assertEquals(downloaded, selected.state.pending?.identity)
+        assertEquals(7, selected.state.pending?.audioTrackIndex)
+        assertTrue(selected.state.pending?.audioPreferenceSpecified == true)
+        assertIs<StageSubtitleReplan>(selected.effects.single())
+    }
+
+    @Test
+    fun `audio then local Media3 remains one pending server and mount transaction`() {
+        val local = SubtitleIdentity.LocalMedia3(media(trackId = "decoder-text-7"))
+        val audio = reduceSubtitleTransition(
+            SubtitleTransitionState.committed(serverSidecar(3), audioTrackIndex = 2),
+            UpdateAudioPreference(audioTrackIndex = 7),
+        )
+
+        val selected = reduceSubtitleTransition(audio.state, SelectSubtitle(local))
+
+        assertEquals(serverSidecar(3), selected.state.committed.identity)
+        assertEquals(local, selected.state.pending?.identity)
+        assertEquals(7, selected.state.pending?.audioTrackIndex)
+        assertTrue(selected.state.pending?.audioPreferenceSpecified == true)
+        assertIs<StageSubtitleReplan>(selected.effects.single())
+    }
+
+    @Test
     fun `audio and quality preferences merge independently in either order`() {
         val subtitle = serverSidecar(4)
 

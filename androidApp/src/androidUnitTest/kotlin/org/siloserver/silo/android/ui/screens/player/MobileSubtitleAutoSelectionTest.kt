@@ -26,6 +26,65 @@ class MobileSubtitleAutoSelectionTest {
     }
 
     @Test
+    fun downloadIdIsAuthoritativeWhenModernRowOmitsSourceStrings() {
+        val identity = mobileSubtitleIdentity(
+            subtitle(
+                index = 9,
+                label = "English",
+                language = "en",
+                codec = "vtt",
+            ).copy(
+                source = null,
+                catalogSource = null,
+                downloadId = 312,
+                url = "/stream/s1/subtitles/9.vtt",
+            ),
+        )
+
+        assertEquals(SubtitleIdentity.Downloaded::class, identity::class)
+        assertEquals(312, (identity as SubtitleIdentity.Downloaded).downloadId)
+    }
+
+    @Test
+    fun genericLabelKeepsHearingImpairedMetadataUnknown() {
+        val identity = mobileSubtitleIdentity(
+            subtitle(
+                index = 4,
+                label = "English",
+                language = "en",
+                codec = "vtt",
+            ).copy(source = "downloaded"),
+        ) as SubtitleIdentity.LocalMedia3
+
+        assertEquals(null, identity.media.hearingImpaired)
+    }
+
+    @Test
+    fun authoritativeHearingImpairedTrackMatchesOneUnknownRowButNotDuplicates() {
+        val identity = SubtitleIdentity.LocalMedia3(
+            org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                language = "en",
+                codecFamily = "webvtt",
+                forced = false,
+                hearingImpaired = true,
+            ),
+        )
+        val generic = subtitle(4, "English", "en", codec = "vtt").copy(
+            source = "downloaded",
+            downloadId = null,
+        )
+
+        assertEquals(0, resolveMobileSubtitleOrdinal(identity, listOf(generic)))
+        assertEquals(
+            null,
+            resolveMobileSubtitleOrdinal(
+                identity,
+                listOf(generic, generic.copy(index = 5)),
+            ),
+        )
+    }
+
+    @Test
     fun embeddedSelectionRetainsCombinedServerIndexAndTypedMetadata() {
         val identity = mobileSubtitleIdentity(
             subtitle(

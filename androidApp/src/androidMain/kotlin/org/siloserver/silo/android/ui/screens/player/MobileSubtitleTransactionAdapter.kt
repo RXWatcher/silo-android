@@ -150,11 +150,13 @@ internal class MobileSubtitleTransactionAdapter(
         val identity: SubtitleIdentity,
         val proposedState: SubtitleTransitionState,
         val context: MobileSubtitlePlaybackContext,
+        val mountedBeforeAdoption: Boolean = false,
     )
 
     private data class PendingLocalRestore(
         val generation: Long,
         val identity: SubtitleIdentity,
+        val persistence: PersistenceRequest? = null,
     )
 
     private data class PersistenceRequest(
@@ -382,11 +384,19 @@ internal class MobileSubtitleTransactionAdapter(
         val pendingSelection = pendingLocalSelection?.takeIf { it.identity == identity }
         if (pendingSelection != null) {
             if (selected) {
-                transition = pendingSelection.proposedState
-                invalidateLocalMount()
-                failureMessage = null
-                publish()
-                persist(transition.committed, pendingSelection.context)
+                if (pendingSelection.proposedState.pending != null) {
+                    localMountTimeout?.cancel()
+                    localMountTimeout = null
+                    pendingLocalSelection = pendingSelection.copy(mountedBeforeAdoption = true)
+                    failureMessage = null
+                    publish()
+                } else {
+                    transition = pendingSelection.proposedState
+                    invalidateLocalMount()
+                    failureMessage = null
+                    publish()
+                    persist(transition.committed, pendingSelection.context)
+                }
             } else if (settled && !snapshotKey.isNullOrBlank()) {
                 failLocalMount(pendingSelection.generation)
             }
@@ -395,9 +405,11 @@ internal class MobileSubtitleTransactionAdapter(
 
         val pendingRestore = pendingLocalRestore?.takeIf { it.identity == identity } ?: return
         if (selected) {
+            val persistence = pendingRestore.persistence
             invalidateLocalMount()
             failureMessage = null
             publish()
+            persistence?.let { persist(it.committed, it.context) }
         } else if (settled && !snapshotKey.isNullOrBlank()) {
             failLocalMount(pendingRestore.generation)
         }
@@ -409,9 +421,14 @@ internal class MobileSubtitleTransactionAdapter(
         failureMessage = null
 
         if (commitInFlight) {
-            invalidateLocalMount()
             queuedMutations += event
             publish()
+            return
+        }
+
+        val localSelection = pendingLocalSelection
+        if (localSelection != null && event !is SelectSubtitle) {
+            applyMutationToPendingLocalSelection(localSelection, event)
             return
         }
 
@@ -419,6 +436,20 @@ internal class MobileSubtitleTransactionAdapter(
             is SelectSubtitle -> applySelection(event.identity)
             else -> applyPreferenceMutation(event)
         }
+    }
+
+    private fun applyMutationToPendingLocalSelection(
+        pendingSelection: PendingLocalSelection,
+        event: SubtitleTransitionEvent,
+    ) {
+        val updated = reduceSubtitleTransition(pendingSelection.proposedState, event).state
+        pendingLocalSelection = pendingSelection.copy(proposedState = updated)
+        transition = transition.copy(
+            pending = updated.pending,
+            nextGeneration = updated.nextGeneration,
+        )
+        publish()
+        transition.pending?.let(stagedRequests::trySend)
     }
 
     private fun applyPreferenceMutation(event: SubtitleTransitionEvent) {
@@ -474,6 +505,17 @@ internal class MobileSubtitleTransactionAdapter(
             return
         }
 
+        if (
+            identity.isClientOwnedSubtitle() &&
+            selected.state.pending != null
+        ) {
+            invalidateLocalMount()
+            transition = selected.state
+            publish()
+            stagedRequests.trySend(requireNotNull(transition.pending))
+            return
+        }
+
         if (identity.requiresLocalMountConfirmation()) {
             val proposedState = if (selected.state.pending == null) {
                 selected.state
@@ -486,20 +528,11 @@ internal class MobileSubtitleTransactionAdapter(
                     ),
                 ).state
             }
-            transition = transition.copy(
-                pending = null,
-                nextGeneration = proposedState.nextGeneration,
-            )
-            invalidateLocalMount()
-            val mountGeneration = localMountGeneration
-            pendingLocalSelection = PendingLocalSelection(
-                generation = mountGeneration,
+            beginLocalSelection(
                 identity = identity,
                 proposedState = proposedState,
-                context = requireNotNull(current),
+                selectionContext = requireNotNull(current),
             )
-            scheduleLocalMountTimeout(mountGeneration)
-            publish()
             return
         }
 
@@ -695,11 +728,17 @@ internal class MobileSubtitleTransactionAdapter(
         resetDuringCommit = false
         if (queuedMutations.isEmpty()) {
             if (transition.committed.identity.requiresLocalMountConfirmation()) {
-                beginLocalRestore(transition.committed.identity)
+                beginLocalRestore(
+                    identity = transition.committed.identity,
+                    persistence = PersistenceRequest(
+                        committed = transition.committed,
+                        context = requireNotNull(context),
+                    ),
+                )
             } else {
                 publish()
+                persist(transition.committed, requireNotNull(context))
             }
-            persist(transition.committed, requireNotNull(context))
         } else {
             applyQueuedMutations()
         }
@@ -761,7 +800,11 @@ internal class MobileSubtitleTransactionAdapter(
         }
         val finalIdentity = finalState.pending?.identity ?: finalState.committed.identity
         if (finalState.pending == null && finalIdentity.requiresLocalMountConfirmation()) {
-            applySelection(finalIdentity)
+            beginLocalSelection(
+                identity = finalIdentity,
+                proposedState = finalState,
+                selectionContext = requireNotNull(context),
+            )
             return
         }
         invalidateLocalMount()
@@ -793,12 +836,38 @@ internal class MobileSubtitleTransactionAdapter(
         publish()
     }
 
-    private fun beginLocalRestore(identity: SubtitleIdentity) {
+    private fun beginLocalSelection(
+        identity: SubtitleIdentity,
+        proposedState: SubtitleTransitionState,
+        selectionContext: MobileSubtitlePlaybackContext,
+    ) {
+        transition = transition.copy(
+            pending = proposedState.pending,
+            nextGeneration = proposedState.nextGeneration,
+        )
+        invalidateLocalMount()
+        val generation = localMountGeneration
+        pendingLocalSelection = PendingLocalSelection(
+            generation = generation,
+            identity = identity,
+            proposedState = proposedState,
+            context = selectionContext,
+        )
+        scheduleLocalMountTimeout(generation)
+        publish()
+        transition.pending?.let(stagedRequests::trySend)
+    }
+
+    private fun beginLocalRestore(
+        identity: SubtitleIdentity,
+        persistence: PersistenceRequest? = null,
+    ) {
         invalidateLocalMount()
         val generation = localMountGeneration
         pendingLocalRestore = PendingLocalRestore(
             generation = generation,
             identity = identity,
+            persistence = persistence,
         )
         scheduleLocalMountTimeout(generation)
         publish()
@@ -914,6 +983,9 @@ private fun SubtitleIdentity.requiresLocalMountConfirmation(): Boolean =
     this is SubtitleIdentity.LocalMedia3 ||
         this is SubtitleIdentity.Downloaded ||
         this is SubtitleIdentity.Embedded
+
+private fun SubtitleIdentity.isClientOwnedSubtitle(): Boolean =
+    this is SubtitleIdentity.LocalMedia3 || this is SubtitleIdentity.Downloaded
 
 private fun MobileStagedSubtitleCandidate.validationFailure(
     requested: org.siloserver.silo.model.playback.PendingSubtitle,

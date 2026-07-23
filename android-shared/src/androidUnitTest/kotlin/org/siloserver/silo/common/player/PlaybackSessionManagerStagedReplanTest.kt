@@ -12,8 +12,10 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.test.runTest
@@ -49,6 +51,7 @@ import org.siloserver.silo.repository.PlaybackRepository
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class PlaybackSessionManagerStagedReplanTest {
     @Test
@@ -93,12 +96,68 @@ class PlaybackSessionManagerStagedReplanTest {
             assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(committed).data.session.sessionId,
         )
         assertEquals("s2", harness.manager.activeSessionIdForTest())
+        harness.awaitStopped("s1")
         assertEquals(listOf("s1"), harness.stoppedSessions)
 
         val consumed = harness.manager.commitStagedVideoReplan(staged)
         assertEquals(409, assertIs<ApiResult.Error>(consumed).code)
         assertEquals("s2", harness.manager.activeSessionIdForTest())
         assertEquals(listOf("s1"), harness.stoppedSessions)
+    }
+
+    @Test
+    fun `commit returns after active swap without waiting for cancellable old session cleanup`() = runTest {
+        val cleanupEntered = CompletableDeferred<Unit>()
+        val releaseCleanup = CompletableDeferred<Unit>()
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+            stopBehavior = {
+                cleanupEntered.complete(Unit)
+                releaseCleanup.await()
+            },
+        )
+        harness.start()
+        val staged = harness.stageSidecar()
+
+        val commit = async { harness.manager.commitStagedVideoReplan(staged) }
+        cleanupEntered.await()
+
+        assertTrue(
+            commit.isCompleted,
+            "Once the active attempt swaps, old-session cleanup must not keep commit cancellable.",
+        )
+        assertEquals(
+            "s2",
+            assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(commit.await())
+                .data.session.sessionId,
+        )
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+
+        releaseCleanup.cancel(CancellationException("cleanup cancelled"))
+    }
+
+    @Test
+    fun `throwing old session cleanup cannot escape after active swap`() = runTest {
+        val cleanupEntered = CompletableDeferred<Unit>()
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+            stopBehavior = {
+                cleanupEntered.complete(Unit)
+                throw AssertionError("old-session cleanup exploded")
+            },
+        )
+        harness.start()
+        val staged = harness.stageSidecar()
+
+        val committed = harness.manager.commitStagedVideoReplan(staged)
+
+        assertEquals(
+            "s2",
+            assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(committed)
+                .data.session.sessionId,
+        )
+        assertEquals("s2", harness.manager.activeSessionIdForTest())
+        cleanupEntered.await()
     }
 
     @Test
@@ -190,6 +249,7 @@ class PlaybackSessionManagerStagedReplanTest {
 
         assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(committed)
         assertEquals("s2", harness.manager.activeSessionIdForTest())
+        harness.awaitStopped("s1")
         assertEquals(listOf("s1"), harness.stoppedSessions)
     }
 
@@ -279,6 +339,7 @@ class PlaybackSessionManagerStagedReplanTest {
             ).session.sessionId,
         )
         assertEquals("s2", harness.manager.activeSessionIdForTest())
+        harness.awaitStopped("s1")
         assertEquals(listOf("s1"), harness.stoppedSessions)
     }
 
@@ -673,9 +734,11 @@ class PlaybackSessionManagerStagedReplanTest {
         startResponses: List<PlaybackDecisionResponseV3> = listOf(response(basePlan())),
         private val startResponseOverride: (suspend (Int) -> PlaybackDecisionResponseV3)? = null,
         private val replanResponse: suspend (Int, JsonObject) -> PlaybackDecisionResponseV3,
+        private val stopBehavior: suspend (String) -> Unit = {},
     ) {
         val stoppedSessions: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val replanBodies: MutableList<JsonObject> = Collections.synchronizedList(mutableListOf())
+        private val stoppedEvents = Channel<String>(Channel.UNLIMITED)
         private val startIndex = AtomicInteger()
         private val replanIndex = AtomicInteger()
         private val client = HttpClient(
@@ -694,7 +757,10 @@ class PlaybackSessionManagerStagedReplanTest {
                         replanResponse(replanIndex.getAndIncrement(), body)
                     }
                     request.method == HttpMethod.Delete && path.startsWith("/api/v1/playback/") -> {
-                        stoppedSessions += path.substringAfterLast('/')
+                        val sessionId = path.substringAfterLast('/')
+                        stopBehavior(sessionId)
+                        stoppedSessions += sessionId
+                        stoppedEvents.send(sessionId)
                         null
                     }
                     else -> null
@@ -745,6 +811,13 @@ class PlaybackSessionManagerStagedReplanTest {
                 subtitleTrackIndex = 4,
             ),
         ).data
+
+        suspend fun awaitStopped(sessionId: String) {
+            if (sessionId in stoppedSessions) return
+            while (stoppedEvents.receive() != sessionId) {
+                // Drain unrelated cleanup completions until this owner stops.
+            }
+        }
     }
 
     private companion object {

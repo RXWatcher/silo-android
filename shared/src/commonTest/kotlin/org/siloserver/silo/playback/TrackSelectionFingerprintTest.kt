@@ -75,6 +75,68 @@ class TrackSelectionFingerprintTest {
     }
 
     @Test
+    fun playerTypedOffAndServerPreferencesResolveOnDetailScreen() {
+        val tracks = catalogTracksInMixedIndexSpaces()
+
+        assertEquals(
+            -1,
+            resolveCatalogSubtitlePreferenceOrdinal(
+                tracks,
+                encodeSubtitleIdentityPreference(SubtitleIdentity.Off),
+            ),
+        )
+        assertEquals(
+            3,
+            resolveCatalogSubtitlePreferenceOrdinal(
+                tracks,
+                encodeSubtitleIdentityPreference(SubtitleIdentity.ServerSidecar(serverIndex = 1)),
+            ),
+        )
+    }
+
+    @Test
+    fun detailTypedPreferenceDecodesForPlayerWithCombinedServerIndex() {
+        val tracks = catalogTracksInMixedIndexSpaces()
+
+        val encoded = encodeCatalogSubtitlePreference(
+            tracks = tracks,
+            selectedOrdinal = 3,
+        )
+
+        assertEquals(
+            SubtitleIdentity.ServerSidecar(serverIndex = 1),
+            decodeSubtitleIdentityPreference(encoded),
+        )
+    }
+
+    @Test
+    fun detailEmbeddedPreferenceUsesCombinedIndexInsteadOfDemuxIndex() {
+        val tracks = catalogTracksInMixedIndexSpaces()
+
+        val encoded = encodeCatalogSubtitlePreference(
+            tracks = tracks,
+            selectedOrdinal = 0,
+        )
+        val identity = decodeSubtitleIdentityPreference(encoded)
+
+        assertEquals(2, (identity as SubtitleIdentity.Embedded).serverIndex)
+        assertEquals("Embedded English", identity.media.label)
+    }
+
+    @Test
+    fun detailPreferenceResolverFallsBackToLegacyFingerprint() {
+        val tracks = catalogTracksInMixedIndexSpaces()
+
+        assertEquals(
+            2,
+            resolveCatalogSubtitlePreferenceOrdinal(
+                tracks,
+                subtitleTrackFingerprint(tracks[2]),
+            ),
+        )
+    }
+
+    @Test
     fun playerSubtitleInfoUsesSameSubtitleFingerprintShape() {
         val catalog = SubtitleTrack(index = 2, codec = "srt", language = "eng", title = "English CC", forced = true)
         val mounted = PlayerSubtitleInfo(
@@ -112,4 +174,35 @@ class TrackSelectionFingerprintTest {
         assertNull(resolveAudioTrackOrdinal(tracks, ""))
         assertNull(resolveAudioTrackOrdinal(tracks, "missing"))
     }
+
+    private fun catalogTracksInMixedIndexSpaces(): List<SubtitleTrack> = listOf(
+        SubtitleTrack(
+            index = 17,
+            codec = "ass",
+            language = "en",
+            title = "Embedded English",
+            external = false,
+        ),
+        SubtitleTrack(
+            index = 0,
+            codec = "srt",
+            language = "fr",
+            title = "External French",
+            external = true,
+        ),
+        SubtitleTrack(
+            index = 23,
+            codec = "ass",
+            language = "nl",
+            title = "Embedded Dutch",
+            external = false,
+        ),
+        SubtitleTrack(
+            index = 0,
+            codec = "srt",
+            language = "en",
+            title = "External English",
+            external = true,
+        ),
+    )
 }

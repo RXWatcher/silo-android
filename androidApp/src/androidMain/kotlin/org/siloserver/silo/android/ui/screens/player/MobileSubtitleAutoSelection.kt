@@ -24,7 +24,9 @@ internal sealed class MobileSubtitleAutoSelection {
 internal fun mobileSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdentity {
     val source = subtitle.source?.trim()?.lowercase()
     val catalogSource = subtitle.catalogSource?.trim()?.lowercase()
-    val downloaded = source == "downloaded" || catalogSource == "downloaded"
+    val downloaded = subtitle.downloadId != null ||
+        source == "downloaded" ||
+        catalogSource == "downloaded"
     val media = SubtitleMediaIdentity(
         trackId = subtitle.downloadId?.let(::downloadedSubtitleArtifactTrackId)
             ?: subtitle.mediaTrackId,
@@ -36,7 +38,7 @@ internal fun mobileSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdent
         forced = subtitle.forced,
         hearingImpaired = subtitleLabelIndicatesHearingImpaired(
             subtitle.catalogLabel ?: subtitle.label,
-        ),
+        ).takeIf { it },
     )
     if (downloaded) {
         val downloadId = subtitle.downloadId
@@ -104,16 +106,28 @@ internal fun resolveMobileSubtitleOrdinal(
     }
     if (typedMatches.isEmpty()) return null
 
+    val authoritativeHearingImpairedMatches = targetMedia.hearingImpaired
+        ?.let { expected ->
+            typedMatches.filter { index ->
+                mobileSubtitleIdentity(subtitles[index])
+                    .mediaIdentityForMobileFallback()
+                    ?.hearingImpaired == expected
+            }
+        }
+        .orEmpty()
+    val candidateMatches = authoritativeHearingImpairedMatches
+        .takeIf { it.isNotEmpty() }
+        ?: typedMatches
     val targetLabel = targetMedia.label.normalizedMobileLabel()
     val labelMatches = targetLabel?.let { expected ->
-        typedMatches.filter { index ->
+        candidateMatches.filter { index ->
             val row = subtitles[index]
             (row.catalogLabel ?: row.label).normalizedMobileLabel() == expected
         }
     }.orEmpty()
     return when {
         labelMatches.size == 1 -> labelMatches.single()
-        typedMatches.size == 1 -> typedMatches.single()
+        candidateMatches.size == 1 -> candidateMatches.single()
         else -> null
     }
 }
@@ -146,6 +160,7 @@ private fun SubtitleMediaIdentity.matchesMobileIdentity(expected: SubtitleMediaI
     if (expected.forced != null && forced != expected.forced) return false
     if (
         expected.hearingImpaired != null &&
+        hearingImpaired != null &&
         hearingImpaired != expected.hearingImpaired
     ) {
         return false

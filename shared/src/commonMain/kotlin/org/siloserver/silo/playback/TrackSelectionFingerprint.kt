@@ -8,6 +8,7 @@ import org.siloserver.silo.model.catalog.SubtitleTrack
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.SubtitleMediaIdentity
+import org.siloserver.silo.model.playback.combinedSubtitleSelectionIndexes
 
 const val SUBTITLE_OFF_FINGERPRINT = "off"
 private const val TYPED_SUBTITLE_PREFERENCE_PREFIX = "silo-subtitle-v2:"
@@ -52,6 +53,59 @@ fun decodeSubtitleIdentityPreference(value: String?): SubtitleIdentity? {
             .decodeFromString<PersistedSubtitleIdentityV2>(encoded)
             .toIdentity()
     }.getOrNull()
+}
+
+fun encodeCatalogSubtitlePreference(
+    tracks: List<SubtitleTrack>,
+    selectedOrdinal: Int,
+): String? {
+    if (selectedOrdinal == -1) {
+        return encodeSubtitleIdentityPreference(SubtitleIdentity.Off)
+    }
+    val track = tracks.getOrNull(selectedOrdinal) ?: return null
+    val serverIndex = combinedSubtitleSelectionIndexes(tracks).getOrNull(selectedOrdinal)
+        ?: return null
+    val identity = when {
+        !track.external -> SubtitleIdentity.Embedded(
+            serverIndex = serverIndex,
+            media = SubtitleMediaIdentity(
+                label = track.title,
+                language = track.language,
+                codecFamily = track.codec,
+                forced = track.forced,
+                hearingImpaired = track.title
+                    ?.takeIf(::catalogLabelIndicatesHearingImpaired)
+                    ?.let { true },
+            ),
+        )
+        track.codec.isCatalogBitmapSubtitle() ->
+            SubtitleIdentity.ServerBurnIn(serverIndex)
+        else -> SubtitleIdentity.ServerSidecar(serverIndex)
+    }
+    return encodeSubtitleIdentityPreference(identity)
+}
+
+fun resolveCatalogSubtitlePreferenceOrdinal(
+    tracks: List<SubtitleTrack>,
+    preference: String?,
+): Int? {
+    val typed = decodeSubtitleIdentityPreference(preference)
+    if (typed != null) {
+        if (typed == SubtitleIdentity.Off) return -1
+        val serverIndex = when (typed) {
+            SubtitleIdentity.Off -> return -1
+            is SubtitleIdentity.ServerSidecar -> typed.serverIndex
+            is SubtitleIdentity.ServerBurnIn -> typed.serverIndex
+            is SubtitleIdentity.Embedded -> typed.serverIndex
+            is SubtitleIdentity.Downloaded,
+            is SubtitleIdentity.LocalMedia3,
+            -> return null
+        }
+        return combinedSubtitleSelectionIndexes(tracks)
+            .indexOf(serverIndex)
+            .takeIf { it >= 0 }
+    }
+    return resolveSubtitleTrackOrdinal(tracks, preference)
 }
 
 private fun SubtitleIdentity.toPersisted(): PersistedSubtitleIdentityV2 = when (this) {
@@ -206,3 +260,23 @@ private fun String?.normalizedTrackField(lowercase: Boolean): String {
 
 private fun String?.normalizedFingerprintOrNull(): String? =
     this?.trim()?.takeIf { it.isNotBlank() }
+
+private fun String?.isCatalogBitmapSubtitle(): Boolean {
+    val normalized = this
+        ?.filter(Char::isLetterOrDigit)
+        ?.lowercase()
+        ?.takeIf(String::isNotBlank)
+        ?: return false
+    return normalized.contains("pgs") ||
+        normalized.contains("dvd") ||
+        normalized.contains("dvbsub") ||
+        normalized.contains("vobsub")
+}
+
+private fun catalogLabelIndicatesHearingImpaired(label: String): Boolean {
+    val normalized = label.lowercase()
+    return normalized.contains("closed caption") ||
+        normalized.contains("hearing impaired") ||
+        normalized.contains("hearing-impaired") ||
+        Regex("""(^|[^a-z0-9])(cc|sdh|hi)([^a-z0-9]|$)""").containsMatchIn(normalized)
+}

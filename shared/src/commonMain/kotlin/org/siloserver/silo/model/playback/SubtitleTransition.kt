@@ -155,7 +155,16 @@ fun reduceSubtitleTransition(
 private fun SubtitleTransitionState.select(identity: SubtitleIdentity): SubtitleTransitionResult {
     val audioTrackIndex = effectiveAudioTrackIndex()
     val qualityPreference = effectiveQualityPreference()
-    if (identity is SubtitleIdentity.LocalMedia3 || identity is SubtitleIdentity.Downloaded) {
+    if (identity.requiresClientMount() && pending.hasServerPreferenceMutation()) {
+        return stageLatest(
+            identity = identity,
+            audioTrackIndex = audioTrackIndex,
+            qualityPreference = qualityPreference,
+            audioPreferenceSpecified = pending?.audioPreferenceSpecified == true,
+            qualityPreferenceSpecified = pending?.qualityPreferenceSpecified == true,
+        )
+    }
+    if (identity.requiresClientMount()) {
         val updated = CommittedSubtitle(identity, audioTrackIndex, qualityPreference)
         return SubtitleTransitionResult(
             state = copy(
@@ -177,6 +186,12 @@ private fun SubtitleTransitionState.select(identity: SubtitleIdentity): Subtitle
         qualityPreferenceSpecified = pending?.qualityPreferenceSpecified ?: false,
     )
 }
+
+private fun SubtitleIdentity.requiresClientMount(): Boolean =
+    this is SubtitleIdentity.LocalMedia3 || this is SubtitleIdentity.Downloaded
+
+private fun PendingSubtitle?.hasServerPreferenceMutation(): Boolean =
+    this?.audioPreferenceSpecified == true || this?.qualityPreferenceSpecified == true
 
 private fun SubtitleTransitionState.stageLatest(
     identity: SubtitleIdentity,

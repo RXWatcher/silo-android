@@ -36,6 +36,7 @@ import java.util.IdentityHashMap
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
@@ -631,26 +632,47 @@ open class PlaybackSessionManager(
         }
 
         val next = prepared.nextAttempt
-        activeVideoAttempt.set(next)
         PassthroughSuppressionRegistry.beginAttempt(next.planAttemptKey)
-        emitRouteEvent(
-            PlaybackRouteEventV3(
-                playbackAttemptId = next.playbackAttemptId,
-                sessionId = next.sessionId,
-                planId = next.plan.planId,
-                planAttemptId = next.planAttemptId,
-                planAttemptKey = next.planAttemptKey,
-                event = "plan_selected",
-                fallbackReason = prepared.fallbackReason,
-                appliedQuirkIds = next.plan.appliedQuirks.map { it.id },
-                quirkRegistryRevision = next.plan.appliedQuirks.firstOrNull()?.registryRevision,
-                outputRouteGeneration = next.context.output.outputRouteGeneration,
-            ),
+        val routeEvent = PlaybackRouteEventV3(
+            playbackAttemptId = next.playbackAttemptId,
+            sessionId = next.sessionId,
+            planId = next.plan.planId,
+            planAttemptId = next.planAttemptId,
+            planAttemptKey = next.planAttemptKey,
+            event = "plan_selected",
+            fallbackReason = prepared.fallbackReason,
+            appliedQuirkIds = next.plan.appliedQuirks.map { it.id },
+            quirkRegistryRevision = next.plan.appliedQuirks.firstOrNull()?.registryRevision,
+            outputRouteGeneration = next.context.output.outputRouteGeneration,
         )
-        if (next.sessionId != active.sessionId) {
-            playbackRepository.stopPlayback(active.sessionId)
-        }
+
+        // This is the commit point. Everything after it is best-effort,
+        // non-blocking bookkeeping: callers must always receive the committed
+        // candidate once manager ownership has moved to [next].
+        activeVideoAttempt.set(next)
+        runCatching { emitRouteEvent(routeEvent) }
+        scheduleCommittedSessionCleanup(
+            oldSessionId = active.sessionId,
+            activeSessionId = next.sessionId,
+        )
         ApiResult.Success(staged.candidate)
+    }
+
+    private fun scheduleCommittedSessionCleanup(
+        oldSessionId: String,
+        activeSessionId: String,
+    ) {
+        if (oldSessionId == activeSessionId) return
+        runCatching {
+            telemetryScope.launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    playbackRepository.stopPlayback(oldSessionId)
+                } catch (_: Throwable) {
+                    // Ownership already moved to the committed session. Old
+                    // session cleanup must never unwind that committed result.
+                }
+            }
+        }
     }
 
     suspend fun discardStagedVideoReplan(staged: StagedVideoReplan) {

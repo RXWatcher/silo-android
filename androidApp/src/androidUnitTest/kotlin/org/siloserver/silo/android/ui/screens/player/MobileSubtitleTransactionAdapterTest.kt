@@ -6,6 +6,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.TestScope
 import org.siloserver.silo.model.playback.CommittedSubtitle
 import org.siloserver.silo.model.playback.PlaybackSubtitleModeV3
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
@@ -142,6 +143,154 @@ class MobileSubtitleTransactionAdapterTest {
     }
 
     @Test
+    fun `local then audio before mount keeps one client-owned transaction`() = runTest {
+        val downloaded = downloadedIdentity()
+        val row = downloadedTrack(
+            index = 9,
+            downloadId = downloaded.downloadId,
+            url = "https://silo.test/api/v1/stream/s1/subtitles/9.vtt",
+        )
+        val harness = harness(backgroundScope, tracks = listOf(row))
+
+        harness.adapter.select(downloaded)
+        harness.adapter.selectAudio(7)
+        runCurrent()
+
+        assertEquals(downloaded, harness.adapter.snapshot.pendingIdentity)
+        assertEquals(downloaded, harness.adapter.snapshot.localMountIdentity)
+        assertEquals(-1, harness.port.requests.single().subtitleTrackIndex)
+        assertEquals(7, harness.port.requests.single().audioTrackIndex)
+        assertTrue(harness.persistence.persisted.isEmpty())
+
+        harness.adapter.reportMountedSelection(
+            identity = downloaded,
+            selected = true,
+            snapshotKey = "pre-adoption-download",
+            settled = true,
+        )
+        runCurrent()
+        assertEquals(downloaded, harness.adapter.snapshot.pendingIdentity)
+        assertTrue(harness.persistence.persisted.isEmpty())
+
+        harness.port.completeStage(clientOwnedCandidate("local-audio", audioIndex = 7))
+        runCurrent()
+        assertEquals(downloaded, harness.adapter.snapshot.localMountIdentity)
+        harness.adapter.reportMountedSelection(
+            identity = downloaded,
+            selected = true,
+            snapshotKey = "post-adoption-download",
+            settled = true,
+        )
+        runCurrent()
+
+        assertEquals(downloaded, harness.adapter.snapshot.committedIdentity)
+        assertEquals(7, harness.adapter.snapshot.transition.committed.audioTrackIndex)
+        assertEquals(
+            listOf(CommittedSubtitle(downloaded, audioTrackIndex = 7, qualityPreference = "auto")),
+            harness.persistence.persisted,
+        )
+    }
+
+    @Test
+    fun `audio then local while staging restages combined client-owned transaction`() = runTest {
+        val downloaded = downloadedIdentity()
+        val harness = harness(backgroundScope)
+
+        harness.adapter.selectAudio(7)
+        runCurrent()
+        harness.adapter.select(downloaded)
+        runCurrent()
+        harness.port.completeStage(candidate("audio-only", 3, selectedAudioIndex = 7))
+        runCurrent()
+
+        assertEquals(listOf(3, -1), harness.port.requests.map { it.subtitleTrackIndex })
+        assertEquals(listOf(7, 7), harness.port.requests.map { it.audioTrackIndex })
+        assertEquals(listOf("audio-only"), harness.port.discarded)
+
+        harness.port.completeStage(clientOwnedCandidate("audio-local", audioIndex = 7))
+        runCurrent()
+        assertEquals(downloaded, harness.adapter.snapshot.localMountIdentity)
+        harness.adapter.reportMountedSelection(
+            identity = downloaded,
+            selected = true,
+            snapshotKey = "audio-local-mounted",
+            settled = true,
+        )
+        runCurrent()
+
+        assertEquals(downloaded, harness.adapter.snapshot.committedIdentity)
+        assertEquals(7, harness.adapter.snapshot.transition.committed.audioTrackIndex)
+        assertEquals(downloaded, harness.persistence.persisted.single().identity)
+        assertEquals(7, harness.persistence.persisted.single().audioTrackIndex)
+    }
+
+    @Test
+    fun `modern downloaded row without source keeps server subtitles off during audio replan`() = runTest {
+        val row = downloadedTrack(
+            index = 9,
+            downloadId = 312,
+            url = "https://silo.test/api/v1/stream/s1/subtitles/9.vtt",
+        ).copy(source = null, catalogSource = null)
+        val identity = mobileSubtitleIdentity(row)
+        val harness = harness(backgroundScope, tracks = listOf(row))
+
+        assertTrue(identity is SubtitleIdentity.Downloaded)
+        harness.adapter.selectAudio(7)
+        runCurrent()
+        harness.adapter.select(identity)
+        runCurrent()
+        harness.port.completeStage(candidate("stale-audio", 3, selectedAudioIndex = 7))
+        runCurrent()
+
+        assertEquals(-1, harness.port.requests.last().subtitleTrackIndex)
+        assertEquals(7, harness.port.requests.last().audioTrackIndex)
+        harness.port.completeStage(clientOwnedCandidate("modern-download", audioIndex = 7))
+        runCurrent()
+        assertEquals(identity, harness.adapter.snapshot.localMountIdentity)
+    }
+
+    @Test
+    fun `local then audio while server subtitle stages retains local identity`() = runTest {
+        val downloaded = downloadedIdentity()
+        val harness = harness(backgroundScope)
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+
+        harness.adapter.select(downloaded)
+        harness.adapter.selectAudio(7)
+        runCurrent()
+        harness.port.completeStage(candidate("server-subtitle", 4, selectedAudioIndex = 2))
+        runCurrent()
+
+        assertEquals(listOf(4, -1), harness.port.requests.map { it.subtitleTrackIndex })
+        assertEquals(listOf(2, 7), harness.port.requests.map { it.audioTrackIndex })
+        assertEquals(downloaded, harness.adapter.snapshot.pendingIdentity)
+        assertEquals(listOf("server-subtitle"), harness.port.discarded)
+    }
+
+    @Test
+    fun `queued local then audio during adoption preserves both intents`() = runTest {
+        verifyQueuedClientOwnedOrderDuringAdoption(
+            scope = backgroundScope,
+            mutate = { adapter, downloaded ->
+                adapter.select(downloaded)
+                adapter.selectAudio(7)
+            },
+        )
+    }
+
+    @Test
+    fun `queued audio then local during adoption preserves both intents`() = runTest {
+        verifyQueuedClientOwnedOrderDuringAdoption(
+            scope = backgroundScope,
+            mutate = { adapter, downloaded ->
+                adapter.selectAudio(7)
+                adapter.select(downloaded)
+            },
+        )
+    }
+
+    @Test
     fun `audio change remounts committed downloaded subtitle without sending client index to server`() = runTest {
         val row = downloadedTrack(
             index = 9,
@@ -198,7 +347,9 @@ class MobileSubtitleTransactionAdapterTest {
         runCurrent()
         assertNull(harness.adapter.snapshot.localMountIdentity)
         assertEquals(downloaded, harness.adapter.snapshot.committedIdentity)
-        assertEquals(persistedBeforeRestoreConfirmation, harness.persistence.persisted.size)
+        assertEquals(persistedBeforeRestoreConfirmation + 1, harness.persistence.persisted.size)
+        assertEquals(7, harness.persistence.persisted.last().audioTrackIndex)
+        assertEquals(downloaded, harness.persistence.persisted.last().identity)
     }
 
     @Test
@@ -791,6 +942,44 @@ class MobileSubtitleTransactionAdapterTest {
         return Harness(adapter, port, persistence, committedPlaybacks)
     }
 
+    private suspend fun TestScope.verifyQueuedClientOwnedOrderDuringAdoption(
+        scope: CoroutineScope,
+        mutate: (MobileSubtitleTransactionAdapter, SubtitleIdentity.Downloaded) -> Unit,
+    ) {
+        val adoption = AdoptionControl(suspendAdoption = true)
+        val harness = harness(scope, adoption = adoption)
+        val downloaded = downloadedIdentity()
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.port.completeStage(candidate("first", 4, selectedAudioIndex = 2, sessionId = "s2"))
+        runCurrent()
+
+        mutate(harness.adapter, downloaded)
+        runCurrent()
+        adoption.complete()
+        runCurrent()
+
+        assertEquals(listOf(4, -1), harness.port.requests.map { it.subtitleTrackIndex })
+        assertEquals(listOf(2, 7), harness.port.requests.map { it.audioTrackIndex })
+        harness.port.completeStage(clientOwnedCandidate("combined", audioIndex = 7))
+        runCurrent()
+        adoption.complete()
+        runCurrent()
+        assertEquals(downloaded, harness.adapter.snapshot.localMountIdentity)
+        harness.adapter.reportMountedSelection(
+            identity = downloaded,
+            selected = true,
+            snapshotKey = "queued-combined-mounted",
+            settled = true,
+        )
+        runCurrent()
+
+        assertEquals(downloaded, harness.adapter.snapshot.committedIdentity)
+        assertEquals(7, harness.adapter.snapshot.transition.committed.audioTrackIndex)
+        assertEquals(downloaded, harness.persistence.persisted.single().identity)
+        assertEquals(7, harness.persistence.persisted.single().audioTrackIndex)
+    }
+
     private class AdoptionControl(
         val suspendAdoption: Boolean = false,
         val failure: Throwable? = null,
@@ -839,6 +1028,17 @@ class MobileSubtitleTransactionAdapterTest {
         subtitleTracks = tracks,
     )
 
+    private fun clientOwnedCandidate(
+        id: String,
+        audioIndex: Int,
+    ): MobileStagedSubtitleCandidate = candidate(
+        id = id,
+        selectedIndex = null,
+        selectedAudioIndex = audioIndex,
+        mode = PlaybackSubtitleModeV3.OFF,
+        hasSidecar = false,
+    )
+
     private fun sidecar(index: Int): SubtitleIdentity = SubtitleIdentity.ServerSidecar(index)
 
     private fun media(
@@ -876,6 +1076,17 @@ class MobileSubtitleTransactionAdapterTest {
             forced = false,
             url = url,
             downloadId = downloadId,
+        )
+
+    private fun downloadedIdentity(): SubtitleIdentity.Downloaded =
+        SubtitleIdentity.Downloaded(
+            downloadId = 312,
+            media = media(
+                trackId = "silo-downloaded-subtitle:312",
+                label = "English",
+                language = "en",
+                codec = "webvtt",
+            ),
         )
 
     private data class Harness(

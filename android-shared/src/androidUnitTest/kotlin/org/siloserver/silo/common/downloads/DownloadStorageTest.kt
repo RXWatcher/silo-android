@@ -5,6 +5,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.net.URI
 import java.nio.file.Files
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -127,7 +128,9 @@ class DownloadStorageTest {
     @Test
     fun `locateLocalFile finds original-format download only`() {
         val storage = newStorage()
-        storage.prepareWrite("srv1", "profA", 42, fileName = "The Book.epub").writeTargetBytes(ByteArray(10))
+        val target = storage.prepareWrite("srv1", "profA", 42, fileName = "The Book.epub")
+        target.writeTargetBytes(ByteArray(10))
+        storage.completeWrite(target.uriString)
 
         assertEquals("The Book.epub", storage.locateLocalFile("srv1", "profA", 42)?.name)
     }
@@ -148,6 +151,27 @@ class DownloadStorageTest {
         storage.completeWrite(target.uriString)
 
         assertEquals("The Book.epub", completedFile?.name)
+    }
+
+    @Test
+    fun `staged download completion survives file backed store recreation`() {
+        val publicRoot = tmp.newFolder("public")
+        val firstStorage = DownloadStorage(
+            baseDir = tmp.newFolder("first-files"),
+            publicStore = FileBackedPublicDownloadStore(publicRoot),
+        )
+        val target = firstStorage.prepareWrite("srv1", "profA", 42, fileName = "The Book.epub")
+        target.writeTargetBytes(ByteArray(10))
+
+        val recreatedStorage = DownloadStorage(
+            baseDir = tmp.newFolder("second-files"),
+            publicStore = FileBackedPublicDownloadStore(publicRoot),
+        )
+        val completedUri = recreatedStorage.completeWrite(target.uriString)
+
+        assertEquals(null, URI(completedUri).fragment)
+        assertEquals("The Book.epub", File(URI(completedUri)).name)
+        assertEquals(10L, File(URI(completedUri)).length())
     }
 
     @Test
@@ -344,7 +368,7 @@ class DownloadStorageTest {
         )
         old.writeTargetBytes(ByteArray(7))
         storage.completeWrite(old.uriString)
-        val oldFile = File(java.net.URI(old.uriString))
+        val oldFile = checkNotNull(storage.locateLocalFile("srv1", "profA", 42))
 
         val replacement = storage.prepareWrite(
             "srv1",
@@ -377,6 +401,40 @@ class DownloadStorageTest {
         assertTrue(storage.delete("server id", "profile%id", 42))
         assertFalse(legacyDir.exists())
         assertFalse(storage.exists("server id", "profile%id", 42))
+    }
+
+    @Test
+    fun `raw reserved namespace identity cannot read size or delete encoded sibling`() {
+        val storage = newStorage()
+        storage.prepareWrite("?", "prof", 42, fileName = "Question.epub")
+            .writeTargetBytes(ByteArray(13))
+
+        assertFalse(storage.exists("~Pw", "prof", 42))
+        assertEquals(0L, storage.totalBytesUsed("~Pw", "prof"))
+        assertFalse(storage.delete("~Pw", "prof", 42))
+        assertTrue(storage.exists("?", "prof", 42))
+        assertEquals(13L, storage.totalBytesUsed("?", "prof"))
+    }
+
+    @Test
+    fun `prepared output stream cannot be swapped to an outside symlink before open`() {
+        val parent = tmp.newFolder("parent")
+        val publicRoot = File(parent, "public")
+        val storage = DownloadStorage(
+            baseDir = tmp.newFolder("filesDir"),
+            publicStore = FileBackedPublicDownloadStore(publicRoot),
+        )
+        val target = storage.prepareWrite("server", "profile", 42, fileName = "Book.epub")
+        val intendedFinal = File(publicRoot, "Downloads/server/profile/42/Book.epub")
+        val sentinel = File(parent, "sentinel.txt").apply { writeText("keep") }
+        Files.createSymbolicLink(intendedFinal.toPath(), sentinel.toPath())
+
+        target.writeTargetBytes(ByteArray(9))
+        storage.completeWrite(target.uriString)
+
+        assertEquals("keep", sentinel.readText())
+        assertTrue(intendedFinal.isFile)
+        assertEquals(9L, intendedFinal.length())
     }
 
     @Test

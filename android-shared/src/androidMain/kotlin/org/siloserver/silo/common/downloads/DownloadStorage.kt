@@ -14,9 +14,26 @@ import org.siloserver.silo.common.store.containedSafeChild
 import org.siloserver.silo.common.store.safePathSegment
 import org.siloserver.silo.model.download.DownloadMediaType
 import java.io.File
+import java.io.IOException
 import java.io.OutputStream
 import java.net.URI
+import java.nio.channels.Channels
+import java.nio.channels.FileChannel
+import java.nio.channels.SeekableByteChannel
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileVisitResult
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.OpenOption
+import java.nio.file.Path
+import java.nio.file.SecureDirectoryStream
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Storage coordinator for downloads. Sidecars live under private [baseDir];
@@ -92,9 +109,8 @@ class DownloadStorage(
     fun delete(serverId: String, profileId: String, fileId: Int): Boolean =
         publicStore.delete(serverId, profileId, fileId, uriString = null)
 
-    fun completeWrite(uriString: String) {
+    fun completeWrite(uriString: String): String =
         publicStore.complete(uriString)
-    }
 
     /** Actual on-disk bytes of a partial download at [uriString], or 0 if it's
      *  gone/unreadable. Used to resume an interrupted download via HTTP Range.
@@ -188,7 +204,7 @@ interface PublicDownloadStore {
     fun locate(uriString: String): DownloadLocation?
     fun locateByFileId(serverId: String, profileId: String, fileId: Int): DownloadLocation?
     fun delete(serverId: String, profileId: String, fileId: Int, uriString: String?): Boolean
-    fun complete(uriString: String) = Unit
+    fun complete(uriString: String): String = uriString
 
     /** Open an existing partial for append (resume). Null = unsupported/unavailable. */
     fun openAppend(uriString: String): OutputStream? = null
@@ -215,6 +231,7 @@ class FileBackedPublicDownloadStore(
         .map { file -> runCatching { file.canonicalFile }.getOrDefault(file.absoluteFile) }
         .distinctBy { file -> file.path }
     private val pendingReplacedDeletes = ConcurrentHashMap<String, List<File>>()
+    private val pendingWrites = ConcurrentHashMap<String, StagedDownload>()
 
     override fun create(
         serverId: String,
@@ -228,37 +245,49 @@ class FileBackedPublicDownloadStore(
         val root = collectionRoot(collection)
         val dir = requireNotNull(containedSafeChild(root, serverId, profileId, fileId.toString())) {
             "Download path is outside its collection root"
-        }.apply {
-            deleteContainedRecursively(root, this)
-            check(mkdirs() || isDirectory) { "Could not create download directory" }
         }
-        val file = requireNotNull(containedDisplayName(dir, displayName)) {
+        check(dir.mkdirs() || dir.isDirectory) { "Could not create download directory" }
+        val file = requireNotNull(directDisplayNameChild(dir, displayName)) {
             "Download display name is outside its file directory"
         }
         val replaced = PublicDownloadCollection.entries
             .flatMap { candidateCollection ->
                 val candidateRoot = collectionRoot(candidateCollection)
-                downloadCandidates(candidateRoot, serverId, profileId, fileId)
+                downloadCandidates(candidateRoot, serverId, profileId, fileId).flatMap { candidate ->
+                    if (candidate.canonicalPath == dir.canonicalPath) {
+                        candidate.listFiles()
+                            .orEmpty()
+                            .filter { child ->
+                                child.name != file.name &&
+                                    !child.name.startsWith(STAGED_FILE_PREFIX) &&
+                                    isRegularContainedFile(candidateRoot, child)
+                            }
+                    } else {
+                        listOf(candidate)
+                    }
+                }
             }
-            .filter { candidate -> candidate.canonicalPath != dir.canonicalPath && candidate.exists() }
+            .filter { candidate -> candidate.exists() }
             .distinctBy { candidate -> candidate.canonicalPath }
-        val uriString = fileUriString(file)
+        val staged = createStagedDownload(dir, file, displayName)
+        val uriString = staged.uriString
+        abortPendingWithin(dir)
+        pendingWrites[uriString] = staged
         if (replaced.isNotEmpty()) pendingReplacedDeletes[uriString] = replaced
         return DownloadTarget(
             uriString = uriString,
             displayName = displayName,
-            openOutputStream = { file.outputStream() },
-            sizeBytes = { file.length() },
+            openOutputStream = staged::claimOutputStream,
+            sizeBytes = { staged.tempFile.length() },
         )
     }
 
     override fun locate(uriString: String): DownloadLocation? {
         if (!uriString.startsWith("file:", ignoreCase = true)) return null
-        val file = runCatching { File(URI(uriString)) }.getOrElse {
-            File(uriString.removePrefix("file://").removePrefix("file:"))
-        }.canonicalFile
+        val reference = parseFileReference(uriString) ?: return null
+        val file = reference.file.canonicalFile
         if (!file.isFile || roots.none { file.isContainedBy(it) }) return null
-        return FileDownloadLocation(fileUriString(file), file.name, file.length(), file)
+        return FileDownloadLocation(uriString, reference.displayName ?: file.name, file.length(), file)
     }
 
     override fun locateByFileId(serverId: String, profileId: String, fileId: Int): DownloadLocation? {
@@ -267,7 +296,15 @@ class FileBackedPublicDownloadStore(
             downloadCandidates(root, serverId, profileId, fileId).forEach { dir ->
                 val file = firstContainedFile(root, dir)
                 if (file != null) {
-                    return FileDownloadLocation(fileUriString(file), file.name, file.length(), file)
+                    val staged = pendingWrites.values.firstOrNull { pending ->
+                        pending.tempFile.absolutePath == file.absolutePath
+                    }
+                    return FileDownloadLocation(
+                        staged?.uriString ?: fileUriString(file),
+                        staged?.displayName ?: file.name,
+                        file.length(),
+                        file,
+                    )
                 }
             }
         }
@@ -275,31 +312,79 @@ class FileBackedPublicDownloadStore(
     }
 
     override fun delete(serverId: String, profileId: String, fileId: Int, uriString: String?): Boolean {
+        uriString?.let { pendingUri ->
+            pendingWrites.remove(pendingUri)?.let { staged ->
+                pendingReplacedDeletes.remove(pendingUri)
+                return staged.abort()
+            }
+        }
         val fromUri = uriString?.let { locate(it) as? FileDownloadLocation }?.file
-        if (fromUri != null) return fromUri.delete()
+        if (fromUri != null) {
+            val root = roots.firstOrNull { fromUri.isContainedBy(it) } ?: return false
+            return deleteContainedRecursively(root, fromUri)
+        }
         var deleted = false
         PublicDownloadCollection.entries.forEach { collection ->
             val root = collectionRoot(collection)
             downloadCandidates(root, serverId, profileId, fileId).forEach { target ->
+                abortPendingWithin(target)
                 deleted = deleteContainedRecursively(root, target) || deleted
             }
         }
         return deleted
     }
 
-    override fun complete(uriString: String) {
-        val file = (locate(uriString) as? FileDownloadLocation)?.file ?: return
-        onFileCompleted(file)
-        pendingReplacedDeletes.remove(uriString).orEmpty().forEach { replaced ->
-            roots.firstOrNull { replaced.isContainedBy(it) }?.let { root ->
-                deleteContainedRecursively(root, replaced)
+    override fun complete(uriString: String): String {
+        val staged = pendingWrites.remove(uriString)
+        try {
+            val reference = parseFileReference(uriString)
+                ?: throw IOException("Invalid completed-download URI")
+            val tempFile = staged?.tempFile ?: reference.file
+            val displayName = staged?.displayName ?: reference.displayName
+            if (displayName == null) {
+                val existing = (locate(uriString) as? FileDownloadLocation)?.file ?: return uriString
+                onFileCompleted(existing)
+                return fileUriString(existing)
             }
+            staged?.closeBeforePublish()
+            val root = roots.firstOrNull { tempFile.isContainedBy(it) }
+                ?: throw IOException("Staged download escaped its collection root")
+            if (!isRegularContainedFile(root, tempFile)) {
+                throw IOException("Staged download is missing or is not a regular file")
+            }
+            val finalFile = staged?.finalFile
+                ?: tempFile.parentFile?.let { parent -> directDisplayNameChild(parent, displayName) }
+                ?: throw IOException("Invalid completed-download display name")
+            if (staged != null) {
+                staged.publish()
+            } else {
+                moveReplacingWithoutFollowing(tempFile, finalFile)
+            }
+            onFileCompleted(finalFile)
+            pendingReplacedDeletes.remove(uriString).orEmpty().forEach { replaced ->
+                roots.firstOrNull { replaced.isContainedBy(it) }?.let { replacementRoot ->
+                    deleteContainedRecursively(replacementRoot, replaced)
+                }
+            }
+            return fileUriString(finalFile)
+        } catch (failure: Throwable) {
+            staged?.closeForRetry()
+            throw failure
         }
     }
 
     override fun openAppend(uriString: String): OutputStream? {
         val file = (locate(uriString) as? FileDownloadLocation)?.file ?: return null
-        return java.io.FileOutputStream(file, /* append = */ true)
+        return runCatching {
+            Channels.newOutputStream(
+                FileChannel.open(
+                    file.toPath(),
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.APPEND,
+                    LinkOption.NOFOLLOW_LINKS,
+                ),
+            )
+        }.getOrNull()
     }
 
     override fun partialSize(uriString: String): Long =
@@ -310,6 +395,7 @@ class FileBackedPublicDownloadStore(
         PublicDownloadCollection.entries.forEach { collection ->
             val root = collectionRoot(collection)
             scopedCandidates(root, serverId, profileId).forEach { target ->
+                abortPendingWithin(target)
                 deleted = deleteContainedRecursively(root, target) || deleted
             }
         }
@@ -321,6 +407,7 @@ class FileBackedPublicDownloadStore(
         PublicDownloadCollection.entries.forEach { collection ->
             val root = collectionRoot(collection)
             scopedCandidates(root, serverId).forEach { target ->
+                abortPendingWithin(target)
                 deleted = deleteContainedRecursively(root, target) || deleted
             }
         }
@@ -367,43 +454,51 @@ class FileBackedPublicDownloadStore(
     private fun distinctCandidates(vararg candidates: File?): List<File> =
         candidates.filterNotNull().distinctBy { it.canonicalPath }
 
-    private fun containedDisplayName(directory: File, displayName: String): File? =
-        runCatching {
-            File(directory, displayName).canonicalFile.takeIf { candidate ->
-                candidate.parentFile?.canonicalFile == directory.canonicalFile
-            }
-        }.getOrNull()
+    private fun directDisplayNameChild(directory: File, displayName: String): File? {
+        if (displayName.isEmpty() || displayName == "." || displayName == "..") return null
+        if ('/' in displayName || '\\' in displayName) return null
+        return File(directory, displayName).absoluteFile.takeIf { candidate ->
+            candidate.parentFile == directory.absoluteFile
+        }
+    }
 
     private fun firstContainedFile(root: File, directory: File): File? {
         if (!directory.isContainedBy(root) || !directory.isDirectory) return null
         return directory.listFiles()
             ?.asSequence()
-            ?.filter { child ->
-                val canonicalChild = runCatching { child.canonicalFile }.getOrNull()
-                canonicalChild != null &&
-                    child.absoluteFile.path == canonicalChild.path &&
-                    canonicalChild.isContainedBy(root) &&
-                    canonicalChild.isFile
-            }
+            ?.filter { child -> isRegularContainedFile(root, child) }
             ?.map { it.canonicalFile }
             ?.sortedBy { it.name }
             ?.firstOrNull()
     }
 
+    /**
+     * Walks without `FOLLOW_LINKS`, so a symlink is deleted as an entry and its
+     * target is never visited. Android does not guarantee
+     * [java.nio.file.SecureDirectoryStream] for every filesystem provider, so
+     * parent namespace replacement between the containment check and the walk
+     * remains a platform limitation; managed roots are app-owned/private where
+     * applicable, and each write target uses an unguessable no-follow stage.
+     */
     private fun deleteContainedRecursively(root: File, target: File): Boolean {
-        if (!target.exists()) return false
-        val canonicalTarget = runCatching { target.canonicalFile }.getOrNull() ?: return false
-        if (target.absoluteFile.path != canonicalTarget.path) {
-            return target.delete()
-        }
-        if (!canonicalTarget.isContainedBy(root)) return false
+        val path = target.toPath()
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return false
+        val canonicalParent = runCatching { target.parentFile?.canonicalFile }.getOrNull() ?: return false
+        if (!canonicalParent.isContainedBy(root, allowRoot = true)) return false
         var deleted = false
-        if (canonicalTarget.isDirectory) {
-            canonicalTarget.listFiles().orEmpty().forEach { child ->
-                deleted = deleteContainedRecursively(root, child) || deleted
+        Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                deleted = Files.deleteIfExists(file) || deleted
+                return FileVisitResult.CONTINUE
             }
-        }
-        return canonicalTarget.delete() || deleted
+
+            override fun postVisitDirectory(directory: Path, error: java.io.IOException?): FileVisitResult {
+                if (error != null) throw error
+                deleted = Files.deleteIfExists(directory) || deleted
+                return FileVisitResult.CONTINUE
+            }
+        })
+        return deleted
     }
 
     private fun containedBytes(root: File, target: File): Long {
@@ -423,6 +518,157 @@ class FileBackedPublicDownloadStore(
         val canonicalTarget = runCatching { canonicalFile }.getOrNull() ?: return false
         return (allowRoot && canonicalTarget.path == canonicalRoot.path) ||
             canonicalTarget.path.startsWith(canonicalRoot.path + File.separator)
+    }
+
+    private fun createStagedDownload(directory: File, finalFile: File, displayName: String): StagedDownload {
+        repeat(MAX_TEMP_ATTEMPTS) {
+            val tempFile = File(directory, "$STAGED_FILE_PREFIX${UUID.randomUUID()}.tmp")
+            var directoryStream: java.nio.file.DirectoryStream<Path>? = null
+            try {
+                val uriString = pendingFileUriString(tempFile, displayName)
+                directoryStream = Files.newDirectoryStream(directory.toPath())
+                if (directoryStream is SecureDirectoryStream<*>) {
+                    @Suppress("UNCHECKED_CAST")
+                    val secure = directoryStream as SecureDirectoryStream<Path>
+                    val relative = directory.toPath().fileSystem.getPath(tempFile.name)
+                    val channel = secure.newByteChannel(relative, CREATE_NEW_NOFOLLOW)
+                    return StagedDownload(
+                        tempFile,
+                        finalFile,
+                        displayName,
+                        uriString,
+                        channel,
+                        secure,
+                        relative,
+                    )
+                }
+                directoryStream.close()
+                directoryStream = null
+                return StagedDownload(
+                    tempFile,
+                    finalFile,
+                    displayName,
+                    uriString,
+                    FileChannel.open(tempFile.toPath(), *CREATE_NEW_NOFOLLOW.toTypedArray()),
+                    secureDirectory = null,
+                    relativePath = null,
+                )
+            } catch (_: java.nio.file.FileAlreadyExistsException) {
+                directoryStream?.close()
+                // Retry with a new unguessable name.
+            } catch (failure: Throwable) {
+                directoryStream?.close()
+                throw failure
+            }
+        }
+        error("Could not create staged download")
+    }
+
+    private fun pendingFileUriString(file: File, displayName: String): String =
+        URI("file", "", file.absolutePath, null, displayName).toASCIIString()
+
+    private fun parseFileReference(uriString: String): FileReference? =
+        runCatching {
+            val uri = URI(uriString)
+            if (!uri.scheme.equals("file", ignoreCase = true)) return null
+            val pathOnly = URI(uri.scheme, uri.authority, uri.path, null, null)
+            FileReference(File(pathOnly), uri.fragment)
+        }.getOrNull()
+
+    private fun isRegularContainedFile(root: File, file: File): Boolean {
+        val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return false
+        return file.absoluteFile.path == canonical.path &&
+            canonical.isContainedBy(root) &&
+            Files.isRegularFile(file.toPath(), LinkOption.NOFOLLOW_LINKS)
+    }
+
+    private fun abortPendingWithin(directory: File) {
+        val directoryPath = runCatching { directory.canonicalPath + File.separator }.getOrNull() ?: return
+        pendingWrites.entries.toList().forEach { (uri, staged) ->
+            if (staged.tempFile.absolutePath.startsWith(directoryPath) && pendingWrites.remove(uri, staged)) {
+                pendingReplacedDeletes.remove(uri)
+                staged.abort()
+            }
+        }
+    }
+
+    /**
+     * Same-directory atomic replacement changes the directory entry itself, so
+     * an attacker-created destination symlink is replaced rather than followed.
+     * The fallback remains no-follow but loses crash atomicity on providers that
+     * do not implement `ATOMIC_MOVE`.
+     */
+    private fun moveReplacingWithoutFollowing(source: File, target: File) {
+        try {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    private data class FileReference(val file: File, val displayName: String?)
+
+    private inner class StagedDownload(
+        val tempFile: File,
+        val finalFile: File,
+        val displayName: String,
+        val uriString: String,
+        private val channel: SeekableByteChannel,
+        private val secureDirectory: SecureDirectoryStream<Path>?,
+        private val relativePath: Path?,
+    ) {
+        private val claimed = AtomicBoolean(false)
+
+        fun claimOutputStream(): OutputStream {
+            check(claimed.compareAndSet(false, true)) { "Download output stream already opened" }
+            return Channels.newOutputStream(channel)
+        }
+
+        fun closeBeforePublish() {
+            if (channel.isOpen) {
+                (channel as? FileChannel)?.force(true)
+                channel.close()
+            }
+        }
+
+        fun closeForRetry() {
+            runCatching { closeBeforePublish() }
+            runCatching { secureDirectory?.close() }
+        }
+
+        fun publish() {
+            val secure = secureDirectory
+            val source = relativePath
+            if (secure != null && source != null) {
+                try {
+                    secure.move(source, secure, source.fileSystem.getPath(finalFile.name))
+                } finally {
+                    secure.close()
+                }
+            } else {
+                moveReplacingWithoutFollowing(tempFile, finalFile)
+            }
+        }
+
+        fun abort(): Boolean {
+            closeForRetry()
+            return runCatching { Files.deleteIfExists(tempFile.toPath()) }.getOrDefault(false)
+        }
+    }
+
+    companion object {
+        private const val STAGED_FILE_PREFIX = ".silo-stage-"
+        private const val MAX_TEMP_ATTEMPTS = 8
+        private val CREATE_NEW_NOFOLLOW: Set<OpenOption> = setOf(
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+            LinkOption.NOFOLLOW_LINKS,
+        )
     }
 }
 
@@ -585,10 +831,10 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
         return total
     }
 
-    override fun complete(uriString: String) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+    override fun complete(uriString: String): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return uriString
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-        if (resolver.update(Uri.parse(uriString), values, null, null) <= 0) return
+        if (resolver.update(Uri.parse(uriString), values, null, null) <= 0) return uriString
         pendingReplacedDeletes.remove(uriString)?.let { scope ->
             val newPath = mediaStoreRelativePath(scope.collection, scope.serverId, scope.profileId, scope.fileId)
             PublicDownloadCollection.entries.forEach { collection ->
@@ -597,6 +843,7 @@ class MediaStorePublicDownloadStore(context: Context) : PublicDownloadStore {
                     .forEach { path -> deleteByExactRelativePath(collection, path) }
             }
         }
+        return uriString
     }
 
     /** Exact-path delete (no wildcards). Used for single-file deletes. */
@@ -711,6 +958,7 @@ private fun mediaStorePrefixCandidates(
 
 private fun isLegacyMediaStoreSegment(value: String): Boolean =
     value.isNotEmpty() &&
+        !value.startsWith("~") &&
         value != "." &&
         value != ".." &&
         '/' !in value &&

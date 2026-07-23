@@ -4,7 +4,18 @@ import android.util.Log
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.nio.channels.SeekableByteChannel
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.OpenOption
+import java.nio.file.Path
+import java.nio.file.SecureDirectoryStream
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -59,19 +70,36 @@ internal class ScopedJsonFileStore(
             return
         }
         target.parentFile?.mkdirs()
-        val tmp = File(target.parentFile, "${target.name}.tmp")
-        FileOutputStream(tmp).use { stream ->
-            stream.write(text.toByteArray(Charsets.UTF_8))
-            stream.fd.sync()
+        val parent = target.parentFile?.canonicalFile
+        if (parent == null || !isContained(parent)) {
+            Log.w(tag, "write rejected after parent changed")
+            return
         }
-        if (!tmp.renameTo(target)) {
+        val staged = createExclusiveTemp(parent) ?: run {
+            Log.w(tag, "could not create atomic temp file")
+            return
+        }
+        val tmp = staged.file
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        val published = runCatching {
+            staged.channel.use { channel ->
+                var buffer = ByteBuffer.wrap(bytes)
+                while (buffer.hasRemaining()) channel.write(buffer)
+                (channel as? FileChannel)?.force(true)
+            }
+            staged.publishTo(target)
+            true
+        }.getOrElse {
             Log.w(tag, "atomic rename failed for ${target.path}")
-            tmp.delete()
+            false
+        }
+        if (!published) {
+            Files.deleteIfExists(tmp.toPath())
             return
         }
         legacyByTarget.remove(target.canonicalPath)
             ?.takeIf(::isContained)
-            ?.delete()
+            ?.let { legacy -> Files.deleteIfExists(legacy.toPath()) }
     }
 
     internal fun containedReadCandidate(file: File): File? {
@@ -95,7 +123,85 @@ internal class ScopedJsonFileStore(
             }
         }.getOrNull()
 
+    private fun createExclusiveTemp(parent: File): ExclusiveTemp? {
+        repeat(MAX_TEMP_ATTEMPTS) {
+            val candidate = File(parent, ".silo-${UUID.randomUUID()}.tmp")
+            var directoryStream: java.nio.file.DirectoryStream<Path>? = null
+            try {
+                directoryStream = Files.newDirectoryStream(parent.toPath())
+                if (directoryStream is SecureDirectoryStream<*>) {
+                    @Suppress("UNCHECKED_CAST")
+                    val secure = directoryStream as SecureDirectoryStream<Path>
+                    val relative = parent.toPath().fileSystem.getPath(candidate.name)
+                    val channel = secure.newByteChannel(relative, CREATE_NEW_NOFOLLOW)
+                    return ExclusiveTemp(candidate, channel, secure, relative)
+                }
+                directoryStream.close()
+                directoryStream = null
+                return ExclusiveTemp(
+                    candidate,
+                    FileChannel.open(candidate.toPath(), *CREATE_NEW_NOFOLLOW.toTypedArray()),
+                    secureDirectory = null,
+                    relativePath = null,
+                )
+            } catch (_: java.nio.file.FileAlreadyExistsException) {
+                directoryStream?.close()
+                // Retry with a new unguessable name.
+            } catch (failure: Throwable) {
+                directoryStream?.close()
+                throw failure
+            }
+        }
+        return null
+    }
+
+    private inner class ExclusiveTemp(
+        val file: File,
+        val channel: SeekableByteChannel,
+        val secureDirectory: SecureDirectoryStream<Path>?,
+        val relativePath: Path?,
+    ) {
+        fun publishTo(target: File) {
+            val secure = secureDirectory
+            val source = relativePath
+            if (secure != null && source != null) {
+                try {
+                    secure.move(source, secure, source.fileSystem.getPath(target.name))
+                } finally {
+                    secure.close()
+                }
+            } else {
+                moveReplacingWithoutFollowing(file, target)
+            }
+        }
+    }
+
+    /**
+     * `Files.move` replaces a destination symlink as a directory entry; it does
+     * not follow the link. `ATOMIC_MOVE` is used on the same-directory fast path.
+     * Providers without atomic-move support retain no-follow replacement but
+     * cannot provide crash-atomic publication.
+     */
+    private fun moveReplacingWithoutFollowing(source: File, target: File) {
+        try {
+            Files.move(
+                source.toPath(),
+                target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
     companion object {
         val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
+        private const val MAX_TEMP_ATTEMPTS = 8
+        private val CREATE_NEW_NOFOLLOW: Set<OpenOption> = setOf(
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+            LinkOption.NOFOLLOW_LINKS,
+        )
     }
 }

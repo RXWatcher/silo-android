@@ -8,6 +8,8 @@ import androidx.media3.common.TrackGroup
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
+import org.siloserver.silo.model.playback.SubtitleMediaIdentity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -17,6 +19,89 @@ import kotlin.test.assertTrue
 
 @OptIn(UnstableApi::class)
 class SubtitleManagerTrackSelectionTest {
+
+    @Test
+    fun typedLocalSelectionUsesExactMedia3IdAcrossDuplicateMetadata() {
+        val first = TrackGroup(
+            subtitle(
+                label = "English",
+                language = "en",
+                sampleMimeType = MimeTypes.TEXT_VTT,
+                id = "decoder-text-8",
+            ),
+        )
+        val second = TrackGroup(
+            subtitle(
+                label = "English",
+                language = "en",
+                sampleMimeType = MimeTypes.TEXT_VTT,
+                id = "decoder-text-9",
+            ),
+        )
+        val tracks = Tracks(
+            listOf(first, second).map { group ->
+                Tracks.Group(
+                    group,
+                    false,
+                    intArrayOf(C.FORMAT_HANDLED),
+                    booleanArrayOf(false),
+                )
+            },
+        )
+
+        val selection = resolveSubtitleSelection(
+            tracks,
+            SubtitleIdentity.LocalMedia3(
+                SubtitleMediaIdentity(
+                    trackId = "decoder-text-9",
+                    language = "en",
+                    codecFamily = "webvtt",
+                    hearingImpaired = false,
+                ),
+            ),
+        )
+
+        assertSame(second, selection?.mediaTrackGroup)
+        assertEquals(0, selection?.trackIndex)
+    }
+
+    @Test
+    fun extractedEmbeddedTextArtifactSelectsReservedServerTrackEndToEnd() {
+        val artifact = TrackGroup(
+            subtitle(
+                label = "English",
+                language = "en",
+                sampleMimeType = MimeTypes.TEXT_VTT,
+                id = "silo-subtitle:7",
+            ),
+        )
+        val tracks = Tracks(
+            listOf(
+                Tracks.Group(
+                    artifact,
+                    false,
+                    intArrayOf(C.FORMAT_HANDLED),
+                    booleanArrayOf(false),
+                ),
+            ),
+        )
+
+        val selection = resolveSubtitleSelection(
+            tracks,
+            PlayerSubtitleInfo(
+                index = 7,
+                language = "en",
+                codec = "webvtt",
+                label = "English",
+                source = "embedded",
+                forced = false,
+                url = "/stream/s2/subtitles/7.vtt",
+            ),
+        )
+
+        assertSame(artifact, selection?.mediaTrackGroup)
+        assertEquals(0, selection?.trackIndex)
+    }
 
     @Test
     fun serverArtifactConfigurationsCarryStableCombinedIndexes() {

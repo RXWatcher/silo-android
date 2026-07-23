@@ -64,6 +64,8 @@ data class PlayerSubtitleInfo(
     @SerialName("default") val isDefault: Boolean? = null,
     /** Persistent provider download identity; distinct from the mutable combined artifact [index]. */
     @SerialName("download_id") val downloadId: Int? = null,
+    /** Optional exact Media3 Format.id retained by client-created/local rows. */
+    @SerialName("media_track_id") val mediaTrackId: String? = null,
 )
 
 /**

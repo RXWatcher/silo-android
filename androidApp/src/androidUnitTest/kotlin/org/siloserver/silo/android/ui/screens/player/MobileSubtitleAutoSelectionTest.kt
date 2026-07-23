@@ -80,6 +80,91 @@ class MobileSubtitleAutoSelectionTest {
     }
 
     @Test
+    fun typedMobileOrdinalNormalizesVttAndWebvtt() {
+        val identity = SubtitleIdentity.LocalMedia3(
+            org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                label = "English",
+                language = "eng",
+                codecFamily = "webvtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+        )
+
+        assertEquals(
+            0,
+            resolveMobileSubtitleOrdinal(
+                identity,
+                listOf(
+                    subtitle(4, "English", "en", codec = "vtt").copy(
+                        source = "downloaded",
+                        downloadId = null,
+                    ),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun typedMobileOrdinalUsesExactMediaTrackIdBeforeMetadata() {
+        val identity = SubtitleIdentity.LocalMedia3(
+            org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                trackId = "decoder-text-9",
+                label = "English",
+                language = "en",
+                codecFamily = "webvtt",
+                forced = false,
+                hearingImpaired = false,
+            ),
+        )
+        val rows = listOf(
+            subtitle(4, "English", "en", codec = "webvtt").copy(
+                source = "downloaded",
+                downloadId = null,
+                mediaTrackId = "decoder-text-8",
+            ),
+            subtitle(5, "Different", "fr", codec = "srt").copy(
+                source = "downloaded",
+                downloadId = null,
+                mediaTrackId = "decoder-text-9",
+            ),
+        )
+
+        assertEquals(1, resolveMobileSubtitleOrdinal(identity, rows))
+    }
+
+    @Test
+    fun typedMobileOrdinalSeparatesHearingImpairedDuplicatesAndRejectsAmbiguity() {
+        val hearingIdentity = SubtitleIdentity.LocalMedia3(
+            org.siloserver.silo.model.playback.SubtitleMediaIdentity(
+                language = "en",
+                codecFamily = "webvtt",
+                forced = false,
+                hearingImpaired = true,
+            ),
+        )
+        val rows = listOf(
+            subtitle(4, "English", "en", codec = "vtt").copy(
+                source = "downloaded",
+                downloadId = null,
+            ),
+            subtitle(5, "English SDH", "en", codec = "webvtt").copy(
+                source = "downloaded",
+                downloadId = null,
+            ),
+        )
+
+        assertEquals(1, resolveMobileSubtitleOrdinal(hearingIdentity, rows))
+        assertEquals(
+            null,
+            resolveMobileSubtitleOrdinal(
+                hearingIdentity.copy(media = hearingIdentity.media.copy(hearingImpaired = null)),
+                rows,
+            ),
+        )
+    }
+
+    @Test
     fun autoSubtitlePreferenceDemotesClosedCaptionTitledTracksWhenPlainDialogueExists() {
         val subtitles = listOf(
             subtitle(index = 4, label = "English (CC)", language = "en"),

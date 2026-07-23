@@ -470,7 +470,7 @@ fun PlayerOverlay(
         subtitles = state.subtitleTracks,
         selectedSubtitleIndex = state.selectedSubtitleIndex,
         pendingSubtitleIndex = state.pendingSubtitleIdentity?.let {
-            committedSubtitleOrdinal(it, state.subtitleTracks)
+            resolveMobileSubtitleOrdinal(it, state.subtitleTracks)
         },
         subtitleApplying = state.subtitleApplying,
         onSelectAudio = onSelectAudio,

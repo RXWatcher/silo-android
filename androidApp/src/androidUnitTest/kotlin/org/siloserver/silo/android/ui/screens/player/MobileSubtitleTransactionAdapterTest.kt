@@ -3,6 +3,7 @@ package org.siloserver.silo.android.ui.screens.player
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.siloserver.silo.model.playback.CommittedSubtitle
@@ -30,6 +31,27 @@ class MobileSubtitleTransactionAdapterTest {
         assertNull(harness.adapter.snapshot.pendingIdentity)
         assertTrue(harness.port.requests.isEmpty())
         assertEquals(listOf(sidecar(4)), harness.persistence.persisted.map { it.identity })
+    }
+
+    @Test
+    fun `slow older preference write cannot overwrite newer commit`() = runTest {
+        val harness = harness(backgroundScope, sessionId = null)
+        harness.persistence.suspendFirst = true
+
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.persistence.awaitFirstStarted()
+        harness.adapter.select(sidecar(5))
+        runCurrent()
+        assertTrue(harness.persistence.persisted.isEmpty())
+
+        harness.persistence.releaseFirst()
+        runCurrent()
+
+        assertEquals(
+            listOf(sidecar(4), sidecar(5)),
+            harness.persistence.persisted.map { it.identity },
+        )
     }
 
     @Test
@@ -74,6 +96,211 @@ class MobileSubtitleTransactionAdapterTest {
         assertEquals(sidecar(5), harness.adapter.snapshot.committedIdentity)
         assertEquals(listOf("c"), harness.port.committed)
         assertEquals(listOf(sidecar(5)), harness.persistence.persisted.map { it.identity })
+    }
+
+    @Test
+    fun `subtitle then audio merge into one latest reducer transaction`() = runTest {
+        val harness = harness(backgroundScope)
+
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.adapter.selectAudio(7)
+        harness.port.completeStage(candidate("subtitle-only", 4, selectedAudioIndex = 2))
+        runCurrent()
+
+        assertEquals(listOf(2, 7), harness.port.requests.map { it.audioTrackIndex })
+        assertEquals(listOf(4, 4), harness.port.requests.map { it.subtitleTrackIndex })
+        assertEquals(listOf("subtitle-only"), harness.port.discarded)
+
+        harness.port.completeStage(candidate("combined", 4, selectedAudioIndex = 7))
+        runCurrent()
+
+        assertEquals(sidecar(4), harness.adapter.snapshot.committedIdentity)
+        assertEquals(7, harness.adapter.snapshot.transition.committed.audioTrackIndex)
+        assertEquals(listOf(7), harness.persistence.persisted.map { it.audioTrackIndex })
+    }
+
+    @Test
+    fun `audio then subtitle merge into one latest reducer transaction`() = runTest {
+        val harness = harness(backgroundScope)
+
+        harness.adapter.selectAudio(7)
+        runCurrent()
+        harness.adapter.select(sidecar(4))
+        harness.port.completeStage(candidate("audio-only", 3, selectedAudioIndex = 7))
+        runCurrent()
+
+        assertEquals(listOf(7, 7), harness.port.requests.map { it.audioTrackIndex })
+        assertEquals(listOf(3, 4), harness.port.requests.map { it.subtitleTrackIndex })
+        assertEquals(listOf("audio-only"), harness.port.discarded)
+
+        harness.port.completeStage(candidate("combined", 4, selectedAudioIndex = 7))
+        runCurrent()
+
+        assertEquals(sidecar(4), harness.adapter.snapshot.committedIdentity)
+        assertEquals(7, harness.adapter.snapshot.transition.committed.audioTrackIndex)
+    }
+
+    @Test
+    fun `audio change remounts committed downloaded subtitle without sending client index to server`() = runTest {
+        val row = downloadedTrack(
+            index = 9,
+            downloadId = 312,
+            url = "https://silo.test/api/v1/stream/s1/subtitles/9.vtt",
+        )
+        val downloaded = SubtitleIdentity.Downloaded(
+            downloadId = 312,
+            media = media(
+                trackId = "silo-downloaded-subtitle:312",
+                language = "en",
+                codec = "webvtt",
+            ),
+        )
+        val harness = harness(backgroundScope, tracks = listOf(row))
+        harness.adapter.resetContent(
+            context(sessionId = "s1", tracks = listOf(row)),
+            committedIdentity = downloaded,
+        )
+
+        harness.adapter.selectAudio(7)
+        runCurrent()
+
+        assertEquals(-1, harness.port.requests.single().subtitleTrackIndex)
+        harness.port.completeStage(
+            candidate(
+                id = "downloaded-audio",
+                selectedIndex = null,
+                selectedAudioIndex = 7,
+                mode = PlaybackSubtitleModeV3.OFF,
+                hasSidecar = false,
+            ),
+        )
+        runCurrent()
+
+        assertEquals(downloaded, harness.adapter.snapshot.committedIdentity)
+        assertEquals(7, harness.adapter.snapshot.transition.committed.audioTrackIndex)
+        assertEquals(downloaded, harness.adapter.snapshot.localMountIdentity)
+        assertEquals(
+            312,
+            harness.committedPlaybacks.single().subtitleTracks.single().downloadId,
+        )
+        assertTrue(
+            harness.committedPlaybacks.single().subtitleTracks.single().url
+                .contains("/stream/s-downloaded-audio/"),
+        )
+        val persistedBeforeRestoreConfirmation = harness.persistence.persisted.size
+        harness.adapter.reportMountedSelection(
+            identity = downloaded,
+            selected = true,
+            snapshotKey = "downloaded-restored",
+            settled = true,
+        )
+        runCurrent()
+        assertNull(harness.adapter.snapshot.localMountIdentity)
+        assertEquals(downloaded, harness.adapter.snapshot.committedIdentity)
+        assertEquals(persistedBeforeRestoreConfirmation, harness.persistence.persisted.size)
+    }
+
+    @Test
+    fun `audio change remounts committed local Media3 subtitle with server subtitles off`() = runTest {
+        val row = PlayerSubtitleInfo(
+            index = 6,
+            language = "fr",
+            codec = "vtt",
+            label = "Legacy local French",
+            source = "downloaded",
+            forced = false,
+            url = "https://silo.test/api/v1/stream/s1/subtitles/6.vtt",
+            mediaTrackId = "decoder-text-6",
+        )
+        val local = SubtitleIdentity.LocalMedia3(
+            media(
+                trackId = "decoder-text-6",
+                label = "Legacy local French",
+                language = "fr",
+                codec = "webvtt",
+            ),
+        )
+        val harness = harness(backgroundScope, tracks = listOf(row))
+        harness.adapter.resetContent(
+            context(sessionId = "s1", tracks = listOf(row)),
+            committedIdentity = local,
+        )
+
+        harness.adapter.selectAudio(7)
+        runCurrent()
+
+        assertEquals(-1, harness.port.requests.single().subtitleTrackIndex)
+        harness.port.completeStage(
+            candidate(
+                id = "local-audio",
+                selectedIndex = null,
+                selectedAudioIndex = 7,
+                mode = PlaybackSubtitleModeV3.OFF,
+                hasSidecar = false,
+            ),
+        )
+        runCurrent()
+
+        assertEquals(local, harness.adapter.snapshot.committedIdentity)
+        assertEquals(local, harness.adapter.snapshot.localMountIdentity)
+        assertEquals("decoder-text-6", harness.committedPlaybacks.single().subtitleTracks.single().mediaTrackId)
+        assertTrue(
+            harness.committedPlaybacks.single().subtitleTracks.single().url
+                .contains("/stream/s-local-audio/"),
+        )
+        harness.adapter.reportMountedSelection(
+            identity = local,
+            selected = false,
+            snapshotKey = "ready-local-restore-miss",
+            settled = true,
+        )
+        runCurrent()
+        assertEquals(local, harness.adapter.snapshot.committedIdentity)
+        assertNull(harness.adapter.snapshot.localMountIdentity)
+        assertTrue(harness.adapter.snapshot.failureMessage?.contains("mount", ignoreCase = true) == true)
+    }
+
+    @Test
+    fun `post-adoption local restore timeout keeps committed preference`() = runTest {
+        val row = downloadedTrack(
+            index = 9,
+            downloadId = 312,
+            url = "https://silo.test/api/v1/stream/s1/subtitles/9.vtt",
+        )
+        val downloaded = SubtitleIdentity.Downloaded(
+            downloadId = 312,
+            media = media(
+                trackId = "silo-downloaded-subtitle:312",
+                language = "en",
+                codec = "webvtt",
+            ),
+        )
+        val harness = harness(backgroundScope, tracks = listOf(row))
+        harness.adapter.resetContent(
+            context(sessionId = "s1", tracks = listOf(row)),
+            committedIdentity = downloaded,
+        )
+        harness.adapter.selectAudio(7)
+        runCurrent()
+        harness.port.completeStage(
+            candidate(
+                id = "restore-timeout",
+                selectedIndex = null,
+                selectedAudioIndex = 7,
+                mode = PlaybackSubtitleModeV3.OFF,
+                hasSidecar = false,
+            ),
+        )
+        runCurrent()
+        assertEquals(downloaded, harness.adapter.snapshot.localMountIdentity)
+
+        advanceTimeBy(5_000)
+        runCurrent()
+
+        assertEquals(downloaded, harness.adapter.snapshot.committedIdentity)
+        assertNull(harness.adapter.snapshot.localMountIdentity)
+        assertTrue(harness.adapter.snapshot.failureMessage?.contains("mount", ignoreCase = true) == true)
     }
 
     @Test
@@ -208,20 +435,19 @@ class MobileSubtitleTransactionAdapterTest {
     }
 
     @Test
-    fun `ambiguous local mount rolls back without persistence after bounded distinct snapshots`() = runTest {
+    fun `settled local mount miss rolls back immediately without persistence`() = runTest {
         val harness = harness(backgroundScope)
         val local = SubtitleIdentity.LocalMedia3(
             media(label = "English", language = "en", codec = "webvtt"),
         )
 
         harness.adapter.select(local)
-        repeat(3) { attempt ->
-            harness.adapter.reportMountedSelection(
-                identity = local,
-                selected = false,
-                snapshotKey = "ambiguous-$attempt",
-            )
-        }
+        harness.adapter.reportMountedSelection(
+            identity = local,
+            selected = false,
+            snapshotKey = "ready-track-catalog",
+            settled = true,
+        )
         runCurrent()
 
         assertEquals(sidecar(3), harness.adapter.snapshot.committedIdentity)
@@ -250,6 +476,34 @@ class MobileSubtitleTransactionAdapterTest {
         assertEquals(local, harness.adapter.snapshot.pendingIdentity)
         assertEquals(local, harness.adapter.snapshot.localMountIdentity)
         assertTrue(harness.persistence.persisted.isEmpty())
+    }
+
+    @Test
+    fun `local mount rolls back after bounded timeout when tracks never settle`() = runTest {
+        val harness = harness(backgroundScope)
+        val local = SubtitleIdentity.LocalMedia3(
+            media(label = "English", language = "en", codec = "webvtt"),
+        )
+
+        harness.adapter.select(local)
+        repeat(5) {
+            harness.adapter.reportMountedSelection(
+                identity = local,
+                selected = false,
+                snapshotKey = if (it == 0) null else "same-transient-catalog",
+            )
+        }
+        advanceTimeBy(4_999)
+        runCurrent()
+        assertEquals(local, harness.adapter.snapshot.pendingIdentity)
+
+        advanceTimeBy(1)
+        runCurrent()
+
+        assertEquals(sidecar(3), harness.adapter.snapshot.committedIdentity)
+        assertNull(harness.adapter.snapshot.pendingIdentity)
+        assertTrue(harness.persistence.persisted.isEmpty())
+        assertTrue(harness.adapter.snapshot.failureMessage?.contains("mount", ignoreCase = true) == true)
     }
 
     @Test
@@ -353,6 +607,111 @@ class MobileSubtitleTransactionAdapterTest {
         assertEquals(SubtitleIdentity.Off, harness.adapter.snapshot.committedIdentity)
         assertTrue(harness.committedPlaybacks.isEmpty())
         assertTrue(harness.persistence.persisted.isEmpty())
+        assertEquals(listOf("s2"), harness.port.abandoned)
+    }
+
+    @Test
+    fun `new selection stays queued until suspended playback adoption completes`() = runTest {
+        val adoption = AdoptionControl(suspendAdoption = true)
+        val harness = harness(backgroundScope, adoption = adoption)
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.port.completeStage(candidate("b", 4, sessionId = "s2"))
+        runCurrent()
+        assertEquals(1, adoption.started)
+
+        harness.adapter.select(sidecar(5))
+        runCurrent()
+
+        assertEquals(
+            listOf(4),
+            harness.port.requests.map { it.subtitleTrackIndex },
+            "A newer intent must not stage from the manager-committed base before lifecycle adoption finishes.",
+        )
+        assertEquals(sidecar(5), harness.adapter.snapshot.pendingIdentity)
+        assertTrue(harness.persistence.persisted.isEmpty())
+        assertTrue(harness.port.abandoned.isEmpty())
+
+        adoption.complete()
+        runCurrent()
+
+        assertEquals(listOf(4, 5), harness.port.requests.map { it.subtitleTrackIndex })
+        assertEquals(sidecar(4), harness.adapter.snapshot.committedIdentity)
+        assertEquals(sidecar(5), harness.adapter.snapshot.pendingIdentity)
+    }
+
+    @Test
+    fun `audio change during adoption waits and stages from adopted subtitle`() = runTest {
+        val adoption = AdoptionControl(suspendAdoption = true)
+        val harness = harness(backgroundScope, adoption = adoption)
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.port.completeStage(candidate("subtitle", 4, selectedAudioIndex = 2, sessionId = "s2"))
+        runCurrent()
+
+        harness.adapter.selectAudio(7)
+        runCurrent()
+        assertEquals(listOf(4), harness.port.requests.map { it.subtitleTrackIndex })
+        assertEquals(sidecar(4), harness.adapter.snapshot.pendingIdentity)
+
+        adoption.complete()
+        runCurrent()
+
+        assertEquals(listOf(4, 4), harness.port.requests.map { it.subtitleTrackIndex })
+        assertEquals(listOf(2, 7), harness.port.requests.map { it.audioTrackIndex })
+        harness.port.completeStage(candidate("audio", 4, selectedAudioIndex = 7, sessionId = "s3"))
+        runCurrent()
+        adoption.complete()
+        runCurrent()
+
+        assertEquals(sidecar(4), harness.adapter.snapshot.committedIdentity)
+        assertEquals(7, harness.adapter.snapshot.transition.committed.audioTrackIndex)
+    }
+
+    @Test
+    fun `reset during suspended playback adoption invalidates stale callback and persistence`() = runTest {
+        val adoption = AdoptionControl(suspendAdoption = true)
+        val harness = harness(backgroundScope, adoption = adoption)
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.port.completeStage(candidate("b", 4, sessionId = "s2"))
+        runCurrent()
+        assertEquals(1, adoption.started)
+
+        harness.adapter.resetContent(
+            context(contentId = "content-2", mediaFileId = 22, versionId = "v2", sessionId = "s9"),
+            committedIdentity = SubtitleIdentity.Off,
+        )
+        adoption.complete()
+        runCurrent()
+
+        assertEquals(SubtitleIdentity.Off, harness.adapter.snapshot.committedIdentity)
+        assertTrue(harness.committedPlaybacks.isEmpty())
+        assertTrue(harness.persistence.persisted.isEmpty())
+    }
+
+    @Test
+    fun `playback adoption exception is contained and worker remains available`() = runTest {
+        val adoption = AdoptionControl(
+            failure = IllegalStateException("lifecycle adoption failed"),
+        )
+        val harness = harness(backgroundScope, adoption = adoption)
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.port.completeStage(candidate("b", 4, sessionId = "s2"))
+        runCurrent()
+
+        assertEquals(sidecar(3), harness.adapter.snapshot.committedIdentity)
+        assertNull(harness.adapter.snapshot.pendingIdentity)
+        assertTrue(
+            harness.adapter.snapshot.failureMessage
+                ?.contains("adoption", ignoreCase = true) == true,
+        )
+        assertTrue(harness.persistence.persisted.isEmpty())
+
+        harness.adapter.select(sidecar(5))
+        runCurrent()
+        assertEquals(listOf(4, 5), harness.port.requests.map { it.subtitleTrackIndex })
     }
 
     @Test
@@ -404,6 +763,7 @@ class MobileSubtitleTransactionAdapterTest {
         scope: CoroutineScope,
         sessionId: String? = "s1",
         tracks: List<PlayerSubtitleInfo> = emptyList(),
+        adoption: AdoptionControl = AdoptionControl(),
     ): Harness {
         val port = FakeStagedPort()
         val persistence = RecordingPersistence()
@@ -412,13 +772,35 @@ class MobileSubtitleTransactionAdapterTest {
             scope = scope,
             stagedPort = port,
             persistencePort = persistence,
-            onCommittedPlayback = { playback, _ -> committedPlaybacks += playback },
+            onCommittedPlayback = { adoptionRequest ->
+                adoption.started += 1
+                if (adoption.suspendAdoption) adoption.completions.receive()
+                adoption.failure?.let { throw it }
+                if (!adoptionRequest.isCurrent()) {
+                    MobileSubtitleAdoptionResult.Superseded
+                } else {
+                    committedPlaybacks += adoptionRequest.playback
+                    MobileSubtitleAdoptionResult.Adopted
+                }
+            },
         )
         adapter.resetContent(
             context(sessionId = sessionId, tracks = tracks),
             committedIdentity = sidecar(3),
         )
         return Harness(adapter, port, persistence, committedPlaybacks)
+    }
+
+    private class AdoptionControl(
+        val suspendAdoption: Boolean = false,
+        val failure: Throwable? = null,
+    ) {
+        var started: Int = 0
+        val completions = Channel<Unit>(Channel.UNLIMITED)
+
+        suspend fun complete() {
+            completions.send(Unit)
+        }
     }
 
     private fun context(
@@ -441,6 +823,7 @@ class MobileSubtitleTransactionAdapterTest {
     private fun candidate(
         id: String,
         selectedIndex: Int?,
+        selectedAudioIndex: Int? = null,
         mode: PlaybackSubtitleModeV3 = PlaybackSubtitleModeV3.RENDER,
         hasSidecar: Boolean = mode == PlaybackSubtitleModeV3.RENDER ||
             mode == PlaybackSubtitleModeV3.CONVERT,
@@ -450,6 +833,7 @@ class MobileSubtitleTransactionAdapterTest {
         id = id,
         sessionId = sessionId,
         selectedSubtitleIndex = selectedIndex,
+        selectedAudioIndex = selectedAudioIndex,
         subtitleMode = mode,
         hasSidecar = hasSidecar,
         subtitleTracks = tracks,
@@ -506,6 +890,7 @@ class MobileSubtitleTransactionAdapterTest {
         val committed = mutableListOf<String>()
         val commitStarted = mutableListOf<String>()
         val discarded = mutableListOf<String>()
+        val abandoned = mutableListOf<String>()
         var suspendCommits = false
         private val stageResults = Channel<ApiResult<MobileStagedSubtitleCandidate>>(Channel.UNLIMITED)
         private val commitResults = Channel<String>(Channel.UNLIMITED)
@@ -536,6 +921,10 @@ class MobileSubtitleTransactionAdapterTest {
             discarded += candidate.id
         }
 
+        override suspend fun abandonCommitted(playback: MobileSubtitleCommittedPlayback) {
+            abandoned += playback.sessionId
+        }
+
         suspend fun completeStage(candidate: MobileStagedSubtitleCandidate) {
             stageResults.send(ApiResult.Success(candidate))
         }
@@ -551,12 +940,29 @@ class MobileSubtitleTransactionAdapterTest {
 
     private class RecordingPersistence : MobileSubtitlePersistencePort {
         val persisted = mutableListOf<CommittedSubtitle>()
+        var suspendFirst = false
+        private var calls = 0
+        private val firstStarted = Channel<Unit>(Channel.CONFLATED)
+        private val firstRelease = Channel<Unit>(Channel.CONFLATED)
 
         override suspend fun persist(
             committed: CommittedSubtitle,
             context: MobileSubtitlePlaybackContext,
         ) {
+            val call = calls++
+            if (suspendFirst && call == 0) {
+                firstStarted.send(Unit)
+                firstRelease.receive()
+            }
             persisted += committed
+        }
+
+        suspend fun awaitFirstStarted() {
+            firstStarted.receive()
+        }
+
+        suspend fun releaseFirst() {
+            firstRelease.send(Unit)
         }
     }
 }

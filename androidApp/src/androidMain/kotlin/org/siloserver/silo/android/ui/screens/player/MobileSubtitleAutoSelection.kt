@@ -26,16 +26,17 @@ internal fun mobileSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdent
     val catalogSource = subtitle.catalogSource?.trim()?.lowercase()
     val downloaded = source == "downloaded" || catalogSource == "downloaded"
     val media = SubtitleMediaIdentity(
-        trackId = subtitle.downloadId?.let(::downloadedSubtitleArtifactTrackId),
+        trackId = subtitle.downloadId?.let(::downloadedSubtitleArtifactTrackId)
+            ?: subtitle.mediaTrackId,
         label = subtitle.catalogLabel ?: subtitle.label,
         language = subtitle.language,
         codecFamily = normalizedSubtitleCodecFamily(
             subtitle.codec ?: subtitleCodecFromUrl(subtitle.url),
         ),
         forced = subtitle.forced,
-        hearingImpaired = subtitle.label
-            ?.takeIf(::subtitleLabelIndicatesHearingImpaired)
-            ?.let { true },
+        hearingImpaired = subtitleLabelIndicatesHearingImpaired(
+            subtitle.catalogLabel ?: subtitle.label,
+        ),
     )
     if (downloaded) {
         val downloadId = subtitle.downloadId
@@ -51,7 +52,7 @@ internal fun mobileSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdent
     if (embedded) {
         return SubtitleIdentity.Embedded(
             serverIndex = subtitle.index,
-            media = media.copy(trackId = null),
+            media = media,
         )
     }
 
@@ -63,6 +64,115 @@ internal fun mobileSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdent
         SubtitleIdentity.ServerBurnIn(subtitle.index)
     } else {
         SubtitleIdentity.ServerSidecar(subtitle.index)
+    }
+}
+
+internal fun resolveMobileSubtitleOrdinal(
+    identity: SubtitleIdentity,
+    subtitles: List<PlayerSubtitleInfo>,
+): Int? {
+    if (identity == SubtitleIdentity.Off) return -1
+
+    val exactMatches = subtitles.indices.filter { index ->
+        val row = subtitles[index]
+        when (identity) {
+            SubtitleIdentity.Off -> false
+            is SubtitleIdentity.ServerSidecar -> row.index == identity.serverIndex &&
+                mobileSubtitleIdentity(row) is SubtitleIdentity.ServerSidecar
+            is SubtitleIdentity.ServerBurnIn -> row.index == identity.serverIndex
+            is SubtitleIdentity.Embedded -> {
+                val expectedId = identity.media.trackId
+                if (expectedId != null) row.mediaTrackId == expectedId
+                else row.index == identity.serverIndex &&
+                    mobileSubtitleIdentity(row) is SubtitleIdentity.Embedded
+            }
+            is SubtitleIdentity.Downloaded -> row.downloadId == identity.downloadId
+            is SubtitleIdentity.LocalMedia3 -> {
+                val expectedId = identity.media.trackId
+                expectedId != null && row.mediaTrackId == expectedId
+            }
+        }
+    }
+    if (exactMatches.size == 1) return exactMatches.single()
+    if (exactMatches.size > 1) return null
+
+    val targetMedia = identity.mediaIdentityForMobileFallback() ?: return null
+    val typedMatches = subtitles.indices.filter { index ->
+        val rowIdentity = mobileSubtitleIdentity(subtitles[index])
+        val rowMedia = rowIdentity.mediaIdentityForMobileFallback() ?: return@filter false
+        identity::class == rowIdentity::class && rowMedia.matchesMobileIdentity(targetMedia)
+    }
+    if (typedMatches.isEmpty()) return null
+
+    val targetLabel = targetMedia.label.normalizedMobileLabel()
+    val labelMatches = targetLabel?.let { expected ->
+        typedMatches.filter { index ->
+            val row = subtitles[index]
+            (row.catalogLabel ?: row.label).normalizedMobileLabel() == expected
+        }
+    }.orEmpty()
+    return when {
+        labelMatches.size == 1 -> labelMatches.single()
+        typedMatches.size == 1 -> typedMatches.single()
+        else -> null
+    }
+}
+
+private fun SubtitleIdentity.mediaIdentityForMobileFallback(): SubtitleMediaIdentity? = when (this) {
+    is SubtitleIdentity.Embedded -> media
+    is SubtitleIdentity.LocalMedia3 -> media
+    SubtitleIdentity.Off,
+    is SubtitleIdentity.ServerSidecar,
+    is SubtitleIdentity.ServerBurnIn,
+    is SubtitleIdentity.Downloaded,
+    -> null
+}
+
+private fun SubtitleMediaIdentity.matchesMobileIdentity(expected: SubtitleMediaIdentity): Boolean {
+    val expectedLanguage = normalizedMobileSubtitleLanguage(expected.language)
+    val expectedCodec = normalizedSubtitleCodecFamily(expected.codecFamily)
+    if (
+        expectedLanguage != null &&
+        normalizedMobileSubtitleLanguage(language) != expectedLanguage
+    ) {
+        return false
+    }
+    if (
+        expectedCodec != null &&
+        normalizedSubtitleCodecFamily(codecFamily) != expectedCodec
+    ) {
+        return false
+    }
+    if (expected.forced != null && forced != expected.forced) return false
+    if (
+        expected.hearingImpaired != null &&
+        hearingImpaired != expected.hearingImpaired
+    ) {
+        return false
+    }
+    return true
+}
+
+private fun String?.normalizedMobileLabel(): String? =
+    this?.trim()?.takeIf(String::isNotBlank)?.lowercase()
+
+private fun normalizedMobileSubtitleLanguage(language: String?): String? {
+    val primary = language
+        ?.trim()
+        ?.takeUnless { it.isBlank() || it.equals("und", ignoreCase = true) }
+        ?.lowercase()
+        ?.replace('_', '-')
+        ?.substringBefore('-')
+        ?: return null
+    return when (primary) {
+        "eng" -> "en"
+        "spa" -> "es"
+        "fre", "fra" -> "fr"
+        "ger", "deu" -> "de"
+        "dut", "nld" -> "nl"
+        "jpn" -> "ja"
+        "dan" -> "da"
+        else -> primary
     }
 }
 

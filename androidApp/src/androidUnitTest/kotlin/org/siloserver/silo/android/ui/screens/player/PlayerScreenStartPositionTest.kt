@@ -114,6 +114,10 @@ class PlayerScreenStartPositionTest {
             trackChangeBody.contains("videoBackend?.selectMountedSubtitle("),
             "track changes must reselect the already-mounted subtitle through the backend",
         )
+        assertTrue(
+            trackChangeBody.contains("identity = targetIdentity"),
+            "track changes must resolve the complete typed subtitle identity",
+        )
         assertFalse(
             trackChangeBody.contains("selectSubtitle("),
             "track changes must not use the remounting subtitle selection path",

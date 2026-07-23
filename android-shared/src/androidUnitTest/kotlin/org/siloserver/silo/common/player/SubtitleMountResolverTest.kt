@@ -59,6 +59,30 @@ class SubtitleMountResolverTest {
     }
 
     @Test
+    fun extractedEmbeddedTextArtifactResolvesItsReservedServerId() {
+        val row = PlayerSubtitleInfo(
+            index = 7,
+            language = "en",
+            codec = "webvtt",
+            label = "English",
+            source = "embedded",
+            forced = false,
+            url = "/stream/s2/subtitles/7.vtt",
+        )
+        val artifact = track(
+            index = 2,
+            trackId = "silo-subtitle:7",
+            label = "English",
+            language = "en",
+            codec = "text/vtt",
+            forced = false,
+            hearingImpaired = false,
+        )
+
+        assertEquals(2, resolveMountedSubtitle(row, listOf(artifact))?.track?.index)
+    }
+
+    @Test
     fun serverSidecarResolvesExactStableIdAcrossSameLabelTracks() {
         val tracks = listOf(
             track(index = 3, trackId = "silo-subtitle:3", label = "Server subtitle"),

@@ -1,10 +1,121 @@
 package org.siloserver.silo.playback
 
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.siloserver.silo.model.catalog.AudioTrack
 import org.siloserver.silo.model.catalog.SubtitleTrack
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
+import org.siloserver.silo.model.playback.SubtitleMediaIdentity
 
 const val SUBTITLE_OFF_FINGERPRINT = "off"
+private const val TYPED_SUBTITLE_PREFERENCE_PREFIX = "silo-subtitle-v2:"
+
+private val typedSubtitlePreferenceJson = Json {
+    encodeDefaults = false
+    explicitNulls = false
+    ignoreUnknownKeys = true
+}
+
+@Serializable
+private data class PersistedSubtitleIdentityV2(
+    val kind: String,
+    val serverIndex: Int? = null,
+    val downloadId: Int? = null,
+    val media: PersistedSubtitleMediaIdentityV2? = null,
+)
+
+@Serializable
+private data class PersistedSubtitleMediaIdentityV2(
+    val trackId: String? = null,
+    val label: String? = null,
+    val language: String? = null,
+    val codecFamily: String? = null,
+    val forced: Boolean? = null,
+    val hearingImpaired: Boolean? = null,
+)
+
+fun encodeSubtitleIdentityPreference(identity: SubtitleIdentity): String =
+    TYPED_SUBTITLE_PREFERENCE_PREFIX + typedSubtitlePreferenceJson.encodeToString(
+        identity.toPersisted(),
+    )
+
+fun decodeSubtitleIdentityPreference(value: String?): SubtitleIdentity? {
+    val encoded = value
+        ?.trim()
+        ?.takeIf { it.startsWith(TYPED_SUBTITLE_PREFERENCE_PREFIX) }
+        ?.removePrefix(TYPED_SUBTITLE_PREFERENCE_PREFIX)
+        ?: return null
+    return runCatching {
+        typedSubtitlePreferenceJson
+            .decodeFromString<PersistedSubtitleIdentityV2>(encoded)
+            .toIdentity()
+    }.getOrNull()
+}
+
+private fun SubtitleIdentity.toPersisted(): PersistedSubtitleIdentityV2 = when (this) {
+    SubtitleIdentity.Off -> PersistedSubtitleIdentityV2(kind = "off")
+    is SubtitleIdentity.ServerSidecar -> PersistedSubtitleIdentityV2(
+        kind = "server_sidecar",
+        serverIndex = serverIndex,
+    )
+    is SubtitleIdentity.ServerBurnIn -> PersistedSubtitleIdentityV2(
+        kind = "server_burn_in",
+        serverIndex = serverIndex,
+    )
+    is SubtitleIdentity.Embedded -> PersistedSubtitleIdentityV2(
+        kind = "embedded",
+        serverIndex = serverIndex,
+        media = media.toPersisted(),
+    )
+    is SubtitleIdentity.Downloaded -> PersistedSubtitleIdentityV2(
+        kind = "downloaded",
+        downloadId = downloadId,
+        media = media.toPersisted(),
+    )
+    is SubtitleIdentity.LocalMedia3 -> PersistedSubtitleIdentityV2(
+        kind = "local_media3",
+        media = media.toPersisted(),
+    )
+}
+
+private fun SubtitleMediaIdentity.toPersisted(): PersistedSubtitleMediaIdentityV2 =
+    PersistedSubtitleMediaIdentityV2(
+        trackId = trackId,
+        label = label,
+        language = language,
+        codecFamily = codecFamily,
+        forced = forced,
+        hearingImpaired = hearingImpaired,
+    )
+
+private fun PersistedSubtitleIdentityV2.toIdentity(): SubtitleIdentity? {
+    val mediaIdentity = media?.toIdentity()
+    return when (kind) {
+        "off" -> SubtitleIdentity.Off
+        "server_sidecar" -> serverIndex?.let(SubtitleIdentity::ServerSidecar)
+        "server_burn_in" -> serverIndex?.let(SubtitleIdentity::ServerBurnIn)
+        "embedded" -> serverIndex?.let { index ->
+            mediaIdentity?.let { SubtitleIdentity.Embedded(index, it) }
+        }
+        "downloaded" -> downloadId?.let { id ->
+            mediaIdentity?.let { SubtitleIdentity.Downloaded(id, it) }
+        }
+        "local_media3" -> mediaIdentity?.let(SubtitleIdentity::LocalMedia3)
+        else -> null
+    }
+}
+
+private fun PersistedSubtitleMediaIdentityV2.toIdentity(): SubtitleMediaIdentity =
+    SubtitleMediaIdentity(
+        trackId = trackId,
+        label = label,
+        language = language,
+        codecFamily = codecFamily,
+        forced = forced,
+        hearingImpaired = hearingImpaired,
+    )
 
 fun audioTrackFingerprint(track: AudioTrack): String =
     trackSelectionFingerprint(

@@ -11,7 +11,7 @@ import org.siloserver.silo.common.player.video.VideoPlayerTrackEntry
 import org.siloserver.silo.common.player.video.VideoTrackSelectionCoordinator
 import org.siloserver.silo.model.playback.AudioPassthroughCapabilities
 import org.siloserver.silo.model.playback.HdrCapabilities
-import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
 
 @UnstableApi
 class Media3VideoPlaybackBackend(
@@ -58,12 +58,10 @@ class Media3VideoPlaybackBackend(
         )
 
     override fun selectMountedSubtitle(
-        subtitles: List<PlayerSubtitleInfo>,
-        selectedIndex: Int,
+        identity: SubtitleIdentity,
     ): Boolean = trackSelectionCoordinator.selectMountedSubtitle(
         player = player,
-        subtitles = subtitles,
-        selectedIndex = selectedIndex,
+        identity = identity,
     )
 
     override fun selectAudioTrack(track: VideoPlayerTrackEntry) {

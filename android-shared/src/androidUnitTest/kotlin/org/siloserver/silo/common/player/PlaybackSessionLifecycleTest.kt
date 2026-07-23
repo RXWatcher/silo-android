@@ -27,6 +27,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -181,6 +182,20 @@ class PlaybackSessionLifecycleTest {
         assertEquals(0, sessionMgr.progressCallCount)
         assertEquals(0, sessionMgr.stopCallCount)
         assertTrue(personalRepo.syncCalls.isEmpty())
+        assertTrue(lifecycle.state.value is SessionState.Idle)
+    }
+
+    @Test
+    fun `conditional adoption checks owner inside lifecycle mutation`() = runTest {
+        val lifecycle = newLifecycle(FakeSessionManager(), scope = backgroundScope)
+
+        val adopted = lifecycle.adoptActiveSessionIfCurrent(
+            params = defaultStartParams(startPosition = 12.0),
+            session = makeSession("sess-stale"),
+            isCurrent = { false },
+        )
+
+        assertFalse(adopted)
         assertTrue(lifecycle.state.value is SessionState.Idle)
     }
 

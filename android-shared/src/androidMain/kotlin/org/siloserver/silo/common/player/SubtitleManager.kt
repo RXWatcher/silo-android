@@ -24,6 +24,7 @@ import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import org.siloserver.silo.libass.LibassBridge
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.settings.SubtitleAppearance
 import org.siloserver.silo.model.settings.SubtitleBackgroundStylePreset
 import org.siloserver.silo.model.settings.SubtitleFontSizePreset
@@ -148,6 +149,31 @@ class SubtitleManager(
             Log.w(
                 TAG,
                 "selectSubtitle failed: app index=$subtitleIndex metadata=${subtitle.label ?: subtitle.language} " +
+                    "tracks=${player.currentTracks.describeTextTracks()}",
+            )
+            return false
+        }
+
+        applySubtitleSelection(player, selection)
+        return true
+    }
+
+    /**
+     * Selects a track already present in the Media3 snapshot by its complete
+     * domain identity. This path never converts the identity back to an app
+     * list ordinal, so exact artifact and Format ids survive list reordering.
+     */
+    fun selectSubtitle(player: Player, identity: SubtitleIdentity): Boolean {
+        if (identity == SubtitleIdentity.Off || identity is SubtitleIdentity.ServerBurnIn) {
+            disableSubtitles(player)
+            return true
+        }
+
+        val selection = resolveSubtitleSelection(player.currentTracks, identity)
+        if (selection == null) {
+            Log.w(
+                TAG,
+                "selectSubtitle failed: identity=$identity " +
                     "tracks=${player.currentTracks.describeTextTracks()}",
             )
             return false
@@ -667,6 +693,15 @@ internal fun resolveSubtitleSelection(
     val candidates = textTrackCandidates(tracks)
     val mounted = candidates.map(TextTrackCandidate::track)
     val match = resolveMountedSubtitle(subtitle, mounted) ?: return null
+    return candidates.firstOrNull { it.track.index == match.track.index }?.selection
+}
+
+internal fun resolveSubtitleSelection(
+    tracks: Tracks,
+    identity: SubtitleIdentity,
+): SubtitleSelection? {
+    val candidates = textTrackCandidates(tracks)
+    val match = resolveMountedSubtitle(identity, candidates.map(TextTrackCandidate::track)) ?: return null
     return candidates.firstOrNull { it.track.index == match.track.index }?.selection
 }
 

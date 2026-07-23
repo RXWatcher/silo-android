@@ -3,11 +3,54 @@ package org.siloserver.silo.playback
 import org.siloserver.silo.model.catalog.AudioTrack
 import org.siloserver.silo.model.catalog.SubtitleTrack
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
+import org.siloserver.silo.model.playback.SubtitleMediaIdentity
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class TrackSelectionFingerprintTest {
+
+    @Test
+    fun downloadedSubtitleIdentityRoundTripsThroughVersionedPreference() {
+        val identity = SubtitleIdentity.Downloaded(
+            downloadId = 312,
+            media = SubtitleMediaIdentity(
+                trackId = "silo-downloaded-subtitle:312",
+                label = "English | SDH",
+                language = "eng",
+                codecFamily = "webvtt",
+                forced = false,
+                hearingImpaired = true,
+            ),
+        )
+
+        val encoded = encodeSubtitleIdentityPreference(identity)
+
+        assertEquals(identity, decodeSubtitleIdentityPreference(encoded))
+    }
+
+    @Test
+    fun localMedia3SubtitleIdentityRoundTripsExactTrackMetadata() {
+        val identity = SubtitleIdentity.LocalMedia3(
+            SubtitleMediaIdentity(
+                trackId = "decoder:text:9",
+                label = "Commentary",
+                language = "fr-CA",
+                codecFamily = "vtt",
+                forced = null,
+                hearingImpaired = false,
+            ),
+        )
+
+        val encoded = encodeSubtitleIdentityPreference(identity)
+
+        assertEquals(identity, decodeSubtitleIdentityPreference(encoded))
+        assertNull(decodeSubtitleIdentityPreference(subtitleTrackFingerprint(
+            PlayerSubtitleInfo(index = 1, label = "Legacy", url = "/1.vtt"),
+        )))
+        assertNull(decodeSubtitleIdentityPreference("silo-subtitle-v2:{broken"))
+    }
 
     @Test
     fun resolvesAudioFingerprintBackToTrackOrdinal() {

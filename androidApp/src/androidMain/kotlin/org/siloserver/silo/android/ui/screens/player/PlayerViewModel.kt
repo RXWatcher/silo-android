@@ -57,8 +57,8 @@ import org.siloserver.silo.model.playback.PlaybackSessionResponse
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import org.siloserver.silo.model.playback.CommittedSubtitle
 import org.siloserver.silo.model.playback.SubtitleIdentity
-import org.siloserver.silo.model.playback.SubtitleMediaIdentity
 import org.siloserver.silo.model.playback.mergeDownloadedSubtitles
+import org.siloserver.silo.model.playback.rebaseDownloadedSubtitleUrl
 import org.siloserver.silo.model.playback.resolvePlaybackStartPosition
 import org.siloserver.silo.model.subtitles.SubtitleAiJob
 import org.siloserver.silo.model.subtitles.SubtitleAiQuota
@@ -71,13 +71,13 @@ import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.common.player.AutoPlayGuard
 import org.siloserver.silo.network.ServerRegistry
 import org.siloserver.silo.network.errorMessage
-import org.siloserver.silo.playback.SUBTITLE_OFF_FINGERPRINT
 import org.siloserver.silo.playback.audioTrackFingerprint
+import org.siloserver.silo.playback.decodeSubtitleIdentityPreference
+import org.siloserver.silo.playback.encodeSubtitleIdentityPreference
 import org.siloserver.silo.playback.nextEpisodeAfter
 import org.siloserver.silo.playback.resolveAudioTrackOrdinal
 import org.siloserver.silo.playback.resolveMountedSubtitleOrdinal
 import org.siloserver.silo.playback.selectPlaybackVersion
-import org.siloserver.silo.playback.subtitleTrackFingerprint
 import org.siloserver.silo.repository.CatalogRepository
 import org.siloserver.silo.repository.PersonalDataRepository
 import org.siloserver.silo.repository.ProfileRepository
@@ -142,39 +142,6 @@ internal fun selectedAudioTrackOrdinal(
     .takeIf { it >= 0 }
     ?: selectedServerIndex.takeIf { it in audioTracks.indices }
     ?: 0
-
-internal fun committedSubtitleOrdinal(
-    identity: SubtitleIdentity,
-    subtitleTracks: List<PlayerSubtitleInfo>,
-): Int = when (identity) {
-    SubtitleIdentity.Off -> -1
-    is SubtitleIdentity.ServerSidecar ->
-        subtitleTracks.indexOfFirst { it.index == identity.serverIndex }
-    is SubtitleIdentity.ServerBurnIn ->
-        subtitleTracks.indexOfFirst { it.index == identity.serverIndex }
-    is SubtitleIdentity.Embedded ->
-        subtitleTracks.indexOfFirst { it.index == identity.serverIndex }
-    is SubtitleIdentity.Downloaded ->
-        subtitleTracks.indexOfFirst { it.downloadId == identity.downloadId }
-    is SubtitleIdentity.LocalMedia3 -> subtitleTracks.indexOfFirst { track ->
-        track.matchesMobileMediaIdentity(identity.media)
-    }
-}.takeIf { it >= 0 } ?: -1
-
-private fun PlayerSubtitleInfo.matchesMobileMediaIdentity(identity: SubtitleMediaIdentity): Boolean {
-    val expectedLabel = identity.label?.trim()?.lowercase()
-    val expectedLanguage = identity.language?.trim()?.lowercase()
-    val expectedCodec = identity.codecFamily
-        ?.filter(Char::isLetterOrDigit)
-        ?.lowercase()
-    return (expectedLabel == null || (catalogLabel ?: label)?.trim()?.lowercase() == expectedLabel) &&
-        (expectedLanguage == null || language?.trim()?.lowercase() == expectedLanguage) &&
-        (
-            expectedCodec == null ||
-                codec?.filter(Char::isLetterOrDigit)?.lowercase() == expectedCodec
-            ) &&
-        (identity.forced == null || forced == identity.forced)
-}
 
 private fun SubtitleIdentity.serverTrackIndexForMobile(): Int = when (this) {
     SubtitleIdentity.Off -> -1
@@ -334,6 +301,7 @@ class PlayerViewModel(
         val audioTracks: List<AudioTrack> = emptyList(),
         val selectedAudioIndex: Int = 0,
         val selectedSubtitleIndex: Int = -1,
+        val committedSubtitleIdentity: SubtitleIdentity = SubtitleIdentity.Off,
         val pendingSubtitleIdentity: SubtitleIdentity? = null,
         val localSubtitleMountIdentity: SubtitleIdentity? = null,
         val subtitleApplying: Boolean = false,
@@ -397,26 +365,28 @@ class PlayerViewModel(
                 committed: CommittedSubtitle,
                 context: MobileSubtitlePlaybackContext,
             ) {
-                val fingerprint = if (committed.identity == SubtitleIdentity.Off) {
-                    SUBTITLE_OFF_FINGERPRINT
-                } else {
-                    val ordinal = committedSubtitleOrdinal(
-                        committed.identity,
-                        context.subtitleTracks,
-                    )
-                    context.subtitleTracks.getOrNull(ordinal)
-                        ?.let(::subtitleTrackFingerprint)
-                        ?: return
-                }
+                committed.audioTrackIndex
+                    ?.let { serverIndex ->
+                        context.audioTracks.firstOrNull { it.index == serverIndex }
+                    }
+                    ?.let(::audioTrackFingerprint)
+                    ?.let { fingerprint ->
+                        userItemStatePort.recordAudioTrackSelection(
+                            context.contentId,
+                            context.mediaFileId,
+                            fingerprint,
+                        )
+                    }
                 userItemStatePort.recordSubtitleTrackSelection(
                     context.contentId,
                     context.mediaFileId,
-                    fingerprint,
+                    encodeSubtitleIdentityPreference(committed.identity),
                 )
             }
         },
         onSnapshotChanged = ::applyMobileSubtitleSnapshot,
         onCommittedPlayback = ::adoptMobileSubtitlePlayback,
+        onCommittedPlaybackFailure = ::recoverFromSubtitleAdoptionFailure,
     )
 
     /**
@@ -968,6 +938,11 @@ class PlayerViewModel(
         } else {
             null
         }
+        val persistedSubtitleIdentity = if (!explicitSubtitlePickResolved) {
+            decodeSubtitleIdentityPreference(localTrackSelection?.subtitleFingerprint)
+        } else {
+            null
+        }
         val persistedSubtitleIndex = if (!explicitSubtitlePickResolved) {
             // Selections are recorded against the MOUNTED subtitle list
             // (onSubtitleSelectionApplied fingerprints uiState.subtitleTracks,
@@ -975,14 +950,20 @@ class PlayerViewModel(
             // previous catalog-list resolution used a different index space
             // (demux stream index), so saved choices never matched and player
             // subtitle overrides silently failed to stick.
-            resolveMountedSubtitleOrdinal(
-                playbackState.subtitleUrls,
-                localTrackSelection?.subtitleFingerprint,
-            )
+            persistedSubtitleIdentity?.let {
+                resolveMobileSubtitleOrdinal(it, playbackState.subtitleUrls)
+            } ?: resolveMountedSubtitleOrdinal(
+                    playbackState.subtitleUrls,
+                    localTrackSelection?.subtitleFingerprint,
+                )
         } else {
             null
         }
-        val autoSubtitleSelection = if (!explicitSubtitlePickResolved && persistedSubtitleIndex == null) {
+        val autoSubtitleSelection = if (
+            !explicitSubtitlePickResolved &&
+            persistedSubtitleIdentity == null &&
+            persistedSubtitleIndex == null
+        ) {
             resolveMobileAutoSubtitleSelection(
                 audioTracks = version?.audioTracks ?: emptyList(),
                 selectedAudioIndex = playbackState.audioTrackIndex,
@@ -1005,15 +986,23 @@ class PlayerViewModel(
             }
             ?: -1
         val resolvedSubtitleIndex = requestedCommittedSubtitleIndex ?: serverCommittedSubtitleIndex
-        val deferredSubtitleIndex = if (requestedCommittedSubtitleIndex == null) {
-            persistedSubtitleIndex
+        val deferredSubtitleIdentity = if (requestedCommittedSubtitleIndex == null) {
+            persistedSubtitleIdentity ?: persistedSubtitleIndex
                 ?.takeIf { it == -1 || it in playbackState.subtitleUrls.indices }
+                ?.let { ordinal ->
+                    playbackState.subtitleUrls.getOrNull(ordinal)
+                        ?.let(::mobileSubtitleIdentity)
+                        ?: SubtitleIdentity.Off
+                }
                 ?: when (autoSubtitleSelection) {
-                is MobileSubtitleAutoSelection.Select ->
-                    autoSubtitleSelection.ordinal.takeIf { it in playbackState.subtitleUrls.indices } ?: -1
-                MobileSubtitleAutoSelection.Disable -> -1
-                MobileSubtitleAutoSelection.NoChange -> -1
-            }
+                    is MobileSubtitleAutoSelection.Select ->
+                        playbackState.subtitleUrls
+                            .getOrNull(autoSubtitleSelection.ordinal)
+                            ?.let(::mobileSubtitleIdentity)
+                            ?: SubtitleIdentity.Off
+                    MobileSubtitleAutoSelection.Disable -> SubtitleIdentity.Off
+                    MobileSubtitleAutoSelection.NoChange -> SubtitleIdentity.Off
+                }
         } else {
             null
         }
@@ -1094,22 +1083,17 @@ class PlayerViewModel(
             context = mobileSubtitleContext(mountedState),
             committedIdentity = committedIdentity,
         )
-        if (explicitSubtitlePickResolved) {
+        if (
+            explicitSubtitlePickResolved ||
+            initialAudioTrackIndex != null &&
+            initialAudioTrackIndex in mountedState.audioTracks.indices
+        ) {
             mobileSubtitleTransactions.persistCommittedSelection()
         }
-        deferredSubtitleIndex
-            ?.takeIf { it != mountedState.selectedSubtitleIndex }
-            ?.let { ordinal ->
-                val identity = mountedState.subtitleTracks
-                    .getOrNull(ordinal)
-                    ?.let(::mobileSubtitleIdentity)
-                    ?: SubtitleIdentity.Off
-                mobileSubtitleTransactions.select(identity)
-            }
+        deferredSubtitleIdentity
+            ?.takeIf { it != committedIdentity }
+            ?.let(mobileSubtitleTransactions::select)
 
-        if (initialAudioTrackIndex != null && initialAudioTrackIndex in _uiState.value.audioTracks.indices) {
-            persistAudioTrackSelection(initialAudioTrackIndex)
-        }
         if (
             persistedAudioIndex != null &&
             persistedAudioIndex != selectedAudioOrdinal &&
@@ -1379,6 +1363,13 @@ class PlayerViewModel(
             }
             return
         }
+        if (mobileSubtitleTransactions.hasActiveTransaction) {
+            if (classification in PlaybackSessionManager.USER_INVALIDATION_CLASSIFICATIONS) {
+                queuedInvalidationReplan = classification to notice
+                return
+            }
+            mobileSubtitleTransactions.invalidate()
+        }
         val fileId = state.versions.getOrNull(state.selectedVersionIndex)?.fileId ?: return
         val recoveryGeneration = playbackRecoveryGeneration
         recoveryJob = viewModelScope.launch {
@@ -1426,6 +1417,25 @@ class PlayerViewModel(
                         if (recoveryGeneration != playbackRecoveryGeneration) return@launch
                         val mountGeneration = expectNextMediaMount()
                         _uiState.update { current ->
+                            val downloaded = current.subtitleTracks
+                                .filter {
+                                    it.downloadId != null ||
+                                        it.source.equals("downloaded", ignoreCase = true)
+                                }
+                                .map { track ->
+                                    track.copy(
+                                        url = rebaseDownloadedSubtitleUrl(
+                                            track.url,
+                                            decision.session.sessionId,
+                                        ),
+                                    )
+                                }
+                            val recoveredSubtitles = decision.session.subtitleUrls
+                                .orEmpty()
+                                .filterNot {
+                                    it.downloadId != null ||
+                                        it.source.equals("downloaded", ignoreCase = true)
+                                } + downloaded
                             current.copy(
                                 error = null,
                                 sessionId = decision.session.sessionId,
@@ -1437,11 +1447,17 @@ class PlayerViewModel(
                                 container = decision.plan.stream.container ?: current.container,
                                 startPosition = decision.plan.timeline.playerStartSeconds,
                                 mediaMountGeneration = mountGeneration,
+                                subtitleTracks = recoveredSubtitles,
                                 position = decision.plan.timeline.sourceStartSeconds
                                     .takeIf { it.isFinite() && it >= 0.0 }
-                                    ?: current.position,
+                                ?: current.position,
                             )
                         }
+                        val recoveredState = _uiState.value
+                        mobileSubtitleTransactions.updatePlaybackContext(
+                            mobileSubtitleContext(recoveredState),
+                        )
+                        mobileSubtitleTransactions.restoreCommittedLocalMount()
                     }
                     is VideoSessionStartV3.Terminal -> _uiState.update {
                         it.copy(
@@ -2438,15 +2454,20 @@ class PlayerViewModel(
             ),
             qualityPreference = null,
             subtitleTracks = state.subtitleTracks,
+            audioTracks = state.audioTracks,
         )
 
     private fun applyMobileSubtitleSnapshot(snapshot: MobileSubtitleTransactionSnapshot) {
         _uiState.update { state ->
             state.copy(
-                selectedSubtitleIndex = committedSubtitleOrdinal(
+                selectedAudioIndex = snapshot.transition.committed.audioTrackIndex
+                    ?.let { selectedAudioTrackOrdinal(it, state.audioTracks) }
+                    ?: state.selectedAudioIndex,
+                selectedSubtitleIndex = resolveMobileSubtitleOrdinal(
                     snapshot.committedIdentity,
                     state.subtitleTracks,
-                ),
+                ) ?: state.selectedSubtitleIndex,
+                committedSubtitleIdentity = snapshot.committedIdentity,
                 pendingSubtitleIdentity = snapshot.pendingIdentity,
                 localSubtitleMountIdentity = snapshot.localMountIdentity,
                 subtitleApplying = snapshot.subtitleApplying,
@@ -2455,15 +2476,19 @@ class PlayerViewModel(
         snapshot.failureMessage?.let {
             showVersionSwitchMessage("Couldn't apply subtitles — playback continues unchanged.")
         }
+        if (!mobileSubtitleTransactions.hasActiveTransaction) {
+            redriveQueuedInvalidationReplan()
+        }
     }
 
     private suspend fun adoptMobileSubtitlePlayback(
-        playback: MobileSubtitleCommittedPlayback,
-        committed: CommittedSubtitle,
-    ) {
-        val ready = playback.ready ?: return
+        adoption: MobileSubtitlePlaybackAdoption,
+    ): MobileSubtitleAdoptionResult {
+        val playback = adoption.playback
+        val committed = adoption.committed
+        val ready = playback.ready ?: return MobileSubtitleAdoptionResult.Adopted
         val before = _uiState.value
-        val fileId = before.mediaFileId ?: return
+        val fileId = before.mediaFileId ?: return MobileSubtitleAdoptionResult.Superseded
         val dolbyVision = playerSettingsStore.dolbyVisionPolicySnapshot()
         val capabilities = capabilityDetector.detect(dolbyVision = dolbyVision)
         val playbackContext = capabilityDetector.detectPlaybackContext(
@@ -2474,7 +2499,8 @@ class PlayerViewModel(
         val sourcePosition = ready.plan.timeline.sourceStartSeconds
             .takeIf { it.isFinite() && it >= 0.0 }
             ?: before.position
-        sessionLifecycle.adoptActiveSession(
+        if (!adoption.isCurrent()) return MobileSubtitleAdoptionResult.Superseded
+        val lifecycleAdopted = sessionLifecycle.adoptActiveSessionIfCurrent(
             params = StartParams(
                 contentId = before.contentId,
                 fileId = fileId,
@@ -2487,9 +2513,14 @@ class PlayerViewModel(
             ),
             session = ready.session.copy(subtitleUrls = playback.subtitleTracks),
             renewMissingSessionWithLegacyStart = false,
+            isCurrent = adoption::isCurrent,
         )
+        if (!lifecycleAdopted || !adoption.isCurrent()) {
+            return MobileSubtitleAdoptionResult.Superseded
+        }
 
         val mountGeneration = expectNextMediaMount()
+        val pendingIdentity = adoption.pendingIdentity()
         _uiState.update { current ->
             current.copy(
                 error = null,
@@ -2504,16 +2535,36 @@ class PlayerViewModel(
                 mediaMountGeneration = mountGeneration,
                 position = sourcePosition,
                 subtitleTracks = playback.subtitleTracks,
-                selectedSubtitleIndex = committedSubtitleOrdinal(
+                selectedAudioIndex = committed.audioTrackIndex
+                    ?.let { selectedAudioTrackOrdinal(it, current.audioTracks) }
+                    ?: current.selectedAudioIndex,
+                selectedSubtitleIndex = resolveMobileSubtitleOrdinal(
                     committed.identity,
                     playback.subtitleTracks,
-                ),
-                pendingSubtitleIdentity = null,
+                ) ?: current.selectedSubtitleIndex,
+                committedSubtitleIdentity = committed.identity,
+                pendingSubtitleIdentity = pendingIdentity,
                 localSubtitleMountIdentity = null,
-                subtitleApplying = false,
+                subtitleApplying = pendingIdentity != null,
                 subtitleRefreshNonce = 0,
             )
         }
+        return MobileSubtitleAdoptionResult.Adopted
+    }
+
+    private suspend fun recoverFromSubtitleAdoptionFailure(detail: String) {
+        val state = _uiState.value
+        showVersionSwitchMessage("Couldn't finish the subtitle change — restarting playback.")
+        sessionLifecycle.stop()
+        loadContent(
+            contentId = state.contentId,
+            preferredFileId = state.mediaFileId,
+            initialAudioTrackIndex = state.selectedAudioIndex,
+            initialSubtitleTrackIndex = state.selectedSubtitleIndex,
+            resumePositionOverride = state.position,
+            suppressResumeRewind = true,
+        )
+        Log.w(TAG, "Subtitle committed-playback adoption failed: $detail")
     }
 
     /** Select a subtitle track (-1 to disable). */
@@ -2532,35 +2583,22 @@ class PlayerViewModel(
         identity: SubtitleIdentity,
         selected: Boolean,
         snapshotKey: String?,
+        settled: Boolean,
     ) {
         mobileSubtitleTransactions.reportMountedSelection(
             identity = identity,
             selected = selected,
             snapshotKey = snapshotKey,
+            settled = settled,
         )
     }
 
     /** Select an audio track (may require server-side switch). */
     fun onSelectAudio(index: Int) {
-        _uiState.update { it.copy(selectedAudioIndex = index) }
-        persistAudioTrackSelection(index)
         val state = _uiState.value
-        if (state.sessionId != null) {
-            startProtocolV3Replan(
-                classification = "audio_track_changed",
-                notice = "Applying audio selection.",
-                state = state,
-            )
-        }
-    }
-
-    private fun persistAudioTrackSelection(index: Int) {
-        val state = _uiState.value
-        val fileId = currentFileId() ?: return
-        val fingerprint = state.audioTracks.getOrNull(index)?.let(::audioTrackFingerprint) ?: return
-        viewModelScope.launch {
-            userItemStatePort.recordAudioTrackSelection(state.contentId, fileId, fingerprint)
-        }
+        val serverIndex = selectedServerAudioTrackIndex(index, state.audioTracks) ?: return
+        mobileSubtitleTransactions.updatePlaybackContext(mobileSubtitleContext(state))
+        mobileSubtitleTransactions.selectAudio(serverIndex)
     }
 
     // ---- Subtitle suite: search / download / AI translate -----------------------
@@ -3277,6 +3315,7 @@ class PlayerViewModel(
     /** Called when the user exits the player. */
     fun onExit() {
         resetPlaybackRecoveryState()
+        mobileSubtitleTransactions.invalidate()
         viewModelScope.launch {
             // Track B: durably record the final position for both paths, then ask
             // the outbox to drain promptly (covers the online offline-download case
@@ -3474,6 +3513,7 @@ class PlayerViewModel(
         org.siloserver.silo.common.player.debug.PlaybackDebugState.screenError = null
         org.siloserver.silo.common.player.ActivePlaybackFile.clear(_uiState.value.mediaFileId)
         resetPlaybackRecoveryState()
+        mobileSubtitleTransactions.invalidate()
         super.onCleared()
         // Guarantee the final resume position is persisted on teardown. onExit's
         // write runs in viewModelScope, which is cancelling here — so AWAIT one

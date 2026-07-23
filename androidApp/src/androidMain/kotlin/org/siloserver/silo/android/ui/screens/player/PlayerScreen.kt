@@ -742,23 +742,16 @@ fun PlayerScreen(
                     // live VM state — `uiState` here can be a stale closure capture.
                     val liveState = viewModel.uiState.value
                     val pendingIdentity = liveState.localSubtitleMountIdentity
-                    val pendingIndex = pendingIdentity?.let {
-                        committedSubtitleOrdinal(it, liveState.subtitleTracks)
-                    }
-                    val selectedIndex = pendingIndex ?: liveState.selectedSubtitleIndex
-                    val selected = if (pendingIdentity != null && pendingIndex == -1) {
-                        false
-                    } else {
-                        videoBackend?.selectMountedSubtitle(
-                            subtitles = liveState.subtitleTracks,
-                            selectedIndex = selectedIndex,
-                        ) == true
-                    }
+                    val targetIdentity = pendingIdentity ?: liveState.committedSubtitleIdentity
+                    val selected = videoBackend?.selectMountedSubtitle(
+                        identity = targetIdentity,
+                    ) == true
                     if (pendingIdentity != null) {
                         viewModel.onPendingSubtitleMountResult(
                             identity = pendingIdentity,
                             selected = selected,
                             snapshotKey = media3TextTrackSnapshotKey(tracks),
+                            settled = videoBackend?.player?.playbackState == Player.STATE_READY,
                         )
                     }
                 }
@@ -908,31 +901,27 @@ fun PlayerScreen(
         videoBackend,
         uiState.subtitleTracks,
         uiState.selectedSubtitleIndex,
+        uiState.committedSubtitleIdentity,
         uiState.localSubtitleMountIdentity,
     ) {
         val backend = videoBackend ?: return@LaunchedEffect
         val pendingIdentity = uiState.localSubtitleMountIdentity
-        val pendingIndex = pendingIdentity?.let {
-            committedSubtitleOrdinal(it, uiState.subtitleTracks)
-        }
-        val selectedIndex = pendingIndex ?: uiState.selectedSubtitleIndex
-        val selectedIdentity = pendingIdentity ?: uiState.subtitleTracks
-            .getOrNull(selectedIndex)
-            ?.let(::mobileSubtitleIdentity)
-        if (selectedIdentity?.requiresMountedMobileSelection() == true) {
-            val selected = if (pendingIdentity != null && pendingIndex == -1) {
-                false
-            } else {
-                backend.selectMountedSubtitle(
-                    subtitles = uiState.subtitleTracks,
-                    selectedIndex = selectedIndex,
-                )
-            }
+        val targetIdentity = pendingIdentity ?: uiState.committedSubtitleIdentity
+        val selectedIndex = resolveMobileSubtitleOrdinal(targetIdentity, uiState.subtitleTracks)
+            ?: uiState.selectedSubtitleIndex
+        if (targetIdentity is SubtitleIdentity.ServerBurnIn) {
+            // Burn-in pixels are already part of the video stream. Keep the
+            // Media3 text renderer explicitly disabled and never manufacture
+            // an empty sidecar entry or refresh the mounted MediaItem.
+            backend.selectMountedSubtitle(identity = SubtitleIdentity.Off)
+        } else if (targetIdentity.requiresMountedMobileSelection()) {
+            val selected = backend.selectMountedSubtitle(identity = targetIdentity)
             if (pendingIdentity != null) {
                 viewModel.onPendingSubtitleMountResult(
                     identity = pendingIdentity,
                     selected = selected,
                     snapshotKey = media3TextTrackSnapshotKey(backend.player.currentTracks),
+                    settled = backend.player.playbackState == Player.STATE_READY,
                 )
             }
         } else {

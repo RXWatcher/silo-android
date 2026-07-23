@@ -117,8 +117,32 @@ class PlaybackSessionLifecycle(
         stopSessionOnStop: Boolean = true,
         renewMissingSessionWithLegacyStart: Boolean = true,
     ) {
+        adoptActiveSessionIfCurrent(
+            params = params,
+            session = session,
+            manageProgress = manageProgress,
+            stopSessionOnStop = stopSessionOnStop,
+            renewMissingSessionWithLegacyStart = renewMissingSessionWithLegacyStart,
+            isCurrent = { true },
+        )
+    }
+
+    /**
+     * Atomically adopts an already-started session only while its caller still
+     * owns the surrounding transaction. The predicate is evaluated inside the
+     * lifecycle mutex immediately before any lifecycle state is changed.
+     */
+    suspend fun adoptActiveSessionIfCurrent(
+        params: StartParams,
+        session: PlaybackSessionResponse,
+        manageProgress: Boolean = true,
+        stopSessionOnStop: Boolean = true,
+        renewMissingSessionWithLegacyStart: Boolean = true,
+        isCurrent: () -> Boolean,
+    ): Boolean {
         val diagnosticsRecording = playbackSessions.recording()
-        mutex.withLock {
+        return mutex.withLock {
+            if (!isCurrent()) return@withLock false
             cancelRecoveryJobs()
             reporterJob?.cancel()
             reporterJob = null
@@ -137,6 +161,7 @@ class PlaybackSessionLifecycle(
             if (manageProgress) {
                 startProgressReporter()
             }
+            true
         }
     }
 

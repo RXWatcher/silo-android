@@ -88,6 +88,7 @@ fun resolveMountedSubtitle(
 ): MountedSubtitleMatch? {
     val explicitSource = subtitle.effectiveSubtitleSource()
     val isEmbedded = when {
+        subtitle.url.isNotBlank() -> false
         explicitSource.equals("embedded", ignoreCase = true) -> true
         explicitSource != null -> false
         else -> subtitle.url.isBlank()

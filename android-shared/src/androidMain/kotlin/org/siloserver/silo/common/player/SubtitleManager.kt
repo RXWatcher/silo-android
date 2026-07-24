@@ -261,15 +261,6 @@ class SubtitleManager(
      * this after PlayerView/player/resize-mode changes; the installed sync also
      * reacts to later layout and video-size callbacks.
      */
-    /**
-     * Applies measured hard-coded letterbox bars so the subtitle layer tracks
-     * the picture rather than the encoded frame. Safe to call repeatedly; only
-     * a change in the measurement triggers a re-layout.
-     */
-    fun applyLetterboxInsets(playerView: PlayerView, insets: LetterboxInsets) {
-        videoRectSyncs[playerView]?.letterbox = insets
-    }
-
     fun syncSubtitleVideoBounds(playerView: PlayerView) {
         playerView.subtitleView?.let { libassBridge?.attachTo(it) }
         val existing = videoRectSyncs[playerView]

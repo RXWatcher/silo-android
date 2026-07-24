@@ -151,8 +151,20 @@ class TvSiloCastReceiver(
         // revoke the credentials out from under live playback. The player's
         // unregister Closeable schedules the end instead — scheduleIdentityEnd
         // runs on identityCleanupScope, so it survives the cancel below.
+        // Gate on OWNERSHIP, not on presence. A player that was already running
+        // when the handoff arrived captured a null identityGeneration at
+        // registerPlayer time, so its unregister Closeable will never end the
+        // identity — and every other reclaim path uses this same
+        // "activePlayer == null" predicate, leaving such an identity with no
+        // owner at all. A temporary scope overrides accessToken, profileId and
+        // serverUrl app-wide, so the TV would keep browsing and writing watch
+        // progress as the phone user until a server switch.
+        //
+        // Comparing generations still declines to reclaim in the case this
+        // guard exists for — phone-launched playback continuing after the TV
+        // backgrounds, where the two generations match.
         val identityGeneration = identityManager.activeIdentity
-            ?.takeIf { activePlayer == null }
+            ?.takeIf { activePlayer?.identityGeneration != it.generationId }
             ?.generationId
         pendingPlayerIdentityGeneration = null
         // identityEndJob is deliberately NOT cleared here: it outlives this

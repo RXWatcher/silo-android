@@ -140,6 +140,7 @@ class PlaybackSessionLifecycle(
             this.renewMissingSessionWithLegacyStart = renewMissingSessionWithLegacyStart
             this.diagnosticsRecording = diagnosticsRecording
             diagnosticsRecording.record(session.sessionId)
+            lastAdoptedSessionId = session.sessionId
             _state.value = SessionState.Active(session)
             if (manageProgress) {
                 startProgressReporter()
@@ -197,6 +198,7 @@ class PlaybackSessionLifecycle(
             is ApiResult.Success -> {
                 DiagnosticsPlaybackLogger.sessionEvent("session active")
                 diagnosticsRecording.record(result.data.sessionId)
+                lastAdoptedSessionId = result.data.sessionId
                 val active = SessionState.Active(result.data)
                 _state.value = active
                 lastReportedPosition = params.startPosition ?: result.data.position
@@ -251,6 +253,18 @@ class PlaybackSessionLifecycle(
      * Active over a newer session, or a terminal Failed over content that is
      * playing fine.
      */
+    /**
+     * The session most recently adopted, independent of [SessionState].
+     *
+     * The state alone is not a usable ownership token: it is Reconnecting,
+     * Loading or Failed for the whole of an outage, so a guard reading only
+     * SessionState.Active falls through in exactly the window a stale deferred
+     * stop is most likely to arrive — cancelling the reconnect of an episode
+     * that had just started.
+     */
+    @Volatile
+    private var lastAdoptedSessionId: String? = null
+
     private fun ownsRecoveredSession(sessionId: String): Boolean =
         when (val current = _state.value) {
             is SessionState.Active -> current.session.sessionId == sessionId
@@ -267,8 +281,14 @@ class PlaybackSessionLifecycle(
      */
     suspend fun stop(expectedSessionId: String? = null) {
         if (expectedSessionId != null) {
-            val activeSessionId = (_state.value as? SessionState.Active)?.session?.sessionId
-            if (activeSessionId != null && activeSessionId != expectedSessionId) {
+            // Prefer the adoption token over the published state: during an
+            // outage the state is not Active, and a guard that reads only the
+            // state would fall through and let this stale stop cancel the
+            // reconnect of a session it does not own.
+            val ownerSessionId =
+                (_state.value as? SessionState.Active)?.session?.sessionId
+                    ?: lastAdoptedSessionId
+            if (ownerSessionId != null && ownerSessionId != expectedSessionId) {
                 DiagnosticsPlaybackLogger.sessionEvent("session stop skipped, ownership moved")
                 return
             }

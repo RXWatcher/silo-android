@@ -2727,8 +2727,12 @@ class PlayerViewModel(
         upNextCountdownJob?.cancel()
         upNextCountdownJob = null
         _uiState.update { it.copy(showUpNext = false, upNextCountdownSeconds = null) }
+        // Name the session being ended: the lifecycle is a process-scoped
+        // singleton and this stop is deferred, so it must not land on whatever
+        // has been adopted by the time it runs.
+        val previousSessionId = _uiState.value.sessionId
         viewModelScope.launch {
-            sessionLifecycle.stop()
+            sessionLifecycle.stop(expectedSessionId = previousSessionId)
             loadContent(contentId = contentId)
         }
     }
@@ -2942,8 +2946,9 @@ class PlayerViewModel(
         }
         val nextContentId = _uiState.value.nextEpisode?.contentId ?: return
         _uiState.update { it.copy(showUpNext = false, upNextCountdownSeconds = null) }
+        val previousSessionId = _uiState.value.sessionId
         viewModelScope.launch {
-            sessionLifecycle.stop()
+            sessionLifecycle.stop(expectedSessionId = previousSessionId)
             loadContent(
                 contentId = nextContentId,
                 resumePositionOverride = 0.0,
@@ -3048,8 +3053,9 @@ class PlayerViewModel(
         val state = _uiState.value
         val version = state.versions.getOrNull(index) ?: return
         if (!isRecovery && index == state.selectedVersionIndex) return
+        val previousSessionId = state.sessionId
         viewModelScope.launch {
-            sessionLifecycle.stop()
+            sessionLifecycle.stop(expectedSessionId = previousSessionId)
             loadContent(
                 contentId = state.contentId,
                 preferredFileId = version.fileId,

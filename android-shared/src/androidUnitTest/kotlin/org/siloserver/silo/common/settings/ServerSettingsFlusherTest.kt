@@ -133,6 +133,24 @@ class ServerSettingsFlusherTest {
     }
 
     @Test
+    fun `a queued delete carries the profile it was queued for`() = runTest {
+        // The SET arm was already profile-pinned; the DELETE arm was not, and
+        // the retry loop makes the gap reachable — a reset queued while the
+        // server is flaky and retried after a profile switch resolves against
+        // whichever profile is active by then and wipes ITS device overrides.
+        // The fake has always recorded profileId; nothing ever asserted it.
+        val api = RecordingSettingsApi()
+        val flusher = DefaultServerSettingsFlusher(api, this, debounceMs = 200)
+
+        flusher.enqueueDelete("p1", "key.reset")
+        advanceUntilIdle()
+
+        val delete = api.calls.single { it.kind == RecordingSettingsApi.Call.Kind.DELETE }
+        assertEquals("key.reset", delete.key)
+        assertEquals("p1", delete.profileId, "an unpinned delete resolves against the wrong profile")
+    }
+
+    @Test
     fun `flushNow with empty queue is a no-op`() = runTest {
         val api = RecordingSettingsApi()
         val flusher = DefaultServerSettingsFlusher(api, this, debounceMs = 200)

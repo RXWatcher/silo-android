@@ -112,7 +112,11 @@ class PlayerViewModelSharedCoordinatorTest {
         val body = viewModelSource
             .substringAfter("private fun startVersionPlayback(")
             .substringBefore("/**\n     * Handles a failed quality/version switch.")
-        assertTrue(body.contains("sessionLifecycle.stop()"))
+        // Assert the SCOPED form. "stop(" alone is a prefix of the unscoped
+        // call, so it would pass with the ownership argument deleted — which is
+        // the whole point of the guard: this stop is deferred and must not land
+        // on a session another screen has since adopted.
+        assertTrue(body.contains("sessionLifecycle.stop(expectedSessionId"))
         assertTrue(body.contains("loadContent("))
         assertTrue(body.contains("preferredFileId = version.fileId"))
         assertTrue(body.contains("resumePositionOverride = state.position"))

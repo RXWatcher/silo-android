@@ -96,7 +96,13 @@ class CrashCaptureTest {
         // and must never appear here. The runtime's own lines, captured while it
         // was still current, are its to report — dropping those too is what made
         // crash markers arrive with no logs at all.
+        //
+        // Assert BOTH halves. Checking only the absence of "new identity"
+        // passes identically with the fix reverted, which is how log-less crash
+        // markers could have shipped again while this test stayed green.
         assertFalse(marker.logLines.any { it.contains("new identity") })
+        assertEquals(listOf("{\"msg\":\"safe\"}"), marker.logLines)
+        assertEquals(0, marker.logGeneration)
     }
 
     @Test

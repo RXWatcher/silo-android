@@ -60,7 +60,24 @@ public final class LibassBridge {
 
     private final boolean renderingSupported;
     private final boolean embeddedFontsSupported;
-    private final AssHandler handler;
+    /**
+     * Recycled per player — see {@link #initialize(ExoPlayer)}.
+     *
+     * ass-kt frees native memory only in {@code finalize()}, and embedded MKV
+     * font attachments accumulate in the {@code ASS_Library} this handler owns:
+     * anime and typeset releases carry 5-30 MB each, so a process-lifetime
+     * handler grows without bound until a mid-episode decoder allocation fails
+     * or the process is killed outright. Dropping the handler when the player it
+     * belongs to is replaced makes the whole graph collectable, fonts included.
+     *
+     * Deliberately NOT {@code Ass.clearFont()}: libass permits
+     * {@code ass_clear_fonts} only once every track and renderer on that library
+     * is released, and AssHandler merely nulls its Kotlin references on a
+     * media-item transition. Calling it is a use-after-free risk.
+     */
+    private final AssRenderType renderType;
+    private volatile AssHandler handler;
+    private volatile AssSubtitleParserFactory assFactory;
     private final SubtitleParser.Factory parserFactory;
     private WeakReference<AssSubtitleView> overlayRef = new WeakReference<>(null);
     private ExoPlayer initializedPlayer;
@@ -79,10 +96,13 @@ public final class LibassBridge {
             AssRenderType renderType = preferOpenGl
                     ? AssRenderType.OVERLAY_OPEN_GL
                     : AssRenderType.OVERLAY_CANVAS;
-            handler = new AssHandler(renderType, new AssHandlerConfig());
+            this.renderType = renderType;
+            newHandler();
             parserFactory = buildParserFactory();
         } else {
+            this.renderType = null;
             handler = null;
+            assFactory = null;
             parserFactory = new DefaultSubtitleParserFactory();
         }
     }
@@ -99,8 +119,37 @@ public final class LibassBridge {
         return parserFactory;
     }
 
+    private void newHandler() {
+        handler = new AssHandler(renderType, new AssHandlerConfig());
+        // Rebuilt with the handler: SiloPlayerFactory holds the wrappers around
+        // this factory for the process lifetime, so a stale delegate here would
+        // keep the previous handler — and its fonts — reachable forever, which
+        // is the leak this recycling exists to close.
+        assFactory = new AssSubtitleParserFactory(handler);
+    }
+
+    /**
+     * Delegates every call to whichever {@link AssSubtitleParserFactory} belongs
+     * to the current handler, so the long-lived wrappers in SiloPlayerFactory
+     * never pin a retired one.
+     */
     private SubtitleParser.Factory buildParserFactory() {
-        AssSubtitleParserFactory assFactory = new AssSubtitleParserFactory(handler);
+        SubtitleParser.Factory assFactory = new SubtitleParser.Factory() {
+            @Override
+            public boolean supportsFormat(Format format) {
+                return LibassBridge.this.assFactory.supportsFormat(format);
+            }
+
+            @Override
+            public int getCueReplacementBehavior(Format format) {
+                return LibassBridge.this.assFactory.getCueReplacementBehavior(format);
+            }
+
+            @Override
+            public SubtitleParser create(Format format) {
+                return LibassBridge.this.assFactory.create(format);
+            }
+        };
         if (embeddedFontsSupported) return assFactory;
 
         // The ass-media Matroska extractor supplies both timed dialogue packets
@@ -213,6 +262,12 @@ public final class LibassBridge {
         if (initializedPlayer != null) {
             initializedPlayer.removeListener(handler);
             initializedPlayer.removeListener(frameSizeSyncListener);
+            // The retired player owns the renderers and extractors that hold the
+            // old handler, and releasing it drops them. Everything else pointing
+            // at that handler must go at the same moment or the fonts it
+            // accumulated stay reachable and nothing is reclaimed.
+            retireOverlay();
+            newHandler();
         }
         initializedPlayer = player;
         handler.init(player);
@@ -246,6 +301,23 @@ public final class LibassBridge {
         }
         overlayRef = new WeakReference<>(overlay);
         syncOverlayFrameSizeLater();
+    }
+
+    /**
+     * Removes the overlay bound to the retiring handler.
+     *
+     * {@link #attachTo} reuses any AssSubtitleView already in the host, and that
+     * view holds the handler it was built with — reusing it across a recycle
+     * would render from a handler no player drives, and keep it alive.
+     */
+    private void retireOverlay() {
+        AssSubtitleView overlay = overlayRef.get();
+        overlayRef = new WeakReference<>(null);
+        if (overlay == null) return;
+        ViewGroup parent = overlay.getParent() instanceof ViewGroup
+                ? (ViewGroup) overlay.getParent()
+                : null;
+        if (parent != null) parent.removeView(overlay);
     }
 
     private Extractor[] replaceMatroska(

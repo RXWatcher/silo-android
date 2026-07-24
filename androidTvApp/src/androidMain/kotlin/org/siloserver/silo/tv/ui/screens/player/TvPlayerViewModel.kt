@@ -3074,6 +3074,15 @@ class TvPlayerViewModel(
             subtitleMode = state.preferredSubtitleMode,
             showForced = state.showForcedSubtitles,
         )
+        // Do not burn the one-shot if the emit will be refused: the gate can
+        // drop an Auto request when a Restore arm holds the latch, and this flag
+        // is never reset, so preferred-subtitle auto-enable would never run
+        // again for this ViewModel — silently, on any retry path.
+        if (subtitleRemountReselection.pendingPriority
+                ?.let { it > TvSubtitleMountPriority.Auto } == true
+        ) {
+            return
+        }
         autoTextSubtitleSelectionAttempted = true
         when (selection) {
             SubtitleAutoSelection.Disable -> {

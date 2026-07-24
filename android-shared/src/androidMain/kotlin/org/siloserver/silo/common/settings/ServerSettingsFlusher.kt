@@ -147,7 +147,12 @@ class DefaultServerSettingsFlusher(
                 is PendingOp.Set ->
                     settingsApi.setDeviceSetting(key, op.value, profileId = profileId)
                 is PendingOp.Delete ->
-                    settingsApi.deleteDeviceSetting(key)
+                    // Pin to the profile that queued the op. A retry can run
+                    // after a profile switch, and an unpinned DELETE resolves
+                    // against whichever profile is active then — wiping ITS
+                    // device overrides while the profile that asked keeps its
+                    // stale ones.
+                    settingsApi.deleteDeviceSetting(key, profileId = profileId)
             }
             when (result) {
                 is ApiResult.Success -> true

@@ -102,6 +102,17 @@ open class PlaybackSessionManager(
         val serverPlanCursor: ServerPlanCursor? = null,
     )
 
+    /**
+     * The plan the server currently holds, falling back to the rendered plan.
+     *
+     * Every replan/recovery request must address the server by THIS, not by
+     * `plan`: after a rollback the two differ, and sending the rendered plan
+     * retires a planId the server has already superseded — after which every
+     * later request is rejected 409 for the rest of the session.
+     */
+    private val ActiveVideoAttempt.serverPlanId: String
+        get() = serverPlanCursor?.planId ?: plan.planId
+
     /** Identity of the plan the server last acknowledged for a session. */
     private data class ServerPlanCursor(
         val planId: String,
@@ -595,7 +606,7 @@ open class PlaybackSessionManager(
         val request = PlaybackReplanRequestV3(
             playbackAttemptId = active.playbackAttemptId,
             replanRequestId = UUID.randomUUID().toString(),
-            failedPlanId = cursor?.planId ?: active.plan.planId,
+            failedPlanId = active.serverPlanId,
             planAttemptId = cursor?.planAttemptId ?: active.planAttemptId,
             planAttemptKey = failedKey,
             attemptedPlanKeys = attemptedKeys,
@@ -1216,6 +1227,19 @@ open class PlaybackSessionManager(
             )
         }
 
+        // Re-anchor deliberately addresses the RENDERED plan below, because
+        // seekReanchorMismatch requires the response to come back on it. Once a
+        // rollback has left the rendered plan behind the server's, that request
+        // can only 409 — decline so the caller falls through to seek recovery,
+        // which addresses the server's plan.
+        if (active.serverPlanCursor?.planId?.let { it != active.plan.planId } == true) {
+            return@withSettledVideoAttempt ApiResult.Error(
+                code = 409,
+                error = "seek_reanchor_plan_superseded",
+                message = "The rendered plan is behind the server's; recover instead.",
+            )
+        }
+
         val network = networkEvidenceProvider.snapshot()
         val request = PlaybackReplanRequestV3(
             operation = SEEK_REANCHOR_V3_OPERATION,
@@ -1417,6 +1441,10 @@ open class PlaybackSessionManager(
         }
         val next = current.copy(
             plan = plan,
+            // The server accepted and now holds this plan, so rendered and
+            // server plans are back in step and the cursor is spent. Leaving a
+            // stale one here re-opens the 409-forever bug via the seek path.
+            serverPlanCursor = null,
             serverFeatures = serverFeatures.toSet(),
             startedAtElapsedRealtimeMs = SystemClock.elapsedRealtime(),
             firstFrameReported = false,
@@ -1475,7 +1503,7 @@ open class PlaybackSessionManager(
             operation = SEEK_FAILURE_RECOVERY_V3_OPERATION,
             playbackAttemptId = active.playbackAttemptId,
             replanRequestId = UUID.randomUUID().toString(),
-            failedPlanId = active.plan.planId,
+            failedPlanId = active.serverPlanId,
             planAttemptId = active.planAttemptId,
             planAttemptKey = active.planAttemptKey,
             attemptedPlanKeys = attemptedKeys,
@@ -1656,6 +1684,10 @@ open class PlaybackSessionManager(
         }
         val next = current.copy(
             plan = plan,
+            // The server accepted and now holds this plan, so rendered and
+            // server plans are back in step and the cursor is spent. Leaving a
+            // stale one here re-opens the 409-forever bug via the seek path.
+            serverPlanCursor = null,
             serverFeatures = serverFeatures.toSet(),
             planAttemptId = planAttemptId,
             planAttemptKey = planAttemptKey,

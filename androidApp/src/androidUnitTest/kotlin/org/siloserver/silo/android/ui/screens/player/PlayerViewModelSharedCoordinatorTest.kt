@@ -247,7 +247,7 @@ class PlayerViewModelSharedCoordinatorTest {
         val body = viewModelSource
             .substringAfter("private fun startVersionPlayback(")
             .substringBefore("/**\n     * Handles a failed quality/version switch.")
-        assertTrue(body.contains("sessionLifecycle.stop("))
+        assertTrue(body.contains("sessionLifecycle.stop(expectedSessionId"))
         assertTrue(body.contains("loadContent("))
         assertTrue(body.contains("preferredFileId = version.fileId"))
         assertTrue(body.contains("resumePositionOverride = state.position"))

@@ -92,6 +92,9 @@ class PlaybackSessionLifecycle(
     private val pendingStopLock = Any()
     private var pendingStopJob: Job? = null
 
+    /** Session [pendingStopJob] is stopping; guarded by `pendingStopLock`. */
+    private var pendingStopSessionId: String? = null
+
     private data class ActiveSessionSnapshot(
         val state: SessionState,
         val notice: PlayerNotice?,
@@ -113,6 +116,19 @@ class PlaybackSessionLifecycle(
     )
 
     private var pendingActiveSessionPublication: PendingActiveSessionPublication? = null
+
+    /**
+     * The session this lifecycle owns, independent of what it is presenting.
+     *
+     * [SessionState] carries a session id only while Active, so any guard that
+     * reads state alone is blind exactly when it matters. During Reconnecting,
+     * Loading or Failed a stale deferred stop finds no id, falls through, and
+     * cancels the reconnect for a session it has no business touching — the
+     * banner vanishes with nothing replacing it and progress reporting for that
+     * episode is dead for the rest of playback.
+     */
+    @Volatile
+    private var ownedSessionId: String? = null
 
     // ---- Public API ---------------------------------------------------------
 
@@ -198,6 +214,7 @@ class PlaybackSessionLifecycle(
             this.renewMissingSessionWithLegacyStart = renewMissingSessionWithLegacyStart
             this.diagnosticsRecording = diagnosticsRecording
             diagnosticsRecording.record(session.sessionId)
+            ownedSessionId = session.sessionId
             _state.value = SessionState.Active(session)
             if (manageProgress) {
                 startProgressReporter()
@@ -316,6 +333,8 @@ class PlaybackSessionLifecycle(
         renewMissingSessionWithLegacyStart = snapshot.renewMissingSessionWithLegacyStart
         diagnosticsRecording = snapshot.diagnosticsRecording
         _notice.value = snapshot.notice
+        // A rollback to the predecessor hands ownership back to that session.
+        (snapshot.state as? SessionState.Active)?.let { ownedSessionId = it.session.sessionId }
         _state.value = snapshot.state
         if (
             restartReporter &&
@@ -331,6 +350,9 @@ class PlaybackSessionLifecycle(
         diagnosticsRecording: DiagnosticsPlaybackSessionRecording,
     ): SessionState {
         _notice.value = null
+        // Starting fresh: the previous session is no longer ours. start() has
+        // already awaited any pending stop, so nothing is left to guard.
+        ownedSessionId = null
         _state.value = SessionState.Loading
         lastStartParams = params
         flushProgressOnStop = true
@@ -377,6 +399,7 @@ class PlaybackSessionLifecycle(
                 DiagnosticsPlaybackLogger.sessionEvent("session active")
                 diagnosticsRecording.record(result.data.sessionId)
                 val active = SessionState.Active(result.data)
+                ownedSessionId = result.data.sessionId
                 _state.value = active
                 lastReportedPosition = params.startPosition ?: result.data.position
                 // Clear the missing-session debounce — fresh session id.
@@ -434,7 +457,18 @@ class PlaybackSessionLifecycle(
         when (val current = _state.value) {
             is SessionState.Active -> current.session.sessionId == sessionId
             // Still recovering the same session: no newer one has been adopted.
-            else -> lastStartParams != null && pendingActiveSessionPublication == null
+            //
+            // A pending publication for *this* session is not evidence that
+            // ownership moved — a subtitle commit defers publication for up to
+            // MAX_LOCAL_MOUNT_WAIT_MS (30s), which outlasts the 10s progress
+            // interval, so a progress-report NetworkError inside that window
+            // enters Reconnecting with a pending publication of our own. Reading
+            // that as "someone else owns this now" left the outage banner up
+            // forever: beginOutageRecovery's Reconnecting guard blocks every
+            // later attempt, and settlePendingPublicationIfCurrent requires
+            // Active, so nothing could ever clear it again.
+            else -> lastStartParams != null &&
+                (pendingActiveSessionPublication?.replacementSessionId ?: sessionId) == sessionId
         }
 
     /**
@@ -450,7 +484,11 @@ class PlaybackSessionLifecycle(
         DiagnosticsPlaybackLogger.sessionEvent("session stop requested")
         mutex.withLock {
             if (expectedSessionId != null) {
-                val activeSessionId = (_state.value as? SessionState.Active)?.session?.sessionId
+                // Read the ownership token, not the presented state: a session
+                // being reconnected or restarted is still owned, and answering
+                // "no id" there let a stale stop cancel a live recovery.
+                val activeSessionId =
+                    (_state.value as? SessionState.Active)?.session?.sessionId ?: ownedSessionId
                 if (activeSessionId != null && activeSessionId != expectedSessionId) {
                     DiagnosticsPlaybackLogger.sessionEvent("session stop skipped, ownership moved")
                     return
@@ -501,6 +539,7 @@ class PlaybackSessionLifecycle(
             renewMissingSessionWithLegacyStart = true
             pendingActiveSessionPublication = null
             _notice.value = null
+            ownedSessionId = null
             _state.value = SessionState.Idle
         }
         DiagnosticsPlaybackLogger.sessionEvent("session stopped")
@@ -514,18 +553,31 @@ class PlaybackSessionLifecycle(
      * lifecycle's own singleton scope outlives any ViewModel, and
      * [NonCancellable] keeps the stop running even if that scope is torn down.
      */
-    fun stopAsync() {
+    fun stopAsync(expectedSessionId: String? = null) {
         val job = synchronized(pendingStopLock) {
-            pendingStopJob?.takeUnless { it.isCompleted } ?: scope.launch(
-                context = NonCancellable + Dispatchers.IO,
-                start = CoroutineStart.LAZY,
-            ) {
-                stop()
-            }.also { pendingStopJob = it }
+            // Coalesce onto an in-flight stop only when it targets the same
+            // session. Across different sessions the older job carries the older
+            // id and no-ops once ownership has moved, so reusing it would
+            // silently drop the newer stop and leave that session running.
+            pendingStopJob
+                ?.takeUnless { it.isCompleted }
+                ?.takeIf { pendingStopSessionId == expectedSessionId }
+                ?: scope.launch(
+                    context = NonCancellable + Dispatchers.IO,
+                    start = CoroutineStart.LAZY,
+                ) {
+                    stop(expectedSessionId)
+                }.also {
+                    pendingStopJob = it
+                    pendingStopSessionId = expectedSessionId
+                }
         }
         job.invokeOnCompletion {
             synchronized(pendingStopLock) {
-                if (pendingStopJob === job) pendingStopJob = null
+                if (pendingStopJob === job) {
+                    pendingStopJob = null
+                    pendingStopSessionId = null
+                }
             }
         }
         job.start()
@@ -648,6 +700,7 @@ class PlaybackSessionLifecycle(
                     Log.i(TAG, "Health probe succeeded; resuming playback session")
                     DiagnosticsPlaybackLogger.sessionEvent("session reconnected")
                     diagnosticsRecording.record(currentSession.sessionId)
+                    ownedSessionId = currentSession.sessionId
                     _state.value = SessionState.Active(currentSession)
                     _notice.value = null
                     return@launch

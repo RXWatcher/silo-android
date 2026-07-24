@@ -993,6 +993,57 @@ internal class TvSubtitleTransactionAdapter(
         transition.pending?.let(stagedRequests::trySend)
     }
 
+    /**
+     * Commits a locally-mountable identity — an embedded (muxed) track the
+     * stream already carries — without a server round trip.
+     *
+     * Replanning to reach a track that is already in the stream tears it down
+     * and restarts it: black flash, rebuffer, re-seek, for the same picture. A
+     * pending is force-validated against the synthetic `tv-local` candidate so
+     * the state machine reaches committed with no server involved.
+     *
+     * Returns false — meaning "you must replan after all" — when the pending
+     * also carries an audio, quality or output-route preference. Those can only
+     * be applied by the server, and short-circuiting it would drop them
+     * silently. Both callers must respect that: this is shared precisely
+     * because the two paths had drifted, and a subtitle press replayed out of
+     * `queuedMutations` was replanning where a direct press did not.
+     */
+    private fun commitLocallyMountableSelection(
+        identity: SubtitleIdentity,
+        state: SubtitleTransitionState,
+    ): Boolean {
+        val selectionContext = context ?: return false
+        val pending = state.pending
+        if (
+            pending != null &&
+            (
+                pending.audioPreferenceSpecified ||
+                    pending.qualityPreferenceSpecified ||
+                    desiredOutputRouteGeneration != committedOutputRouteGeneration
+                )
+        ) {
+            return false
+        }
+        val proposedState = if (pending == null) {
+            state
+        } else {
+            reduceSubtitleTransition(
+                state,
+                StagedSubtitleValidated(
+                    generation = pending.generation,
+                    candidate = StagedSubtitleCandidate("tv-local"),
+                ),
+            ).state
+        }
+        beginLocalSelection(
+            identity = identity,
+            proposedState = proposedState,
+            selectionContext = selectionContext,
+        )
+        return true
+    }
+
     private fun applySelection(identity: SubtitleIdentity) {
         val selected = reduceSubtitleTransition(transition, SelectSubtitle(identity))
         val current = context
@@ -1028,23 +1079,10 @@ internal class TvSubtitleTransactionAdapter(
             return
         }
 
-        if (identity.requiresLocalMountConfirmation()) {
-            val proposedState = if (selected.state.pending == null) {
-                selected.state
-            } else {
-                reduceSubtitleTransition(
-                    selected.state,
-                    StagedSubtitleValidated(
-                        generation = selected.state.pending!!.generation,
-                        candidate = StagedSubtitleCandidate("tv-local"),
-                    ),
-                ).state
-            }
-            beginLocalSelection(
-                identity = identity,
-                proposedState = proposedState,
-                selectionContext = requireNotNull(current),
-            )
+        if (
+            identity.requiresLocalMountConfirmation() &&
+            commitLocallyMountableSelection(identity, selected.state)
+        ) {
             return
         }
 
@@ -1941,12 +1979,10 @@ internal class TvSubtitleTransactionAdapter(
             reduceSubtitleTransition(state, event).state
         }
         val finalIdentity = finalState.pending?.identity ?: finalState.committed.identity
-        if (finalState.pending == null && finalIdentity.requiresLocalMountConfirmation()) {
-            beginLocalSelection(
-                identity = finalIdentity,
-                proposedState = finalState,
-                selectionContext = requireNotNull(context),
-            )
+        if (
+            finalIdentity.requiresLocalMountConfirmation() &&
+            commitLocallyMountableSelection(finalIdentity, finalState)
+        ) {
             return
         }
         invalidateLocalMount()

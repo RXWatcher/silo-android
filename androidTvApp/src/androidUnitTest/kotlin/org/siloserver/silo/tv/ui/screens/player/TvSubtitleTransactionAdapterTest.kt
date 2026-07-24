@@ -973,6 +973,78 @@ class TvSubtitleTransactionAdapterTest {
     }
 
     @Test
+    fun `an embedded pick replayed from the queue mounts locally instead of replanning`() = runTest {
+        // A direct press on an embedded track switches it locally, because the
+        // stream already carries it. The same press arriving while another
+        // mutation was committing went down a different path and replanned --
+        // tearing the stream down and rebuilding it for the same picture, so the
+        // user saw a black flash, a rebuffer and a re-seek.
+        val harness = harness(backgroundScope)
+        val embedded = SubtitleIdentity.Embedded(
+            serverIndex = 7,
+            media = media(
+                trackId = "decoder-pgs-7",
+                label = "English",
+                language = "en",
+                codec = "pgs",
+            ),
+        )
+        harness.port.suspendCommits = true
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.port.completeStage(candidate("b", 4, sessionId = "s2"))
+        runCurrent()
+        assertEquals(listOf("b"), harness.port.commitStarted)
+
+        // Pressed while the sidecar commit is still in flight, so it is folded
+        // into queuedMutations and replayed once that commit lands.
+        harness.adapter.select(embedded)
+        harness.port.completeCommit("b")
+        runCurrent()
+
+        assertEquals(
+            listOf(4),
+            harness.port.requests.map { it.subtitleTrackIndex },
+            "the embedded track is already in the stream — replanning for it is pure loss",
+        )
+        assertEquals(embedded, harness.adapter.snapshot.localMountIdentity)
+    }
+
+    @Test
+    fun `a queued embedded pick still replans when it carries an audio change`() = runTest {
+        // The other half of the contract: the local shortcut skips the server,
+        // so it must decline whenever the folded pending also carries an audio,
+        // quality or output-route preference — only the server can apply those,
+        // and silently dropping them is worse than the rebuffer.
+        val harness = harness(backgroundScope)
+        val embedded = SubtitleIdentity.Embedded(
+            serverIndex = 7,
+            media = media(
+                trackId = "decoder-pgs-7",
+                label = "English",
+                language = "en",
+                codec = "pgs",
+            ),
+        )
+        harness.port.suspendCommits = true
+        harness.adapter.select(sidecar(4))
+        runCurrent()
+        harness.port.completeStage(candidate("b", 4, sessionId = "s2"))
+        runCurrent()
+
+        harness.adapter.selectAudio(7)
+        harness.adapter.select(embedded)
+        harness.port.completeCommit("b")
+        runCurrent()
+
+        assertEquals(
+            7,
+            harness.port.requests.last().audioTrackIndex,
+            "the audio change must still reach the server",
+        )
+    }
+
+    @Test
     fun `reset during suspended commit prevents old playback adoption and persistence`() = runTest {
         val harness = harness(backgroundScope)
         harness.port.suspendCommits = true

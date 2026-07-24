@@ -3818,6 +3818,20 @@ class TvPlayerViewModel(
         sleepTimer.cancel()
     }
 
+    /**
+     * Last session id this screen adopted, surviving [prepareSessionExit].
+     *
+     * The lifecycle is a process-scoped singleton and teardown is deferred
+     * behind settlement work, so a stop must name the session it means. UI state
+     * cannot supply that name at teardown time — it has already been cleared.
+     */
+    @Volatile
+    private var lastAdoptedSessionId: String? = null
+
+    /** The session an exit path is tearing down, before or after the blanking. */
+    private val exitSessionId: String?
+        get() = _uiState.value.sessionId ?: lastAdoptedSessionId
+
     private fun prepareSessionExit() {
         subtitleSnapshotSettlement.reset()
         resetSeekRecoveryForContentChange()
@@ -3839,6 +3853,11 @@ class TvPlayerViewModel(
         introObserveJob?.cancel()
         nextUpCountdownJob?.cancel()
         introAutoSkipController.reset()
+        // Latch before blanking. Every exit path runs this first and onCleared
+        // reads the id afterwards, so the guard it passes to the lifecycle was
+        // always null — the fix was inert and the stale-stop bug it was written
+        // for was still live.
+        _uiState.value.sessionId?.let { lastAdoptedSessionId = it }
         _uiState.update {
             it.copy(
                 isLoading = false,
@@ -3861,7 +3880,9 @@ class TvPlayerViewModel(
         playbackMutationFence.invalidateAll()
         prepareSessionExit()
         subtitleTransactions.persistCommittedSelectionAndFlush()
-        sessionLifecycle.stop()
+        // The most exposed of the three exit paths: it awaits settlement first,
+        // so the next item can already have started by the time it stops.
+        sessionLifecycle.stop(expectedSessionId = exitSessionId)
     }
 
     /** Ordinary Back/remote-stop path: snapshot locally and return to detail immediately. */
@@ -3872,7 +3893,7 @@ class TvPlayerViewModel(
         // Final-position durability is owned by the application-scoped
         // finalPlaybackPositionWriter; only the subtitle flush needs a scope here.
         viewModelScope.launch { subtitleTransactions.persistCommittedSelectionAndFlush() }
-        sessionLifecycle.stopAsync()
+        sessionLifecycle.stopAsync(expectedSessionId = exitSessionId)
     }
 
     fun onExit() {
@@ -4102,7 +4123,7 @@ class TvPlayerViewModel(
         // work, and during the navigation fade the next screen has already
         // started and adopted its own session. Without this the stop landed on
         // the episode the user had just started and killed it seconds in.
-        val teardownSessionId = _uiState.value.sessionId
+        val teardownSessionId = exitSessionId
         subtitleTransactions.invalidateAndSettleAsync(restoreUi = false) {
             subtitleTransactions.requestDurableFinalPersistence()
             playbackMutationFence.invalidateAll()

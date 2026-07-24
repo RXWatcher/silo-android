@@ -443,6 +443,97 @@ class PlaybackSessionLifecycleTest {
     }
 
     @Test
+    fun `a deferred publication for this session does not block its own recovery`() = runTest {
+        // The device sequence: a subtitle commit adopts the replacement with
+        // deferPublication, which leaves a pending publication for up to 30s --
+        // longer than the 10s progress interval. A NetworkError inside that
+        // window enters Reconnecting with our own pending publication set.
+        //
+        // Reading that as "ownership moved" is fatal, not merely slow:
+        // beginOutageRecovery's Reconnecting guard blocks every later attempt
+        // and settlePendingPublicationIfCurrent requires Active, so the banner
+        // can never clear -- the server comes back, the probe succeeds, and
+        // nothing happens for the rest of playback.
+        val sessionMgr = FakeSessionManager().apply {
+            progressResults = ArrayDeque(
+                listOf(ApiResult.NetworkError(RuntimeException("offline"))),
+            )
+        }
+        val healthApi = FakeHealthApi().apply {
+            results = ArrayDeque(listOf(ApiResult.Success(healthOk())))
+        }
+        val lifecycle = newLifecycle(sessionMgr, healthApi = healthApi, scope = backgroundScope)
+
+        lifecycle.adoptActiveSession(
+            params = defaultStartParams(),
+            session = makeSession("sess-predecessor"),
+        )
+        assertTrue(
+            lifecycle.adoptActiveSessionIfCurrent(
+                params = defaultStartParams(startPosition = 24.0),
+                session = makeSession("sess-replacement"),
+                deferPublication = true,
+                isCurrent = { true },
+            ),
+        )
+
+        lifecycle.reportPosition(10.0, 100.0, isPaused = false)
+        advanceTimeBy(PlaybackSessionLifecycle.PROGRESS_REPORT_INTERVAL_MS + 100)
+        advanceUntilIdle()
+        assertTrue(
+            lifecycle.state.value is SessionState.Reconnecting,
+            "expected the outage banner, got ${lifecycle.state.value}",
+        )
+
+        advanceTimeBy(PlaybackSessionLifecycle.OUTAGE_INITIAL_DELAY_MS + 100)
+        advanceUntilIdle()
+
+        val resumed = lifecycle.state.value
+        assertTrue(resumed is SessionState.Active, "recovery was suppressed, got $resumed")
+        assertEquals("sess-replacement", (resumed as SessionState.Active).session.sessionId)
+        assertNull(lifecycle.notice.value)
+    }
+
+    @Test
+    fun `a stale stop cannot cancel a reconnect it does not own`() = runTest {
+        // SessionState carries an id only while Active, so a guard reading state
+        // alone finds nothing during Reconnecting and falls through -- the stale
+        // stop cancels the recovery, the banner disappears with nothing
+        // replacing it, and progress reporting for the episode is dead for the
+        // rest of playback.
+        val sessionMgr = FakeSessionManager().apply {
+            progressResults = ArrayDeque(
+                listOf(ApiResult.NetworkError(RuntimeException("offline"))),
+            )
+        }
+        val healthApi = FakeHealthApi().apply {
+            alwaysReturn = ApiResult.NetworkError(RuntimeException("still down"))
+        }
+        val lifecycle = newLifecycle(sessionMgr, healthApi = healthApi, scope = backgroundScope)
+
+        lifecycle.adoptActiveSession(
+            params = defaultStartParams(),
+            session = makeSession("sess-current"),
+        )
+        lifecycle.reportPosition(10.0, 100.0, isPaused = false)
+        advanceTimeBy(PlaybackSessionLifecycle.PROGRESS_REPORT_INTERVAL_MS + 100)
+        advanceUntilIdle()
+        assertTrue(lifecycle.state.value is SessionState.Reconnecting)
+
+        lifecycle.stop(expectedSessionId = "sess-from-a-dead-screen")
+
+        assertEquals(0, sessionMgr.stopCallCount, "a stale stop reached the server")
+        assertTrue(
+            lifecycle.state.value is SessionState.Reconnecting,
+            "the reconnect was torn down by a stop that did not own it",
+        )
+
+        // The owner's own stop still works.
+        lifecycle.stop(expectedSessionId = "sess-current")
+        assertEquals(SessionState.Idle, lifecycle.state.value)
+    }
+
+    @Test
     fun `health probe Success transitions back to Active and clears notice`() = runTest {
         val sessionMgr = FakeSessionManager().apply {
             startResult = ApiResult.Success(makeSession("sess-keepalive"))

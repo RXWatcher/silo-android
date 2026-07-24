@@ -806,6 +806,19 @@ class TvSubtitleSettlementOwnershipTest {
             "subtitleTransactions.invalidateAndAwaitSettlement()",
             "sessionLifecycle.stop(",
         )
+        // Every exit path runs prepareSessionExit, which blanks uiState.sessionId.
+        // If the id is not latched BEFORE that write, each of the three stops
+        // below passes null and the ownership guard they exist for never engages
+        // — which is exactly how this fix shipped inert the first time.
+        val prepareBody = source
+            .substringAfter("private fun prepareSessionExit()")
+            .substringBefore("\n    private ")
+        assertBefore(
+            prepareBody,
+            "lastAdoptedSessionId = it",
+            "sessionId = null",
+        )
+        assertTrue(exitBody.contains("sessionLifecycle.stop(expectedSessionId = exitSessionId)"))
         assertBefore(
             clearBody,
             "subtitleTransactions.invalidateAndSettleAsync",
@@ -824,7 +837,7 @@ class TvSubtitleSettlementOwnershipTest {
         // stop(expectedSessionId = …) is still stop(): teardown is deferred
         // behind settlement work, so it must name the session it is ending or it
         // lands on whatever the next screen has since adopted.
-        assertTrue(clearBody.contains("sessionLifecycle.stop("))
+        assertTrue(clearBody.contains("sessionLifecycle.stop(expectedSessionId"))
         assertFalse(clearBody.contains("sessionLifecycle.stopAsync()"))
         val adoptionBody = source
             .substringAfter("private suspend fun adoptSubtitlePlayback(")

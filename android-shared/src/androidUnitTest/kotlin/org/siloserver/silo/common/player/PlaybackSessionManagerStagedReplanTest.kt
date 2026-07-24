@@ -143,6 +143,54 @@ class PlaybackSessionManagerStagedReplanTest {
     }
 
     @Test
+    fun `a third pick after a rollback and a commit still addresses the server's plan`() = runTest {
+        // The harness previously returned a CONSTANT planId per replan, which is
+        // why an incomplete cursor fix looked covered: a committed replan copies
+        // the attempt from the PRE-request snapshot, so it silently reinstated
+        // the plan the rollback had retired. That only shows up on the pick
+        // AFTER a commit — the second pick worked, the third 409'd.
+        val harness = Harness(
+            replanResponse = { index, _ ->
+                response(sidecarPlan(sessionId = "s1", planId = "plan-server-v${index + 1}"))
+            },
+        )
+        harness.start()
+
+        // The harness's plans always select subtitle 4; this test is about the
+        // plan cursor, not track selection, so every pick uses that index.
+        suspend fun pick() = assertIs<ApiResult.Success<StagedVideoReplan>>(
+            harness.manager.stageActiveVideoSessionReplan(
+                classification = "subtitle_track_changed",
+                positionSeconds = 42.0,
+                audioTrackIndex = 0,
+                subtitleTrackIndex = 4,
+            ),
+        ).data
+
+        // Pick 1: commit, then roll back. The server keeps plan-server-v1.
+        val first = pick()
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(staged = first, deferPublication = true),
+        )
+        assertTrue(harness.manager.rollbackUnpublishedVideoSession("s1"))
+
+        // Pick 2: commit and keep it. The server moves to plan-server-v2.
+        val second = pick()
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(staged = second),
+        )
+
+        // Pick 3 must address plan-server-v2 — what the server actually holds.
+        pick()
+
+        assertEquals(
+            "plan-server-v2",
+            harness.replanBodies.last()["failed_plan_id"]?.toString()?.trim('"'),
+            "a committed replan reinstated a plan the server had already retired",
+        )
+    }
+
+    @Test
     fun `rolling back an in-place replan keeps addressing the server's current plan`() = runTest {
         // POST /replan is a commit. For an in-place replan the server keeps the
         // session id but moves to a new plan, and nothing can un-commit it.

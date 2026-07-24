@@ -688,6 +688,15 @@ open class PlaybackSessionManager(
                     val next = active.copy(
                         sessionId = validated.sessionId,
                         plan = validated.plan,
+                        // A committed replan makes the rendered plan the server
+                        // plan, so no cursor is needed — `cursor ?: plan.planId`
+                        // then addresses correctly. Clearing it also matters:
+                        // this copy is taken from the PRE-request snapshot, so
+                        // carrying `active`'s cursor forward would reinstate a
+                        // retired planId, and hoisting the CAS-written one is
+                        // wrong too because its planAttemptId belongs to the
+                        // previous attempt, not to nextAttemptId below.
+                        serverPlanCursor = null,
                         serverFeatures = result.data.serverFeatures.toSet(),
                         planAttemptId = nextAttemptId,
                         planAttemptKey = nextKey,
@@ -933,9 +942,18 @@ open class PlaybackSessionManager(
      * "The failed plan is no longer current" until playback restarts.
      */
     private fun revertRenderedPlanKeepingCursor(predecessor: ActiveVideoAttempt?) {
-        val cursor = activeVideoAttempt.get()?.serverPlanCursor
+        // The predecessor's own cursor wins: it describes the plan the server
+        // holds for ITS session. Only borrow the live attempt's cursor when the
+        // predecessor has none AND the two are the same session — otherwise a
+        // failed start of a different item would graft its cursor onto the item
+        // still playing, permanently retiring a plan the server never issued
+        // for it and disabling every later replan on that session.
+        val live = activeVideoAttempt.get()
+        val carried = live
+            ?.takeIf { it.sessionId == predecessor?.sessionId }
+            ?.serverPlanCursor
         activeVideoAttempt.set(
-            predecessor?.copy(serverPlanCursor = cursor ?: predecessor.serverPlanCursor),
+            predecessor?.copy(serverPlanCursor = predecessor.serverPlanCursor ?: carried),
         )
     }
 

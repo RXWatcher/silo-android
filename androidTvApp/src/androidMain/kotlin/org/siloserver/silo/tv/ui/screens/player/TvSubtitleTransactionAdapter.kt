@@ -358,7 +358,18 @@ internal class TvSubtitleTransactionAdapter(
     private var resetAfterSettlement: Pair<TvSubtitlePlaybackContext, SubtitleIdentity>? = null
 
     /** A fresh-preference restore deferred because a publication was unsettled. */
-    private var pendingFreshRestoreAfterSettlement: Pair<SubtitleIdentity, Boolean>? = null
+    private data class DeferredFreshRestore(
+        val identity: SubtitleIdentity,
+        val migrationRequired: Boolean,
+        // The content it was captured for. The TV load path calls resetContent
+        // and restoreFreshPreference one line apart for the SAME new content,
+        // so "a reset is pending" is not evidence the restore is stale — only a
+        // reset to DIFFERENT content is.
+        val contentId: String,
+        val mediaFileId: Int,
+    )
+
+    private var pendingFreshRestoreAfterSettlement: DeferredFreshRestore? = null
 
     val snapshot: TvSubtitleTransactionSnapshot
         get() {
@@ -616,7 +627,12 @@ internal class TvSubtitleTransactionAdapter(
                 val unpublished = pendingLocalSelection
                     ?.takeIf { it.committedPlayback != null }
                 if (unpublished != null || settlementInFlight) {
-                    pendingFreshRestoreAfterSettlement = identity to migrationRequired
+                    pendingFreshRestoreAfterSettlement = DeferredFreshRestore(
+                        identity = identity,
+                        migrationRequired = migrationRequired,
+                        contentId = current.contentId,
+                        mediaFileId = current.mediaFileId,
+                    )
                     if (unpublished != null) {
                         requestSupersessionSettlement(unpublished, restoreUi = false)
                     }
@@ -1531,6 +1547,27 @@ internal class TvSubtitleTransactionAdapter(
             // see, and re-arm the predecessor identity over it.
             if (settlement.mountedIdentity == owner.identity) {
                 SubDiag.log("SETTLE skip compensation, mount confirmed ${owner.identity}")
+                // Adopt it like a confirm. Returning here left the HUD stuck on
+                // "Applying", the choice unpersisted, and — worse —
+                // resetAfterSettlement undrained, so a later unrelated
+                // settlement picked it up and reset to dead content. Everything
+                // the confirmed branch does EXCEPT committedOutputRouteGeneration,
+                // which must follow an actual server confirm rather than a
+                // local mount observation.
+                val settledOwner = currentSettlementOwner(settlement)
+                if (settledOwner == null) {
+                    drainOrphanedSettlement(settlement)
+                    finishSettlement(settlement, true)
+                    return@launch
+                }
+                transition = settledOwner.proposedState
+                invalidateLocalMount()
+                failureMessage = null
+                drainSettledPublication(
+                    owner = settledOwner,
+                    confirmed = true,
+                    compensating = false,
+                )
                 finishSettlement(settlement, true)
                 return@launch
             }
@@ -1706,12 +1743,41 @@ internal class TvSubtitleTransactionAdapter(
         queuedMutations.clear()
         when {
             reset != null -> resetContentNow(reset.first, reset.second)
-            deferredRestore != null -> restoreFreshPreference(
-                identity = deferredRestore.first,
-                migrationRequired = deferredRestore.second,
-            )
             discardQueued -> invalidateNow()
         }
+        // After the reset, not instead of it: the load path resets and restores
+        // for the SAME content one line apart, so dropping the restore whenever
+        // a reset was pending silently ignored the user's saved preference.
+        deferredRestore?.let(::applyDeferredFreshRestore)
+    }
+
+    /**
+     * Applies a deferred restore without re-entering the admission guard.
+     *
+     * The drain runs while the settlement it is completing is still installed,
+     * so routing back through restoreFreshPreference would simply defer again —
+     * and nothing would drain it a second time.
+     */
+    private fun applyDeferredFreshRestore(deferred: DeferredFreshRestore) {
+        val current = context ?: return
+        if (current.contentId != deferred.contentId ||
+            current.mediaFileId != deferred.mediaFileId
+        ) {
+            return
+        }
+        if (deferred.identity != transition.committed.identity) {
+            restoreFreshPreference(deferred.identity, deferred.migrationRequired)
+            return
+        }
+        if (deferred.identity is SubtitleIdentity.ServerBurnIn) {
+            if (deferred.migrationRequired) persist(transition.committed, current)
+            return
+        }
+        beginLocalSelection(
+            identity = deferred.identity,
+            proposedState = transition,
+            selectionContext = current,
+        )
     }
 
     private fun drainSettledPublication(
@@ -1724,16 +1790,10 @@ internal class TvSubtitleTransactionAdapter(
         val discardQueued = discardQueuedAfterSettlement
         discardQueuedAfterSettlement = false
         // A restore deferred by restoreFreshPreference runs once the settlement
-        // it was blocked on is done — unless a content reset supersedes it, in
-        // which case the identity it wanted to restore belongs to dead content.
+        // it was blocked on is done. It is applied AFTER the reset below, and
+        // only when it belongs to the content that reset installed.
         val deferredRestore = pendingFreshRestoreAfterSettlement
         pendingFreshRestoreAfterSettlement = null
-        if (deferredRestore != null && reset == null) {
-            restoreFreshPreference(
-                identity = deferredRestore.first,
-                migrationRequired = deferredRestore.second,
-            )
-        }
         when {
             reset != null -> {
                 queuedMutations.clear()
@@ -1763,6 +1823,7 @@ internal class TvSubtitleTransactionAdapter(
             compensating -> stageCompensatingRestore(owner)
             else -> publish()
         }
+        deferredRestore?.let(::applyDeferredFreshRestore)
     }
 
     private fun stageCompensatingRestore(owner: PendingLocalSelection) {

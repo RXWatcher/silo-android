@@ -39,7 +39,9 @@ class TvDetailPlaybackSelectionSourceTest {
     @Test
     fun nextUpSelectorsUseSessionAndDurableTrackPersistence() {
         assertTrue(viewModelSource.contains("rememberNextUpTrackSelection()"))
-        assertTrue(viewModelSource.contains("persistNextUpTrackSelection()"))
+        assertTrue(viewModelSource.contains("persistNextUpTrackSelection(TvTrackSelectionDimension.Audio)"))
+        assertTrue(viewModelSource.contains("persistNextUpTrackSelection(TvTrackSelectionDimension.Subtitle)"))
+        assertTrue(viewModelSource.contains("userItemState.recordTrackSelection("))
         assertTrue(viewModelSource.contains("restoreNextUpTrackSelection(episodeContentId"))
         val restoreBlock = viewModelSource
             .substringAfter("private fun restoreNextUpTrackSelection")

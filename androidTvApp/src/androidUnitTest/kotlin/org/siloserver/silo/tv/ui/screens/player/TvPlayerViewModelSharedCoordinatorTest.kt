@@ -11,6 +11,9 @@ class TvPlayerViewModelSharedCoordinatorTest {
     private val moduleSource = java.io.File(
         "src/androidMain/kotlin/org/siloserver/silo/tv/di/AndroidTvModule.kt",
     ).readText()
+    private val subtitleAdapterSource = java.io.File(
+        "src/androidMain/kotlin/org/siloserver/silo/tv/ui/screens/player/TvSubtitleTransactionAdapter.kt",
+    ).readText()
 
     @Test
     fun tvNativeSeekCommandsSurviveCollectorAndRemountGaps() {
@@ -157,8 +160,8 @@ class TvPlayerViewModelSharedCoordinatorTest {
             "TV starter must not keep a private copy of shared start-request semantics",
         )
         assertTrue(
-            starterSource.contains("adoptActiveSession("),
-            "TV starter must adopt the initial session into PlaybackSessionLifecycle",
+            starterSource.contains("adoptActiveSessionIfCurrent("),
+            "TV starter must atomically adopt the initial session only while its load owner is current",
         )
         assertTrue(
             starterSource.contains("fileResolution = effectiveVersion?.resolution"),
@@ -191,8 +194,8 @@ class TvPlayerViewModelSharedCoordinatorTest {
 
         assertTrue(unsupportedBody.contains("replanActiveVideoSession("))
         assertTrue(
-            unsupportedBody.contains("sessionLifecycle.adoptActiveSession("),
-            "fallback success must re-home lifecycle progress/stop ownership to the returned session",
+            unsupportedBody.contains("sessionLifecycle.adoptActiveSessionIfCurrent("),
+            "fallback success must atomically re-home lifecycle ownership while recovery remains current",
         )
         assertTrue(
             unsupportedBody.contains("StartParams("),
@@ -244,5 +247,111 @@ class TvPlayerViewModelSharedCoordinatorTest {
             moduleSource.contains("capabilityDetector = get()"),
             "TV Koin module must inject PlaybackCapabilityDetector into TvPlayerViewModel",
         )
+    }
+
+    @Test
+    fun tvSubtitleAudioQualityAndRouteMutationsEnterOneTransactionAdapter() {
+        assertTrue(viewModelSource.contains("TvSubtitleTransactionAdapter("))
+        assertTrue(viewModelSource.contains("subtitleTransactions.select("))
+        assertTrue(viewModelSource.contains("subtitleTransactions.selectAudio("))
+        assertTrue(viewModelSource.contains("subtitleTransactions.selectQuality("))
+        assertTrue(viewModelSource.contains("subtitleTransactions.updateOutputRouteGeneration("))
+        assertFalse(viewModelSource.contains("pendingSubtitleSelectLabel"))
+        assertFalse(viewModelSource.contains("pendingSubtitleSelectServerIndex"))
+        assertFalse(viewModelSource.contains("QueuedInvalidationReplan"))
+    }
+
+    @Test
+    fun tvSubtitlePortUsesStagedManagerCommitAndExplicitAbandonment() {
+        assertTrue(subtitleAdapterSource.contains("stageActiveVideoSessionReplan("))
+        assertTrue(subtitleAdapterSource.contains("commitStagedVideoReplan("))
+        assertTrue(subtitleAdapterSource.contains("discardStagedVideoReplan("))
+        assertTrue(
+            subtitleAdapterSource.contains(
+                "manager.rollbackUnpublishedVideoSession(playback.sessionId)",
+            ),
+        )
+        assertTrue(
+            subtitleAdapterSource.contains(
+                "manager.confirmVideoSessionPublication(playback.sessionId)",
+            ),
+        )
+        val subtitleIntentBody = viewModelSource
+            .substringAfter("fun onSelectCatalogSubtitle(")
+            .substringBefore("fun cancelPendingCatalogSubtitle(")
+        assertFalse(subtitleIntentBody.contains("replanActiveVideoSession("))
+        assertFalse(subtitleIntentBody.contains("sessionLifecycle.adoptActiveSession("))
+    }
+
+    @Test
+    fun tvRefreshCallbacksPublishOnlyThroughAnOwnedRefreshToken() {
+        val refreshBody = viewModelSource
+            .substringAfter("internal suspend fun refreshSubtitles(")
+            .substringBefore("fun openSubtitleSearchDialog(")
+        assertTrue(refreshBody.contains("subtitleTransactions.beginRefresh("))
+        assertTrue(refreshBody.contains("subtitleTransactions.applyRefresh("))
+        assertFalse(refreshBody.contains("pendingSubtitleSelectLabel"))
+        assertFalse(refreshBody.contains("indexOfFirst"))
+    }
+
+    @Test
+    fun `remote subtitle selection enters the typed transaction adapter`() {
+        val body = viewModelSource
+            .substringAfter("fun remoteSelectSubtitle(")
+            .substringBefore("/**\n     * Adopt server-recomputed intro")
+        assertTrue(body.contains("subtitleTransactions.select("))
+        assertFalse(body.contains("_remoteSubtitleSelections"))
+    }
+
+    @Test
+    fun `remote audio selection enters the same atomic transaction adapter`() {
+        val body = viewModelSource
+            .substringAfter("fun remoteSelectAudio(")
+            .substringBefore("fun remoteSelectSubtitle(")
+        assertTrue(body.contains("subtitleTransactions.selectAudio("))
+        assertFalse(body.contains("_remoteAudioSelections"))
+    }
+
+    @Test
+    fun freshLoadUsesOwnerCheckedStarterAndTransactionalRestoreBoundary() {
+        val loadBody = viewModelSource
+            .substringAfter("private fun loadContent(")
+            .substringBefore("// ---- Retry / error recovery")
+
+        assertTrue(loadBody.contains("playbackMutationFence.beginLoad("))
+        assertTrue(loadBody.contains("loadOwners.withOwner(loadOwner)"))
+        assertTrue(loadBody.contains("resolveOwnedTvFreshSubtitleRestore("))
+        assertTrue(loadBody.contains("subtitleTransactions.restoreFreshPreference("))
+        assertFalse(loadBody.contains("decodeSubtitleIdentityPreference("))
+        assertFalse(loadBody.contains("subtitleTransactions.restoreCommittedLocalMount()"))
+    }
+
+    @Test
+    fun recoveryPublicationUsesAtomicOwnerCheckedLifecycleAdoption() {
+        val recoveryBody = viewModelSource
+            .substringAfter("private fun startProtocolV3Replan(")
+            .substringBefore("private fun redriveQueuedRecoveryReplan(")
+        val seekAdoptionBody = viewModelSource
+            .substringAfter("private suspend fun adoptSeekRecoveryDecision(")
+            .substringBefore("private fun isCurrentSeekRecovery(")
+
+        assertTrue(recoveryBody.contains("sessionLifecycle.adoptActiveSessionIfCurrent("))
+        assertTrue(recoveryBody.contains("isCurrent ="))
+        assertFalse(recoveryBody.contains("sessionLifecycle.adoptActiveSession("))
+        assertTrue(seekAdoptionBody.contains("sessionLifecycle.adoptActiveSessionIfCurrent("))
+        assertTrue(seekAdoptionBody.contains("isCurrent ="))
+        assertFalse(seekAdoptionBody.contains("sessionLifecycle.adoptActiveSession("))
+    }
+
+    @Test
+    fun failedVersionReplacementNeverStopsOrClearsVersionABeforeBPublishes() {
+        val versionBody = viewModelSource
+            .substringAfter("fun onSelectFileVersion(fileId: Int)")
+            .substringBefore("/** Reload the current content")
+
+        assertFalse(versionBody.contains("playbackSessionManager.stopSession("))
+        assertTrue(versionBody.contains("preserveCurrentPlaybackOnFailure = true"))
+        assertTrue(viewModelSource.contains("beginTvReplacementLoad("))
+        assertTrue(viewModelSource.contains("failTvReplacementLoad("))
     }
 }

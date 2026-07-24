@@ -44,7 +44,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.remember
@@ -109,6 +108,7 @@ import org.siloserver.silo.cast.SiloCastTrack
 import org.siloserver.silo.domain.player.IntroAutoSkipState
 import org.siloserver.silo.model.playback.PlaybackExecutionPlan
 import org.siloserver.silo.model.playback.PlaybackSourceMetadata
+import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.executableMedia3ClientTransformations
 import org.siloserver.silo.model.settings.SubtitleAppearance
 import org.siloserver.silo.model.settings.SubtitlePositionPreset
@@ -306,6 +306,7 @@ fun TvPlayerScreen(
     var exitRequested by remember { mutableStateOf(false) }
     var requestedHudTab by remember { mutableStateOf(HudTab.Info) }
     var showQuickSubtitlePicker by remember { mutableStateOf(false) }
+    var subtitleFocusedStableId by remember { mutableStateOf<String?>(null) }
     // Mirrors the HUD's internal active-picker slot so the screen-level
     // BackHandler can defer to an open picker (Back closes only the picker).
     var hudPickerOpen by remember { mutableStateOf(false) }
@@ -545,44 +546,22 @@ fun TvPlayerScreen(
     val latestRoomSnapshot by rememberUpdatedState(roomSnapshot)
     val latestShowLeaveDialog by rememberUpdatedState(showLeaveDialog)
     val latestShowQuickSubtitlePicker by rememberUpdatedState(showQuickSubtitlePicker)
-    val applyTvSubtitleSelection: (Int, Boolean) -> Unit = selection@{ idx, dismiss ->
-        val selectedTrack = state.subtitleTracks
-            .firstOrNull { it.index == idx }
-            ?.toVideoTrackEntry()
-        if (idx >= 0 && selectedTrack == null) {
-            Log.w(TAG, "Subtitle selection ignored: index=$idx not found")
-            return@selection
-        }
-        val backend = videoBackend
-        if (backend == null) {
-            Log.w(TAG, "Subtitle selection deferred or failed for index=$idx: backend unavailable")
-            return@selection
-        }
-        if (backend.selectSubtitle(selectedTrack)) {
-            viewModel.onSubtitleSelectionApplied(idx)
-            viewModel.onManualSubtitleSelectionIntent(idx)
-            if (dismiss) viewModel.closeSubtitleMenu()
-            viewModel.persistSubtitleSelection(idx)
-        } else {
-            Log.w(TAG, "Subtitle selection deferred or failed for index=$idx")
-        }
+    val selectTvSubtitle: (SubtitleIdentity) -> Unit = { identity ->
+        subtitleFocusedStableId = tvSubtitleOptionStableId(identity)
+        viewModel.selectSubtitleOption(identity)
     }
-    // Server-catalog subtitle selection (HUD/quick-picker menus list the
-    // server's rows, not Media3 tracks): already-mounted rows resolve to a
-    // Media3 index and go through the normal path; catalog-only rows kick off
-    // a materializing replan inside the ViewModel and auto-select on arrival.
-    val applyTvServerSubtitleSelection: (Int) -> Unit = { serverIdx ->
-        if (serverIdx == -1) {
-            // Cancel any in-flight materialization so a pending pick can't
-            // re-enable itself after the user chose Off.
-            viewModel.cancelPendingCatalogSubtitle()
-            applyTvSubtitleSelection(-1, false)
-        } else {
-            viewModel.onSelectCatalogSubtitle(serverIdx)?.let { mediaIdx ->
-                applyTvSubtitleSelection(mediaIdx, false)
-            }
-        }
-    }
+    val subtitlePresentation = buildTvSubtitleHudPresentation(
+        options = buildTvSubtitleHudOptions(
+            subtitleUrls = state.subtitleUrls,
+            subtitleTracks = state.subtitleTracks,
+        ),
+        committedIdentity = state.committedSubtitleIdentity,
+        pendingIdentity = state.pendingSubtitleIdentity,
+        hudOpen = state.hudOpen || showQuickSubtitlePicker,
+        focusedStableId = subtitleFocusedStableId,
+        onSelect = selectTvSubtitle,
+        onFocused = { stableId -> subtitleFocusedStableId = stableId },
+    )
 
     fun requestIdleOverlayFocus(target: TvIdleOverlayFocusTarget) {
         idleOverlayFocusRequest = TvIdleOverlayFocusRequest(
@@ -1517,7 +1496,11 @@ fun TvPlayerScreen(
         val backend = videoBackend ?: return@LaunchedEffect
         viewModel.subtitleSelectRequests.collect { idx ->
             if (idx == -1) {
-                if (backend.selectSubtitle(null)) viewModel.onSubtitleSelectionApplied(idx)
+                if (backend.selectSubtitle(null)) {
+                    viewModel.onSubtitleSelectionApplied(idx)
+                } else {
+                    viewModel.onSubtitleSelectionFailed(idx)
+                }
                 return@collect
             }
             val selectedTrack = viewModel.uiState.value.subtitleTracks
@@ -1525,53 +1508,15 @@ fun TvPlayerScreen(
                 ?.toVideoTrackEntry()
             if (selectedTrack != null && backend.selectSubtitle(selectedTrack)) {
                 viewModel.onSubtitleSelectionApplied(idx)
+            } else {
+                viewModel.onSubtitleSelectionFailed(idx)
             }
         }
     }
 
-    // Remote set_audio_track / set_subtitle_track. These latch in the VM (a
-    // remote command can arrive before the backend attaches OR before Media3
-    // reports its tracks via onTracksChanged), so we combine the latched index
-    // with the live track list: while tracks are empty the latch is held; once
-    // they're reported the index applies if it matches, or is dropped if not.
-    // A non-empty audioTracks is the "tracks have loaded" signal (Media3 reports
-    // all groups together).
-    LaunchedEffect(videoBackend) {
-        val backend = videoBackend ?: return@LaunchedEffect
-        combine(
-            viewModel.pendingRemoteAudioIndex,
-            viewModel.uiState.map { it.audioTracks }.distinctUntilChanged(),
-        ) { idx, tracks -> idx to tracks }.collect { (idx, tracks) ->
-            if (idx == null) return@collect
-            if (tracks.isEmpty()) return@collect // not reported yet — keep latched
-            tracks.firstOrNull { it.index == idx }
-                ?.toVideoTrackEntry()
-                ?.let { backend.selectAudioTrack(it) }
-            viewModel.clearPendingRemoteAudio(idx) // applied or no-match → consume
-        }
-    }
-    LaunchedEffect(videoBackend) {
-        val backend = videoBackend ?: return@LaunchedEffect
-        combine(
-            viewModel.pendingRemoteSubtitleIndex,
-            viewModel.uiState.map { it.audioTracks.isNotEmpty() }.distinctUntilChanged(),
-        ) { idx, tracksReady -> idx to tracksReady }.collect { (idx, tracksReady) ->
-            if (idx == null) return@collect
-            if (idx == -1) {
-                // Disable doesn't depend on the track list — apply immediately.
-                backend.selectSubtitle(null)
-                viewModel.onSubtitleSelectionApplied(-1)
-                viewModel.clearPendingRemoteSubtitle(idx)
-                return@collect
-            }
-            if (!tracksReady) return@collect // wait for tracks to be reported
-            viewModel.uiState.value.subtitleTracks
-                .firstOrNull { it.index == idx }
-                ?.toVideoTrackEntry()
-                ?.let { if (backend.selectSubtitle(it)) viewModel.onSubtitleSelectionApplied(idx) }
-            viewModel.clearPendingRemoteSubtitle(idx) // applied or no-match → consume
-        }
-    }
+    // Remote set_audio_track / set_subtitle_track are latched and resolved in
+    // the ViewModel after stable track identities exist. Only the transaction
+    // adapter may emit a backend subtitle mount request.
 
     // Mirror user-intent pause state into the player. Kept separate from the
     // onPlayingChanged listener so a transient buffering stall can't flip the
@@ -1877,26 +1822,15 @@ fun TvPlayerScreen(
                             onSelectFileVersion = viewModel::onSelectFileVersion,
                             subtitleTracks = state.subtitleTracks,
                             subtitleUrls = state.subtitleUrls,
+                            subtitlePresentation = subtitlePresentation,
                             stats = state.stats,
                             playbackPlan = state.playbackPlan,
                             videoFillMode = state.videoFillMode,
-                            onSelectAudio = { idx ->
-                                val selectedTrack = state.audioTracks
-                                    .firstOrNull { it.index == idx }
-                                    ?.toVideoTrackEntry()
-                                if (selectedTrack != null) {
-                                    videoBackend?.selectAudioTrack(selectedTrack)
-                                    viewModel.onAudioSelectionApplied(idx)
-                                }
-                            },
+                            onSelectAudio = viewModel::selectAudioOption,
                             onSelectVideoQuality = { id ->
                                 // Server-transcode quality ladder (tvOS parity):
                                 // re-request the session at the chosen rung.
                                 viewModel.switchQuality(id)
-                            },
-                            onSelectSubtitle = { idx -> applyTvSubtitleSelection(idx, false) },
-                            onSelectServerSubtitle = { serverIdx ->
-                                applyTvServerSubtitleSelection(serverIdx)
                             },
                             onVideoFillModeChanged = viewModel::onVideoFillModeChanged,
                             playbackSpeed = playbackSpeed,
@@ -2006,19 +1940,11 @@ fun TvPlayerScreen(
 
                 if (!isInPictureInPictureMode && showQuickSubtitlePicker) {
                     TvQuickSubtitlePicker(
-                        tracks = state.subtitleTracks,
-                        subtitleUrls = state.subtitleUrls,
-                        onSelect = { idx ->
-                            applyTvSubtitleSelection(idx, false)
+                        presentation = subtitlePresentation,
+                        onDismiss = {
                             showQuickSubtitlePicker = false
                             viewModel.setControlsVisible(true)
                         },
-                        onSelectServer = { serverIdx ->
-                            applyTvServerSubtitleSelection(serverIdx)
-                            showQuickSubtitlePicker = false
-                            viewModel.setControlsVisible(true)
-                        },
-                        onDismiss = { showQuickSubtitlePicker = false },
                     )
                 }
 
@@ -2476,63 +2402,16 @@ private fun formatSleepCountdown(seconds: Int): String {
 
 @Composable
 private fun TvQuickSubtitlePicker(
-    tracks: List<PlayerTrackEntry>,
-    subtitleUrls: List<org.siloserver.silo.model.playback.PlayerSubtitleInfo> = emptyList(),
-    onSelect: (Int) -> Unit,
-    onSelectServer: (Int) -> Unit = {},
+    presentation: TvSubtitleHudPresentation,
     onDismiss: () -> Unit,
 ) {
-    // Server catalog is the menu source (see HudSubtitlesPane): catalog-only
-    // rows have no Media3 track until chosen, so a tracks-keyed menu shows
-    // "no subtitles" for titles with plenty. Media3 tracks are the fallback
-    // for embedded-only discoveries.
-    val selectedTrack = tracks.firstOrNull { it.isSelected }
-    val useServerList = subtitleUrls.isNotEmpty()
-    // Embedded player-discovered tracks not in the server catalog (e.g. in-stream
-    // CEA-608) stay selectable, tagged "media:" for the Media3-index path.
-    val embeddedOnly = if (useServerList) {
-        val mountedTrackIndexes = resolvedMountedSubtitleTrackIndexes(tracks, subtitleUrls)
-        tracks.filterNot { it.index in mountedTrackIndexes }
-    } else {
-        emptyList()
-    }
-    val options = buildList {
-        add(HudPickerOption(id = "-1", label = "Off"))
-        if (useServerList) {
-            subtitleUrls.forEachIndexed { idx, row ->
-                add(
-                    HudPickerOption(
-                        id = row.index.toString(),
-                        label = subtitleChoiceLabel(row, idx),
-                    ),
-                )
-            }
-            embeddedOnly.forEach { track ->
-                add(
-                    HudPickerOption(
-                        id = "media:${track.index}",
-                        label = track.displayLabel.ifBlank { "Embedded" },
-                    ),
-                )
-            }
-        } else {
-            tracks.forEachIndexed { idx, track ->
-                add(
-                    HudPickerOption(
-                        id = track.index.toString(),
-                        label = track.displayLabel.ifBlank { "Track ${idx + 1}" },
-                    ),
-                )
-            }
-        }
-    }
-    val selectedId = if (useServerList) {
-        selectedTrack?.let { sel ->
-            resolveMountedSubtitleRow(sel, tracks, subtitleUrls)?.index?.toString()
-                ?: "media:${sel.index}"
-        } ?: "-1"
-    } else {
-        (selectedTrack?.index ?: -1).toString()
+    val checkedRow = presentation.rows.firstOrNull { row -> row.checked }
+    val focusedRow = presentation.rows.firstOrNull { row -> row.focused }
+    val options = presentation.rows.map { row ->
+        HudPickerOption(
+            id = row.stableId,
+            label = if (row.applying) "${row.label} · Applying…" else row.label,
+        )
     }
 
     // Rendered as an in-window overlay, NOT a Dialog. A Dialog is a separate
@@ -2553,15 +2432,17 @@ private fun TvQuickSubtitlePicker(
             presentation = HudPickerPresentation(
                 title = "Subtitles",
                 options = options,
-                selectedId = selectedId,
-                onSelect = { id ->
-                    val media = id.removePrefix("media:")
-                    if (media != id) {
-                        onSelect(media.toIntOrNull() ?: -1)
-                    } else {
-                        val ordinal = id.toIntOrNull() ?: -1
-                        if (useServerList) onSelectServer(ordinal) else onSelect(ordinal)
-                    }
+                selectedId = checkedRow?.stableId
+                    ?: presentation.rows.firstOrNull()?.stableId.orEmpty(),
+                focusedId = focusedRow?.stableId
+                    ?: checkedRow?.stableId
+                    ?: presentation.rows.firstOrNull()?.stableId.orEmpty(),
+                closeOnSelect = false,
+                onFocused = presentation.onFocused,
+                onSelect = { stableId ->
+                    presentation.rows
+                        .firstOrNull { row -> row.stableId == stableId }
+                        ?.let { row -> presentation.onSelect(row.identity) }
                 },
             ),
             onClose = onDismiss,

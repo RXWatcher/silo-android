@@ -58,15 +58,15 @@ class TvPlayerScreenStartPositionTest {
     }
 
     @Test
-    fun tvPlayerRoutesTrackSelectionThroughBackend() {
+    fun tvPlayerRoutesOwnedSubtitleMountAndTransactionalAudioSelection() {
         assertTrue(
             source.contains("backend.selectSubtitle(") ||
                 source.contains("videoBackend?.selectSubtitle("),
-            "TV subtitle selection must go through the mounted backend",
+            "TV subtitle mount requests must go through the mounted backend",
         )
         assertTrue(
-            source.contains("videoBackend?.selectAudioTrack("),
-            "TV audio selection must go through the mounted backend",
+            source.contains("onSelectAudio = viewModel::selectAudioOption"),
+            "TV audio user intent must enter the shared transaction owner",
         )
         assertTrue(
             !source.contains("trackSelectionCoordinator.selectSubtitle("),

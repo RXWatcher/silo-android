@@ -36,6 +36,7 @@ import java.util.IdentityHashMap
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +56,7 @@ data class StagedVideoReplan(
     val basePlanAttemptId: String,
     val candidate: VideoSessionStartV3.Ready,
     val candidateSessionId: String,
+    val outputRouteGeneration: Long,
 )
 
 /**
@@ -93,6 +95,18 @@ open class PlaybackSessionManager(
         val fallbackReason: String,
     )
 
+    private data class PendingVideoPublication(
+        val replacement: ActiveVideoAttempt,
+        val predecessor: ActiveVideoAttempt?,
+        val settled: CompletableDeferred<Unit> = CompletableDeferred(),
+    )
+
+    private data class PendingPublicationRollback(
+        val replacementSessionId: String,
+        val candidateSessionIds: List<String>,
+        val settled: CompletableDeferred<Unit>,
+    )
+
     private sealed interface PreparedVideoReplan {
         data class Staged(val value: StagedVideoReplan) : PreparedVideoReplan
         data class ImmediateOutcome(val value: VideoSessionStartV3) : PreparedVideoReplan
@@ -109,7 +123,26 @@ open class PlaybackSessionManager(
     private val stagedVideoReplans =
         IdentityHashMap<StagedVideoReplan, PreparedStagedVideoReplan>()
     private val orphanedSessionIds = mutableSetOf<String>()
+    private var pendingVideoPublication: PendingVideoPublication? = null
     private var contentResetInProgress = false
+
+    private suspend fun <T> withSettledVideoAttempt(
+        block: suspend () -> T,
+    ): T {
+        while (true) {
+            videoAttemptMutex.lock()
+            val pending = pendingVideoPublication
+            if (pending == null) {
+                try {
+                    return block()
+                } finally {
+                    videoAttemptMutex.unlock()
+                }
+            }
+            videoAttemptMutex.unlock()
+            pending.settled.await()
+        }
+    }
 
     suspend fun startVideoSessionV3(
         fileId: Int,
@@ -121,9 +154,13 @@ open class PlaybackSessionManager(
         qualityPreference: String?,
         startPosition: Double?,
         subtitleFidelityPreference: SubtitleFidelityPreference = SubtitleFidelityPreference.PRESERVE,
+        deferPublication: Boolean = false,
     ): ApiResult<VideoSessionStartV3> = contentStartMutex.withLock {
         try {
             beginContentReset()
+            val predecessorForPublication = videoAttemptMutex.withLock {
+                activeVideoAttempt.get()
+            }
             val playbackAttemptId = UUID.randomUUID().toString()
             val network = networkEvidenceProvider.snapshot()
             val request = PlaybackStartRequestV3(
@@ -156,7 +193,13 @@ open class PlaybackSessionManager(
                             serverFeatures = result.data.serverFeatures.toSet(),
                             planAttemptId = planAttemptId,
                         )
-                        videoAttemptMutex.withLock { activeVideoAttempt.set(active) }
+                        videoAttemptMutex.withLock {
+                            installActiveVideoAttemptLocked(
+                                replacement = active,
+                                predecessor = predecessorForPublication,
+                                deferPublication = deferPublication,
+                            )
+                        }
                         PassthroughSuppressionRegistry.beginAttempt(active.planAttemptKey)
                         reportActiveVideoEvent("plan_selected", network.asRouteDiagnostics())
                         ApiResult.Success(
@@ -170,7 +213,11 @@ open class PlaybackSessionManager(
                         )
                     }
                     is PlaybackV3Validation.Terminal -> {
-                        videoAttemptMutex.withLock { activeVideoAttempt.set(null) }
+                        if (!deferPublication) {
+                            videoAttemptMutex.withLock {
+                                activeVideoAttempt.set(null)
+                            }
+                        }
                         emitRouteEvent(
                             PlaybackRouteEventV3(
                                 playbackAttemptId = playbackAttemptId,
@@ -187,7 +234,11 @@ open class PlaybackSessionManager(
                         )
                     }
                     is PlaybackV3Validation.Incompatible -> {
-                        videoAttemptMutex.withLock { activeVideoAttempt.set(null) }
+                        if (!deferPublication) {
+                            videoAttemptMutex.withLock {
+                                activeVideoAttempt.set(null)
+                            }
+                        }
                         validated.allocatedSessionId?.let { playbackRepository.stopPlayback(it) }
                         ApiResult.Success(VideoSessionStartV3.ServerUpgradeRequired)
                     }
@@ -214,11 +265,38 @@ open class PlaybackSessionManager(
                             audioTrackIndex = audioTrackIndex,
                             subtitleTrackIndex = subtitleTrackIndex,
                         )
-                        if (replanResult is ApiResult.Error || replanResult is ApiResult.NetworkError) {
+                        if (deferPublication) {
+                            var abandonedSessionId: String? = null
+                            videoAttemptMutex.withLock {
+                                val replacement = activeVideoAttempt.get()
+                                val ready = replanResult is ApiResult.Success &&
+                                    replanResult.data is VideoSessionStartV3.Ready
+                                if (ready && replacement != null) {
+                                    pendingVideoPublication = PendingVideoPublication(
+                                        replacement = replacement,
+                                        predecessor = predecessorForPublication,
+                                    )
+                                } else {
+                                    if (replacement?.sessionId == active.sessionId) {
+                                        abandonedSessionId = active.sessionId
+                                    }
+                                    activeVideoAttempt.set(predecessorForPublication)
+                                    predecessorForPublication?.let {
+                                        PassthroughSuppressionRegistry.beginAttempt(it.planAttemptKey)
+                                    }
+                                }
+                            }
+                            abandonedSessionId?.let { playbackRepository.stopPlayback(it) }
+                        } else if (
+                            replanResult is ApiResult.Error ||
+                            replanResult is ApiResult.NetworkError
+                        ) {
                             val cleared = videoAttemptMutex.withLock {
                                 activeVideoAttempt.compareAndSet(active, null)
                             }
-                            if (cleared) playbackRepository.stopPlayback(validated.sessionId)
+                            if (cleared) {
+                                playbackRepository.stopPlayback(validated.sessionId)
+                            }
                         }
                         replanResult
                     }
@@ -261,15 +339,52 @@ open class PlaybackSessionManager(
         )
     }
 
+    private fun installActiveVideoAttemptLocked(
+        replacement: ActiveVideoAttempt,
+        predecessor: ActiveVideoAttempt?,
+        deferPublication: Boolean,
+    ) {
+        activeVideoAttempt.set(replacement)
+        pendingVideoPublication = if (deferPublication) {
+            PendingVideoPublication(
+                replacement = replacement,
+                predecessor = predecessor?.takeIf {
+                    it.sessionId != replacement.sessionId
+                },
+            )
+        } else {
+            null
+        }
+    }
+
     private suspend fun beginContentReset() {
         val callerContext = currentCoroutineContext()
-        val (candidateSessionIds, protectedSessionId) = videoAttemptMutex.withLock {
-            contentResetInProgress = true
-            val activeSessionId = activeVideoAttempt.get()?.sessionId
-            drainStagedCandidateSessionsLocked(
-                protectedSessionIds = setOfNotNull(activeSessionId),
-            ) to activeSessionId
+        var resetState: Pair<List<String>, String?>? = null
+        while (resetState == null) {
+            videoAttemptMutex.lock()
+            val pending = pendingVideoPublication
+            if (pending != null) {
+                videoAttemptMutex.unlock()
+                pending.settled.await()
+                continue
+            }
+            try {
+                // Publication settlement was observed while holding the same
+                // mutex used to fence replans. Marking the reset in progress
+                // here prevents a new pending publication from appearing
+                // between the check above and staged-candidate drainage.
+                contentResetInProgress = true
+                val activeSessionId = activeVideoAttempt.get()?.sessionId
+                resetState = (
+                    drainStagedCandidateSessionsLocked(
+                        protectedSessionIds = setOfNotNull(activeSessionId),
+                    )
+                ).distinct().filterNot { it == activeSessionId } to activeSessionId
+            } finally {
+                videoAttemptMutex.unlock()
+            }
         }
+        val (candidateSessionIds, protectedSessionId) = checkNotNull(resetState)
         withContext(NonCancellable) {
             try {
                 stopSessionsRetainingFailures(candidateSessionIds)
@@ -312,6 +427,9 @@ open class PlaybackSessionManager(
     }
 
     internal fun activeSessionIdForTest(): String? = activeVideoAttempt.get()?.sessionId
+
+    internal suspend fun orphanedSessionIdsForTest(): Set<String> =
+        videoAttemptMutex.withLock { orphanedSessionIds.toSet() }
 
     suspend fun replanActiveVideoSession(
         classification: String,
@@ -399,15 +517,15 @@ open class PlaybackSessionManager(
         capabilities: ClientCodecCapabilities? = null,
         clientPlaybackContext: ClientPlaybackContext? = null,
         preserveImmediateOutcomes: Boolean,
-    ): ApiResult<PreparedVideoReplan> = videoAttemptMutex.withLock {
+    ): ApiResult<PreparedVideoReplan> = withSettledVideoAttempt {
         if (contentResetInProgress) {
-            return@withLock ApiResult.Error(
+            return@withSettledVideoAttempt ApiResult.Error(
                 code = 409,
                 error = "content_reset_in_progress",
                 message = "A replacement playback content session is still being installed.",
             )
         }
-        val active = activeVideoAttempt.get() ?: return@withLock ApiResult.Error(
+        val active = activeVideoAttempt.get() ?: return@withSettledVideoAttempt ApiResult.Error(
             code = 409,
             error = "playback_attempt_not_active",
             message = "No protocol-v3 playback attempt is active.",
@@ -415,7 +533,7 @@ open class PlaybackSessionManager(
         if (classification == SEEK_REANCHOR_V3_OPERATION ||
             classification == SEEK_FAILURE_RECOVERY_V3_OPERATION
         ) {
-            return@withLock ApiResult.Error(
+            return@withSettledVideoAttempt ApiResult.Error(
                 code = 400,
                 error = "reserved_playback_operation",
                 message = "Seek operations must use the dedicated playback session methods.",
@@ -478,7 +596,7 @@ open class PlaybackSessionManager(
                         stopCandidateSessionIfUnowned(active.sessionId, validated.sessionId)
                         if (preserveImmediateOutcomes) {
                             activeVideoAttempt.set(null)
-                            return@withLock ApiResult.Success(
+                            return@withSettledVideoAttempt ApiResult.Success(
                                 PreparedVideoReplan.ImmediateOutcome(
                                     VideoSessionStartV3.Terminal(
                                         "replan_loop_detected",
@@ -488,7 +606,7 @@ open class PlaybackSessionManager(
                                 ),
                             )
                         }
-                        return@withLock ApiResult.Error(
+                        return@withSettledVideoAttempt ApiResult.Error(
                             code = 409,
                             error = "replan_loop_detected",
                             message = "The server returned a playback plan that already failed on this output route.",
@@ -500,7 +618,7 @@ open class PlaybackSessionManager(
                     )
                     if (subtitleMismatch != null) {
                         stopCandidateSessionIfUnowned(active.sessionId, validated.sessionId)
-                        return@withLock ApiResult.Error(
+                        return@withSettledVideoAttempt ApiResult.Error(
                             code = 502,
                             error = "invalid_subtitle_replan_candidate",
                             message = subtitleMismatch,
@@ -540,6 +658,7 @@ open class PlaybackSessionManager(
                         basePlanAttemptId = active.planAttemptId,
                         candidate = ready,
                         candidateSessionId = validated.sessionId,
+                        outputRouteGeneration = next.context.output.outputRouteGeneration,
                     )
                     stagedVideoReplans[staged] = PreparedStagedVideoReplan(
                         nextAttempt = next,
@@ -636,6 +755,7 @@ open class PlaybackSessionManager(
 
     suspend fun commitStagedVideoReplan(
         staged: StagedVideoReplan,
+        deferPublication: Boolean = false,
     ): ApiResult<VideoSessionStartV3.Ready> = videoAttemptMutex.withLock {
         val prepared = stagedVideoReplans.remove(staged)
             ?: return@withLock stagedVideoReplanUnavailable()
@@ -668,12 +788,96 @@ open class PlaybackSessionManager(
         // non-blocking bookkeeping: callers must always receive the committed
         // candidate once manager ownership has moved to [next].
         activeVideoAttempt.set(next)
+        if (deferPublication) {
+            pendingVideoPublication = PendingVideoPublication(
+                replacement = next,
+                predecessor = active,
+            )
+        }
         runCatching { emitRouteEvent(routeEvent) }
-        scheduleCommittedSessionCleanup(
-            oldSessionId = active.sessionId,
-            activeSessionId = next.sessionId,
-        )
+        if (!deferPublication) {
+            scheduleCommittedSessionCleanup(
+                oldSessionId = active.sessionId,
+                activeSessionId = next.sessionId,
+            )
+        }
         ApiResult.Success(staged.candidate)
+    }
+
+    suspend fun confirmVideoSessionPublication(sessionId: String): Boolean {
+        val confirmation = videoAttemptMutex.withLock {
+            val pending = pendingVideoPublication
+                ?.takeIf { it.replacement.sessionId == sessionId }
+                ?: return@withLock null
+            if (activeVideoAttempt.get()?.sessionId != sessionId) return@withLock null
+            pendingVideoPublication = null
+            val predecessorSessionId = pending.predecessor?.sessionId
+                ?.takeIf { it != sessionId }
+            predecessorSessionId?.let { orphanedSessionIds += it }
+            pending.settled.complete(Unit)
+            true to predecessorSessionId
+        } ?: return false
+
+        val predecessorSessionId = confirmation.second
+        if (predecessorSessionId != null) {
+            scheduleRegisteredCommittedSessionCleanup(
+                oldSessionId = predecessorSessionId,
+                activeSessionId = sessionId,
+            )
+        }
+        return true
+    }
+
+    suspend fun rollbackUnpublishedVideoSession(sessionId: String): Boolean {
+        val rollback = videoAttemptMutex.withLock {
+            rollbackPendingPublicationLocked(sessionId)
+        } ?: return false
+        return try {
+            try {
+                stopSessionAfterOwnershipCleared(
+                    sessionId = rollback.replacementSessionId,
+                    candidateSessionIds = rollback.candidateSessionIds,
+                )
+            } catch (_: Throwable) {
+                // Ownership already converged to the predecessor under
+                // videoAttemptMutex. The replacement is orphan-tracked before
+                // its best-effort stop, so cleanup failure or caller
+                // cancellation must not veto the lifecycle half of rollback.
+                // A cancelled caller remains cancelled and will observe that
+                // at its next cancellation check after joint convergence.
+            }
+            true
+        } finally {
+            rollback.settled.complete(Unit)
+        }
+    }
+
+    private fun rollbackPendingPublicationLocked(
+        sessionId: String,
+    ): PendingPublicationRollback? {
+        val pending = pendingVideoPublication
+            ?.takeIf { it.replacement.sessionId == sessionId }
+            ?: return null
+        if (activeVideoAttempt.get()?.sessionId != sessionId) return null
+
+        pendingVideoPublication = null
+        activeVideoAttempt.set(pending.predecessor)
+        pending.predecessor?.let {
+            PassthroughSuppressionRegistry.beginAttempt(it.planAttemptKey)
+        }
+        val protectedSessionIds = setOfNotNull(
+            sessionId,
+            pending.predecessor?.sessionId,
+        )
+        val candidates = drainStagedCandidateSessionsForBaseLocked(
+            baseSessionId = sessionId,
+            protectedSessionIds = protectedSessionIds,
+        )
+        return PendingPublicationRollback(
+            replacementSessionId = sessionId,
+            candidateSessionIds = candidates,
+            settled = pending.settled,
+        )
     }
 
     private fun scheduleCommittedSessionCleanup(
@@ -682,6 +886,17 @@ open class PlaybackSessionManager(
     ) {
         if (oldSessionId == activeSessionId) return
         orphanedSessionIds += oldSessionId
+        scheduleRegisteredCommittedSessionCleanup(
+            oldSessionId = oldSessionId,
+            activeSessionId = activeSessionId,
+        )
+    }
+
+    private fun scheduleRegisteredCommittedSessionCleanup(
+        oldSessionId: String,
+        activeSessionId: String,
+    ) {
+        if (oldSessionId == activeSessionId) return
         runCatching {
             telemetryScope.launch(start = CoroutineStart.UNDISPATCHED) {
                 var stopped = false
@@ -861,21 +1076,28 @@ open class PlaybackSessionManager(
     suspend fun reanchorActiveVideoSession(
         positionSeconds: Double,
         diagnostics: Map<String, String> = emptyMap(),
-    ): ApiResult<VideoSessionStartV3> = videoAttemptMutex.withLock {
-        val active = activeVideoAttempt.get() ?: return@withLock ApiResult.Error(
+    ): ApiResult<VideoSessionStartV3> = withSettledVideoAttempt {
+        if (contentResetInProgress) {
+            return@withSettledVideoAttempt ApiResult.Error(
+                code = 409,
+                error = "content_reset_in_progress",
+                message = "A replacement playback content session is still being installed.",
+            )
+        }
+        val active = activeVideoAttempt.get() ?: return@withSettledVideoAttempt ApiResult.Error(
             code = 409,
             error = "playback_attempt_not_active",
             message = "No protocol-v3 playback attempt is active.",
         )
         if (SEEK_REANCHOR_V3_FEATURE !in active.serverFeatures) {
-            return@withLock ApiResult.Error(
+            return@withSettledVideoAttempt ApiResult.Error(
                 code = 409,
                 error = "seek_reanchor_not_supported",
                 message = "The active playback server did not negotiate seek re-anchoring.",
             )
         }
         if (!positionSeconds.isFinite() || positionSeconds < 0.0) {
-            return@withLock ApiResult.Error(
+            return@withSettledVideoAttempt ApiResult.Error(
                 code = 400,
                 error = "invalid_seek_position",
                 message = "Seek position must be a finite, non-negative source timestamp.",
@@ -924,7 +1146,7 @@ open class PlaybackSessionManager(
         when (val result = playbackRepository.replanPlaybackV3(active.sessionId, request)) {
             is ApiResult.Success -> {
                 if (SEEK_REANCHOR_V3_FEATURE !in result.data.serverFeatures) {
-                    return@withLock invalidSeekReanchorResponse(
+                    return@withSettledVideoAttempt invalidSeekReanchorResponse(
                         "The server omitted the negotiated seek re-anchor feature from its response.",
                     )
                 }
@@ -937,7 +1159,7 @@ open class PlaybackSessionManager(
                             candidate = validated.plan,
                         )
                         if (mismatch != null) {
-                            return@withLock invalidSeekReanchorResponse(mismatch)
+                            return@withSettledVideoAttempt invalidSeekReanchorResponse(mismatch)
                         }
                         // Synchronous local recovery mutations do not acquire the
                         // suspend operation mutex. Re-read the active record at
@@ -949,7 +1171,7 @@ open class PlaybackSessionManager(
                             serverFeatures = result.data.serverFeatures,
                         )
                         if (next == null) {
-                            return@withLock ApiResult.Error(
+                            return@withSettledVideoAttempt ApiResult.Error(
                                 code = 409,
                                 error = "playback_attempt_changed",
                                 message = "The active playback attempt changed while seek re-anchoring.",
@@ -1100,28 +1322,35 @@ open class PlaybackSessionManager(
         message: String? = null,
         decoderName: String? = null,
         diagnostics: Map<String, String> = emptyMap(),
-    ): ApiResult<VideoSessionStartV3> = videoAttemptMutex.withLock {
-        val active = activeVideoAttempt.get() ?: return@withLock ApiResult.Error(
+    ): ApiResult<VideoSessionStartV3> = withSettledVideoAttempt {
+        if (contentResetInProgress) {
+            return@withSettledVideoAttempt ApiResult.Error(
+                code = 409,
+                error = "content_reset_in_progress",
+                message = "A replacement playback content session is still being installed.",
+            )
+        }
+        val active = activeVideoAttempt.get() ?: return@withSettledVideoAttempt ApiResult.Error(
             code = 409,
             error = "playback_attempt_not_active",
             message = "No protocol-v3 playback attempt is active.",
         )
         if (SEEK_REANCHOR_V3_FEATURE !in active.serverFeatures) {
-            return@withLock ApiResult.Error(
+            return@withSettledVideoAttempt ApiResult.Error(
                 code = 409,
                 error = "seek_reanchor_not_supported",
                 message = "The active playback server did not negotiate seek recovery.",
             )
         }
         if (!positionSeconds.isFinite() || positionSeconds < 0.0) {
-            return@withLock ApiResult.Error(
+            return@withSettledVideoAttempt ApiResult.Error(
                 code = 400,
                 error = "invalid_seek_position",
                 message = "Seek position must be a finite, non-negative source timestamp.",
             )
         }
         if (classification.isBlank()) {
-            return@withLock ApiResult.Error(
+            return@withSettledVideoAttempt ApiResult.Error(
                 code = 400,
                 error = "invalid_failure_classification",
                 message = "Seek recovery requires a failure classification.",
@@ -1177,7 +1406,7 @@ open class PlaybackSessionManager(
         when (val result = playbackRepository.replanPlaybackV3(active.sessionId, request)) {
             is ApiResult.Success -> {
                 if (SEEK_REANCHOR_V3_FEATURE !in result.data.serverFeatures) {
-                    return@withLock invalidSeekRecoveryResponse(
+                    return@withSettledVideoAttempt invalidSeekRecoveryResponse(
                         "The server omitted the negotiated seek recovery feature from its response.",
                     )
                 }
@@ -1190,13 +1419,13 @@ open class PlaybackSessionManager(
                             candidate = validated.plan,
                         )
                         if (mismatch != null) {
-                            return@withLock invalidSeekRecoveryResponse(mismatch)
+                            return@withSettledVideoAttempt invalidSeekRecoveryResponse(mismatch)
                         }
                         val nextKey = validated.plan.planAttemptKey(
                             active.context.output.outputRouteGeneration,
                         )
                         if (nextKey in attemptedKeys) {
-                            return@withLock ApiResult.Success(
+                            return@withSettledVideoAttempt ApiResult.Success(
                                 VideoSessionStartV3.Terminal(
                                     reason = "replan_loop_detected",
                                     message = "The server returned a seek-recovery route that already failed.",
@@ -1214,7 +1443,7 @@ open class PlaybackSessionManager(
                             attemptedPlanKeys = attemptedKeys,
                         )
                         if (next == null) {
-                            return@withLock ApiResult.Error(
+                            return@withSettledVideoAttempt ApiResult.Error(
                                 code = 409,
                                 error = "playback_attempt_changed",
                                 message = "The active playback attempt changed during seek recovery.",
@@ -1582,7 +1811,42 @@ open class PlaybackSessionManager(
      * Must be called when exiting the player or when playback completes.
      */
     open suspend fun stopSession(sessionId: String): ApiResult<Unit> {
-        val callerContext = currentCoroutineContext()
+        val pendingPublicationStop = videoAttemptMutex.withLock {
+            val pending = pendingVideoPublication
+            when {
+                pending?.replacement?.sessionId == sessionId -> {
+                    rollbackPendingPublicationLocked(sessionId)?.let {
+                        Triple(
+                            it.replacementSessionId,
+                            it.candidateSessionIds,
+                            it.settled,
+                        )
+                    }
+                }
+                pending?.predecessor?.sessionId == sessionId -> {
+                    pendingVideoPublication = null
+                    activeVideoAttempt.set(null)
+                    val candidates = (
+                        drainStagedCandidateSessionsLocked(
+                            protectedSessionIds = setOf(sessionId),
+                        ) + pending.replacement.sessionId
+                    ).distinct().filterNot { it == sessionId }
+                    Triple(sessionId, candidates, pending.settled)
+                }
+                else -> null
+            }
+        }
+        if (pendingPublicationStop != null) {
+            return try {
+                stopSessionAfterOwnershipCleared(
+                    sessionId = pendingPublicationStop.first,
+                    candidateSessionIds = pendingPublicationStop.second,
+                )
+            } finally {
+                pendingPublicationStop.third.complete(Unit)
+            }
+        }
+
         val candidateSessionIds = videoAttemptMutex.withLock {
             var stoppedActiveSession = false
             while (true) {
@@ -1606,6 +1870,17 @@ open class PlaybackSessionManager(
                 )
             }
         }
+        return stopSessionAfterOwnershipCleared(
+            sessionId = sessionId,
+            candidateSessionIds = candidateSessionIds,
+        )
+    }
+
+    private suspend fun stopSessionAfterOwnershipCleared(
+        sessionId: String,
+        candidateSessionIds: List<String>,
+    ): ApiResult<Unit> {
+        val callerContext = currentCoroutineContext()
         var result: ApiResult<Unit>? = null
         var requestedFailure: Throwable? = null
         withContext(NonCancellable) {

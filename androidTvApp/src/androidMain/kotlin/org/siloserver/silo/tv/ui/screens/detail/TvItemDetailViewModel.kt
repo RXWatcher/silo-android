@@ -13,11 +13,11 @@ import org.siloserver.silo.model.catalog.Season
 import org.siloserver.silo.model.catalog.isAudiobookItemType
 import org.siloserver.silo.model.catalog.sortedForDisplay
 import org.siloserver.silo.model.playback.combinedSubtitleSelectionIndexes
-import org.siloserver.silo.playback.SUBTITLE_OFF_FINGERPRINT
 import org.siloserver.silo.playback.audioTrackFingerprint
+import org.siloserver.silo.playback.decodeSubtitleIdentityPreference
+import org.siloserver.silo.playback.encodeCatalogSubtitlePreference
 import org.siloserver.silo.playback.resolveAudioTrackOrdinal
-import org.siloserver.silo.playback.resolveSubtitleTrackOrdinal
-import org.siloserver.silo.playback.subtitleTrackFingerprint
+import org.siloserver.silo.playback.resolveCatalogSubtitlePreferenceOrdinal
 import org.siloserver.silo.model.section.SectionItem
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.CatalogRepository
@@ -25,6 +25,7 @@ import org.siloserver.silo.repository.PersonalDataRepository
 import org.siloserver.silo.repository.ProfileRepository
 import org.siloserver.silo.repository.port.LocalTrackSelection
 import org.siloserver.silo.repository.port.NoOpUserItemStatePort
+import org.siloserver.silo.repository.port.TrackSelectionFingerprintUpdate
 import org.siloserver.silo.repository.port.UserItemStatePort
 import org.siloserver.silo.tv.ui.util.isTvHiddenMediaType
 import org.siloserver.silo.tv.ui.util.visibleOnTv
@@ -102,32 +103,62 @@ data class TvItemDetailUiState(
 internal data class TvTrackSelectionPersistence(
     val contentId: String,
     val fileId: Int,
-    val audioFingerprint: String?,
-    val subtitleFingerprint: String?,
+    val audioUpdate: TrackSelectionFingerprintUpdate,
+    val subtitleUpdate: TrackSelectionFingerprintUpdate,
 )
+
+internal enum class TvTrackSelectionDimension {
+    Audio,
+    Subtitle,
+}
 
 internal fun buildTrackSelectionPersistence(
     targetContentId: String,
     version: FileVersion,
+    changedDimension: TvTrackSelectionDimension,
     selectedAudioIndex: Int?,
     selectedSubtitleIndex: Int?,
 ): TvTrackSelectionPersistence {
     val tracks = version.subtitleTracks.orEmpty()
-    val subtitleFingerprint = when (selectedSubtitleIndex) {
-        null -> null
-        -1 -> SUBTITLE_OFF_FINGERPRINT
-        else -> tracks
-            .getOrNull(combinedSubtitleSelectionIndexes(tracks).indexOf(selectedSubtitleIndex))
-            ?.let(::subtitleTrackFingerprint)
+    val audioUpdate = when (changedDimension) {
+        TvTrackSelectionDimension.Subtitle -> TrackSelectionFingerprintUpdate.Preserve
+        TvTrackSelectionDimension.Audio -> selectedAudioIndex
+            ?.let(version.audioTracks.orEmpty()::getOrNull)
+            ?.let(::audioTrackFingerprint)
+            ?.let(TrackSelectionFingerprintUpdate::Set)
+            ?: if (selectedAudioIndex == null) {
+                TrackSelectionFingerprintUpdate.Clear
+            } else {
+                TrackSelectionFingerprintUpdate.Preserve
+            }
     }
-    val audioFingerprint = selectedAudioIndex
-        ?.let(version.audioTracks.orEmpty()::getOrNull)
-        ?.let(::audioTrackFingerprint)
+    val subtitleUpdate = when (changedDimension) {
+        TvTrackSelectionDimension.Audio -> TrackSelectionFingerprintUpdate.Preserve
+        TvTrackSelectionDimension.Subtitle -> {
+            val catalogOrdinal = selectedSubtitleIndex?.let {
+                if (it == -1) {
+                    -1
+                } else {
+                    combinedSubtitleSelectionIndexes(tracks)
+                        .indexOf(it)
+                        .takeIf { ordinal -> ordinal >= 0 }
+                }
+            }
+            catalogOrdinal
+                ?.let { encodeCatalogSubtitlePreference(tracks, it) }
+                ?.let(TrackSelectionFingerprintUpdate::Set)
+                ?: if (selectedSubtitleIndex == null) {
+                    TrackSelectionFingerprintUpdate.Clear
+                } else {
+                    TrackSelectionFingerprintUpdate.Preserve
+                }
+        }
+    }
     return TvTrackSelectionPersistence(
         contentId = targetContentId,
         fileId = version.fileId,
-        audioFingerprint = audioFingerprint,
-        subtitleFingerprint = subtitleFingerprint,
+        audioUpdate = audioUpdate,
+        subtitleUpdate = subtitleUpdate,
     )
 }
 
@@ -135,21 +166,18 @@ internal suspend fun recordTrackSelection(
     port: UserItemStatePort,
     selection: TvTrackSelectionPersistence,
 ) {
-    port.recordSubtitleTrackSelection(
-        selection.contentId,
-        selection.fileId,
-        selection.subtitleFingerprint,
-    )
-    port.recordAudioTrackSelection(
-        selection.contentId,
-        selection.fileId,
-        selection.audioFingerprint,
+    port.recordTrackSelection(
+        contentId = selection.contentId,
+        fileId = selection.fileId,
+        audioUpdate = selection.audioUpdate,
+        subtitleUpdate = selection.subtitleUpdate,
     )
 }
 
 internal data class TvRestoredTrackSelection(
     val audioIndex: Int?,
     val subtitleIndex: Int?,
+    val subtitlePreferenceMigration: String? = null,
 )
 
 internal fun restoreTrackSelection(
@@ -157,14 +185,21 @@ internal fun restoreTrackSelection(
     saved: LocalTrackSelection,
 ): TvRestoredTrackSelection {
     val tracks = version.subtitleTracks.orEmpty()
-    val subtitleIndex = resolveSubtitleTrackOrdinal(tracks, saved.subtitleFingerprint)
+    val subtitleOrdinal = resolveCatalogSubtitlePreferenceOrdinal(tracks, saved.subtitleFingerprint)
+    val subtitleIndex = subtitleOrdinal
         ?.let { catalogOrdinal ->
             if (catalogOrdinal == -1) -1
             else combinedSubtitleSelectionIndexes(tracks).getOrNull(catalogOrdinal)
         }
+    val subtitlePreferenceMigration = saved.subtitleFingerprint
+        ?.takeIf { it.isNotBlank() }
+        ?.takeIf { decodeSubtitleIdentityPreference(it) == null }
+        ?.takeIf { subtitleOrdinal != null }
+        ?.let { encodeCatalogSubtitlePreference(tracks, requireNotNull(subtitleOrdinal)) }
     return TvRestoredTrackSelection(
         audioIndex = resolveAudioTrackOrdinal(version.audioTracks.orEmpty(), saved.audioFingerprint),
         subtitleIndex = subtitleIndex,
+        subtitlePreferenceMigration = subtitlePreferenceMigration,
     )
 }
 
@@ -175,6 +210,7 @@ internal fun mergeTrackSelection(
 ): TvRestoredTrackSelection = TvRestoredTrackSelection(
     audioIndex = currentAudioIndex ?: durable.audioIndex,
     subtitleIndex = currentSubtitleIndex ?: durable.subtitleIndex,
+    subtitlePreferenceMigration = durable.subtitlePreferenceMigration,
 )
 
 internal fun shouldApplyNextUpTrackRestore(
@@ -545,7 +581,7 @@ class TvItemDetailViewModel(
         _uiState.update { it.copy(selectedAudioIndex = index) }
         val state = _uiState.value
         TvDetailTrackSelectionSession.remember(contentId, state.selectedFileId, index, state.selectedSubtitleIndex)
-        persistTrackSelection()
+        persistTrackSelection(TvTrackSelectionDimension.Audio)
     }
 
     /** Pre-select a subtitle track for the next Play (-1 = Off, null = auto). */
@@ -553,7 +589,7 @@ class TvItemDetailViewModel(
         _uiState.update { it.copy(selectedSubtitleIndex = index) }
         val state = _uiState.value
         TvDetailTrackSelectionSession.remember(contentId, state.selectedFileId, state.selectedAudioIndex, index)
-        persistTrackSelection()
+        persistTrackSelection(TvTrackSelectionDimension.Subtitle)
     }
 
     /** The version behind [TvItemDetailUiState.selectedFileId], or the default
@@ -569,17 +605,18 @@ class TvItemDetailViewModel(
      * version's file, so it survives leaving/re-opening the page AND the process
      * (the in-memory [TvDetailTrackSelectionSession] only covers this process).
      * Mirrors the phone I7 fix and tvOS TrackSelectionPersistence: record the
-     * catalog track's fingerprint against the shared UserItemStatePort keyed on
-     * (contentId, fileId); Auto (null) clears, explicit Off writes the off
-     * sentinel.
+     * catalog track's stable identity against the shared UserItemStatePort keyed
+     * on (contentId, fileId). Auto (null) clears only the changed dimension,
+     * while explicit Off writes a typed Off identity.
      */
-    private fun persistTrackSelection() {
+    private fun persistTrackSelection(changedDimension: TvTrackSelectionDimension) {
         val state = _uiState.value
         val detail = state.detail ?: return
         persistTrackSelectionFor(
             targetContentId = contentId,
             detail = detail,
             selectedFileId = state.selectedFileId,
+            changedDimension = changedDimension,
             selectedAudioIndex = state.selectedAudioIndex,
             selectedSubtitleIndex = state.selectedSubtitleIndex,
         )
@@ -589,6 +626,7 @@ class TvItemDetailViewModel(
         targetContentId: String,
         detail: ItemDetail,
         selectedFileId: Int?,
+        changedDimension: TvTrackSelectionDimension,
         selectedAudioIndex: Int?,
         selectedSubtitleIndex: Int?,
     ) {
@@ -599,6 +637,7 @@ class TvItemDetailViewModel(
         val selection = buildTrackSelectionPersistence(
             targetContentId = targetContentId,
             version = version,
+            changedDimension = changedDimension,
             selectedAudioIndex = selectedAudioIndex,
             selectedSubtitleIndex = selectedSubtitleIndex,
         )
@@ -623,14 +662,33 @@ class TvItemDetailViewModel(
             val subOrdinal = restored.subtitleIndex
             val audOrdinal = restored.audioIndex
             if (subOrdinal == null && audOrdinal == null) return@launch
+            var shouldMigrateSubtitlePreference = false
             _uiState.update {
                 // The ordinals were resolved against `version`; if the user
                 // switched versions while this suspended, they'd index into the
                 // wrong track list — leave the new version untouched.
                 if (selectedVersionFor(it, detail)?.fileId != version.fileId) return@update it
+                shouldMigrateSubtitlePreference =
+                    it.selectedSubtitleIndex == null &&
+                        restored.subtitlePreferenceMigration != null
                 it.copy(
                     selectedSubtitleIndex = it.selectedSubtitleIndex ?: subOrdinal,
                     selectedAudioIndex = it.selectedAudioIndex ?: audOrdinal,
+                )
+            }
+            val current = _uiState.value
+            if (
+                shouldMigrateSubtitlePreference &&
+                selectedVersionFor(current, detail)?.fileId == version.fileId &&
+                current.selectedSubtitleIndex == subOrdinal
+            ) {
+                userItemState.recordTrackSelection(
+                    contentId = contentId,
+                    fileId = version.fileId,
+                    audioUpdate = TrackSelectionFingerprintUpdate.Preserve,
+                    subtitleUpdate = TrackSelectionFingerprintUpdate.Set(
+                        requireNotNull(restored.subtitlePreferenceMigration),
+                    ),
                 )
             }
         }
@@ -990,13 +1048,13 @@ class TvItemDetailViewModel(
     fun onNextUpAudioTrackSelected(index: Int?) {
         _uiState.update { it.copy(selectedNextUpAudioIndex = index) }
         rememberNextUpTrackSelection()
-        persistNextUpTrackSelection()
+        persistNextUpTrackSelection(TvTrackSelectionDimension.Audio)
     }
 
     fun onNextUpSubtitleTrackSelected(index: Int?) {
         _uiState.update { it.copy(selectedNextUpSubtitleIndex = index) }
         rememberNextUpTrackSelection()
-        persistNextUpTrackSelection()
+        persistNextUpTrackSelection(TvTrackSelectionDimension.Subtitle)
     }
 
     private fun rememberNextUpTrackSelection() {
@@ -1010,7 +1068,7 @@ class TvItemDetailViewModel(
         )
     }
 
-    private fun persistNextUpTrackSelection() {
+    private fun persistNextUpTrackSelection(changedDimension: TvTrackSelectionDimension) {
         val state = _uiState.value
         val nextUpContentId = state.nextUpEpisode?.contentId ?: return
         val detail = state.nextUpPlaybackDetail ?: return
@@ -1018,6 +1076,7 @@ class TvItemDetailViewModel(
             targetContentId = nextUpContentId,
             detail = detail,
             selectedFileId = state.selectedNextUpFileId,
+            changedDimension = changedDimension,
             selectedAudioIndex = state.selectedNextUpAudioIndex,
             selectedSubtitleIndex = state.selectedNextUpSubtitleIndex,
         )
@@ -1055,6 +1114,7 @@ class TvItemDetailViewModel(
         viewModelScope.launch {
             val saved = userItemState.localTrackSelection(targetContentId, version.fileId) ?: return@launch
             val restored = restoreTrackSelection(version, saved)
+            var shouldMigrateSubtitlePreference = false
             _uiState.update {
                 if (!shouldApplyNextUpTrackRestore(
                         currentContentId = it.nextUpEpisode?.contentId,
@@ -1065,6 +1125,9 @@ class TvItemDetailViewModel(
                 ) {
                     it
                 } else {
+                    shouldMigrateSubtitlePreference =
+                        it.selectedNextUpSubtitleIndex == null &&
+                            restored.subtitlePreferenceMigration != null
                     val merged = mergeTrackSelection(
                         currentAudioIndex = it.selectedNextUpAudioIndex,
                         currentSubtitleIndex = it.selectedNextUpSubtitleIndex,
@@ -1075,6 +1138,26 @@ class TvItemDetailViewModel(
                         selectedNextUpAudioIndex = merged.audioIndex,
                     )
                 }
+            }
+            val current = _uiState.value
+            if (
+                shouldMigrateSubtitlePreference &&
+                shouldApplyNextUpTrackRestore(
+                    currentContentId = current.nextUpEpisode?.contentId,
+                    requestedContentId = targetContentId,
+                    currentSelectedFileId = current.selectedNextUpFileId,
+                    requestedSelectedFileId = selectedFileId,
+                ) &&
+                current.selectedNextUpSubtitleIndex == restored.subtitleIndex
+            ) {
+                userItemState.recordTrackSelection(
+                    contentId = targetContentId,
+                    fileId = version.fileId,
+                    audioUpdate = TrackSelectionFingerprintUpdate.Preserve,
+                    subtitleUpdate = TrackSelectionFingerprintUpdate.Set(
+                        requireNotNull(restored.subtitlePreferenceMigration),
+                    ),
+                )
             }
             rememberNextUpTrackSelection()
         }

@@ -200,6 +200,149 @@ class PlaybackSessionLifecycleTest {
     }
 
     @Test
+    fun `unpublished lifecycle adoption rolls back to exact predecessor only for matching owner`() = runTest {
+        val sessionMgr = FakeSessionManager()
+        val lifecycle = newLifecycle(sessionMgr, scope = backgroundScope)
+        lifecycle.adoptActiveSession(
+            params = defaultStartParams(startPosition = 12.0),
+            session = makeSession("sess-a"),
+        )
+        assertTrue(
+            lifecycle.adoptActiveSessionIfCurrent(
+                params = defaultStartParams(startPosition = 24.0),
+                session = makeSession("sess-b"),
+                deferPublication = true,
+                isCurrent = { true },
+            ),
+        )
+
+        assertFalse(lifecycle.rollbackUnpublishedActiveSession("sess-stale"))
+        assertEquals(
+            "sess-b",
+            (lifecycle.state.value as SessionState.Active).session.sessionId,
+        )
+
+        assertTrue(lifecycle.rollbackUnpublishedActiveSession("sess-b"))
+        assertFalse(lifecycle.rollbackUnpublishedActiveSession("sess-b"))
+        assertEquals(
+            "sess-a",
+            (lifecycle.state.value as SessionState.Active).session.sessionId,
+        )
+
+        lifecycle.reportPosition(positionSec = 33.0, durationSec = 100.0, isPaused = false)
+        advanceTimeBy(PlaybackSessionLifecycle.PROGRESS_REPORT_INTERVAL_MS + 100)
+
+        assertEquals("sess-a", sessionMgr.lastProgressSessionId)
+    }
+
+    @Test
+    fun `confirmed lifecycle adoption retains replacement and is idempotent`() = runTest {
+        val sessionMgr = FakeSessionManager()
+        val lifecycle = newLifecycle(sessionMgr, scope = backgroundScope)
+        lifecycle.adoptActiveSession(
+            params = defaultStartParams(startPosition = 12.0),
+            session = makeSession("sess-a"),
+        )
+        assertTrue(
+            lifecycle.adoptActiveSessionIfCurrent(
+                params = defaultStartParams(startPosition = 24.0),
+                session = makeSession("sess-b"),
+                deferPublication = true,
+                isCurrent = { true },
+            ),
+        )
+
+        assertTrue(lifecycle.confirmActiveSessionPublication("sess-b"))
+        assertFalse(lifecycle.confirmActiveSessionPublication("sess-b"))
+        assertFalse(lifecycle.rollbackUnpublishedActiveSession("sess-b"))
+        assertEquals(
+            "sess-b",
+            (lifecycle.state.value as SessionState.Active).session.sessionId,
+        )
+
+        lifecycle.reportPosition(positionSec = 44.0, durationSec = 100.0, isPaused = false)
+        advanceTimeBy(PlaybackSessionLifecycle.PROGRESS_REPORT_INTERVAL_MS + 100)
+
+        assertEquals("sess-b", sessionMgr.lastProgressSessionId)
+    }
+
+    @Test
+    fun `current pending rollback supplies exact replacement id and restores predecessor`() =
+        runTest {
+            val lifecycle = newLifecycle(FakeSessionManager(), scope = backgroundScope)
+            lifecycle.adoptActiveSession(
+                params = defaultStartParams(startPosition = 12.0),
+                session = makeSession("sess-a"),
+            )
+            assertTrue(
+                lifecycle.adoptActiveSessionIfCurrent(
+                    params = defaultStartParams(startPosition = 24.0),
+                    session = makeSession("sess-b"),
+                    deferPublication = true,
+                    isCurrent = { true },
+                ),
+            )
+            val settledSessionIds = mutableListOf<String>()
+
+            assertTrue(
+                lifecycle.rollbackCurrentPendingPublication { sessionId ->
+                    settledSessionIds += sessionId
+                    true
+                },
+            )
+
+            assertEquals(listOf("sess-b"), settledSessionIds)
+            assertEquals(
+                "sess-a",
+                (lifecycle.state.value as SessionState.Active).session.sessionId,
+            )
+            assertTrue(
+                lifecycle.rollbackCurrentPendingPublication {
+                    fail("no manager settlement is needed when no publication is pending")
+                },
+            )
+        }
+
+    @Test
+    fun `current pending rollback failure retains replacement for exact retry`() = runTest {
+        val lifecycle = newLifecycle(FakeSessionManager(), scope = backgroundScope)
+        lifecycle.adoptActiveSession(
+            params = defaultStartParams(startPosition = 12.0),
+            session = makeSession("sess-a"),
+        )
+        lifecycle.adoptActiveSessionIfCurrent(
+            params = defaultStartParams(startPosition = 24.0),
+            session = makeSession("sess-b"),
+            deferPublication = true,
+            isCurrent = { true },
+        )
+        val attemptedSessionIds = mutableListOf<String>()
+
+        assertFalse(
+            lifecycle.rollbackCurrentPendingPublication { sessionId ->
+                attemptedSessionIds += sessionId
+                false
+            },
+        )
+        assertEquals(
+            "sess-b",
+            (lifecycle.state.value as SessionState.Active).session.sessionId,
+        )
+        assertTrue(
+            lifecycle.rollbackCurrentPendingPublication { sessionId ->
+                attemptedSessionIds += sessionId
+                true
+            },
+        )
+
+        assertEquals(listOf("sess-b", "sess-b"), attemptedSessionIds)
+        assertEquals(
+            "sess-a",
+            (lifecycle.state.value as SessionState.Active).session.sessionId,
+        )
+    }
+
+    @Test
     fun `reportPosition with 404 triggers session-missing recovery and re-starts`() = runTest {
         val sessionMgr = FakeSessionManager().apply {
             // Two distinct sessions back-to-back: original then renewed.

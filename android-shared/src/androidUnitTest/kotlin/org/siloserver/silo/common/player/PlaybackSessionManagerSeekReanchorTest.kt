@@ -286,6 +286,80 @@ class PlaybackSessionManagerSeekReanchorTest {
     }
 
     @Test
+    fun `seek reanchor waits for pending fresh publication rollback before request`() = runTest {
+        val initial = plan()
+        val replacement = initial.copy(
+            planId = "plan-b",
+            sessionId = "session-b",
+            stream = initial.stream.copy(url = "/stream/session-b/master.m3u8"),
+        )
+        val harness = Harness(
+            startResponse = response(initial),
+            replacementStartResponse = response(replacement, sessionId = "session-b"),
+        ) { _, _ -> success(response(reanchored(initial, 90.0))) }
+        harness.manager.start()
+        harness.manager.startResult(deferPublication = true)
+
+        val seek = async {
+            harness.manager.reanchorActiveVideoSession(positionSeconds = 90.0)
+        }
+        repeat(3) { yield() }
+
+        assertFalse(seek.isCompleted)
+        assertTrue(harness.replanBodies.isEmpty())
+        assertEquals("session-b", harness.manager.activeSessionIdForTest())
+
+        assertTrue(harness.manager.rollbackUnpublishedVideoSession("session-b"))
+        assertIs<ApiResult.Success<VideoSessionStartV3>>(seek.await())
+
+        assertEquals(1, harness.replanBodies.size)
+        assertEquals("session-1", harness.manager.activeSessionIdForTest())
+        assertEquals(listOf("session-b"), harness.stoppedSessionIds)
+    }
+
+    @Test
+    fun `seek failure recovery waits for pending fresh publication rollback before request`() =
+        runTest {
+            val initial = plan()
+            val replacement = initial.copy(
+                planId = "plan-b",
+                sessionId = "session-b",
+                stream = initial.stream.copy(url = "/stream/session-b/master.m3u8"),
+            )
+            val recovered = initial.copy(
+                planId = "plan-recovered",
+                delivery = PlaybackDelivery.SERVER_TRANSCODE_HLS,
+                stream = initial.stream.copy(url = "/stream/session-1/recovered.m3u8"),
+                effectiveRecipe = initial.effectiveRecipe.copy(audioCodec = "aac"),
+            )
+            val harness = Harness(
+                startResponse = response(initial),
+                replacementStartResponse = response(replacement, sessionId = "session-b"),
+            ) { _, _ -> success(response(recovered)) }
+            harness.manager.start()
+            harness.manager.startResult(deferPublication = true)
+
+            val recovery = async {
+                harness.manager.recoverActiveVideoSessionAfterSeek(
+                    positionSeconds = 90.0,
+                    classification = "seek_decoder_failure",
+                )
+            }
+            repeat(3) { yield() }
+
+            assertFalse(recovery.isCompleted)
+            assertTrue(harness.replanBodies.isEmpty())
+            assertEquals("session-b", harness.manager.activeSessionIdForTest())
+
+            assertTrue(harness.manager.rollbackUnpublishedVideoSession("session-b"))
+            assertIs<ApiResult.Success<VideoSessionStartV3>>(recovery.await())
+
+            assertEquals(1, harness.replanBodies.size)
+            assertEquals("session-1", harness.manager.activeSessionIdForTest())
+            assertEquals(listOf("session-b"), harness.stoppedSessionIds)
+        }
+
+    @Test
     fun seekFailureRecoveryCanChangeRouteButNotPlaybackIntent() = runTest {
         val initial = plan()
         val fallback = initial.copy(
@@ -435,19 +509,28 @@ class PlaybackSessionManagerSeekReanchorTest {
     private class Harness(
         startResponse: PlaybackDecisionResponseV3,
         networkEvidenceProvider: PlaybackNetworkEvidenceProvider = PlaybackNetworkEvidenceProvider.None,
+        private val replacementStartResponse: PlaybackDecisionResponseV3? = null,
         private val replanResponse: suspend (Int, JsonObject) -> MockResponse,
     ) {
         val replanBodies: MutableList<JsonObject> = Collections.synchronizedList(mutableListOf())
         val stoppedSessionIds: MutableList<String> = Collections.synchronizedList(mutableListOf())
+        private val startIndex = AtomicInteger()
         private val replanIndex = AtomicInteger()
         private val client = HttpClient(
             MockEngine { request ->
                 val path = request.url.encodedPath
                 val response = when {
-                    path == "/api/v1/playback/start" -> MockResponse(
-                        HttpStatusCode.OK,
-                        SiloJson.encodeToString(startResponse),
-                    )
+                    path == "/api/v1/playback/start" -> {
+                        val response = if (startIndex.getAndIncrement() == 0) {
+                            startResponse
+                        } else {
+                            replacementStartResponse ?: startResponse
+                        }
+                        MockResponse(
+                            HttpStatusCode.OK,
+                            SiloJson.encodeToString(response),
+                        )
+                    }
                     path.endsWith("/replan") -> {
                         val body = SiloJson.parseToJsonElement(
                             request.body.toByteArray().decodeToString(),
@@ -480,7 +563,9 @@ class PlaybackSessionManagerSeekReanchorTest {
     private suspend fun PlaybackSessionManager.start(): ApiResult.Success<VideoSessionStartV3> =
         assertIs(startResult())
 
-    private suspend fun PlaybackSessionManager.startResult(): ApiResult<VideoSessionStartV3> =
+    private suspend fun PlaybackSessionManager.startResult(
+        deferPublication: Boolean = false,
+    ): ApiResult<VideoSessionStartV3> =
         startVideoSessionV3(
                 fileId = 42,
                 profileId = "profile-1",
@@ -499,6 +584,7 @@ class PlaybackSessionManagerSeekReanchorTest {
                 qualityPreference = "original",
                 startPosition = 0.0,
                 subtitleFidelityPreference = SubtitleFidelityPreference.PRESERVE,
+                deferPublication = deferPublication,
         )
 
     private fun plan(): PlaybackPlanV3 = PlaybackPlanV3(

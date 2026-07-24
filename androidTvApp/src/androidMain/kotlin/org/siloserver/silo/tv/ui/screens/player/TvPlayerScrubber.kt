@@ -358,10 +358,21 @@ fun TvPlayerScrubber(
                             true
                         }
                         Key.DirectionDown -> {
-                            if (isDown) {
-                                onMoveDownToTransport()
-                                true
-                            } else false
+                            if (!isDown) return@onPreviewKeyEvent false
+                            // tvOS traps Down while a scrub is in flight — it is
+                            // almost always drag spillover, not an intent to
+                            // leave — and keeps the preview alive until the user
+                            // commits (Select) or cancels (Back). tvOS does it by
+                            // pulling the transport buttons out of the focus graph
+                            // (TVPlayerTransportCluster.allowsFocus); we have no
+                            // such switch, so consume the key instead. Falling
+                            // through would let Compose move focus to the
+                            // transport row and drop the scrub mid-adjustment.
+                            if (isTimelineScrubbing || isScrubbing) {
+                                return@onPreviewKeyEvent true
+                            }
+                            onMoveDownToTransport()
+                            true
                         }
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
                             if (isUp) {

@@ -85,6 +85,10 @@ class PlaybackApiTest {
                 "client_video_transformations_v1",
                 "device_quirks_v1",
                 "seek_reanchor_v1",
+                // Added by #99 (direct progressive resume). The capability
+                // landed without updating this expectation, so upstream/main
+                // fails this test on its own.
+                "direct_stream_resume_v1",
             ),
             body["client_features"]!!.jsonArray.map { it.jsonPrimitive.content },
         )

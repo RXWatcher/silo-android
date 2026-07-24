@@ -86,3 +86,35 @@ fun buildPlaybackSubtitleChoices(
     return (catalogChoices + plannedTracks.filterNot { it.index in covered })
         .distinctBy(PlayerSubtitleInfo::index)
 }
+
+private val DOWNLOADED_SUBTITLE_SESSION_PATH =
+    Regex("""(/stream/)([^/]+)(/subtitles/[0-9]+\.[^/]+)$""")
+
+/**
+ * Retargets a downloaded subtitle artifact to a replacement playback session.
+ *
+ * Only the path is inspected. URL origins, server base paths, track indexes,
+ * extensions, queries, and fragments remain byte-for-byte unchanged.
+ */
+fun rebaseDownloadedSubtitleUrl(
+    url: String,
+    targetSessionId: String,
+): String {
+    if (
+        targetSessionId.isEmpty() ||
+        targetSessionId.any { it == '/' || it == '?' || it == '#' }
+    ) {
+        return url
+    }
+
+    val pathEnd = listOf(url.indexOf('?'), url.indexOf('#'))
+        .filter { it >= 0 }
+        .minOrNull()
+        ?: url.length
+    val resource = url.substring(0, pathEnd)
+    val suffix = url.substring(pathEnd)
+    val match = DOWNLOADED_SUBTITLE_SESSION_PATH.find(resource) ?: return url
+    val sessionRange = match.groups[2]?.range ?: return url
+
+    return resource.replaceRange(sessionRange, targetSessionId) + suffix
+}

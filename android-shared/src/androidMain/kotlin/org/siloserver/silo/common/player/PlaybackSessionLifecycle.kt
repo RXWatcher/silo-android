@@ -90,6 +90,28 @@ class PlaybackSessionLifecycle(
     private val pendingStopLock = Any()
     private var pendingStopJob: Job? = null
 
+    private data class ActiveSessionSnapshot(
+        val state: SessionState,
+        val notice: PlayerNotice?,
+        val lastStartParams: StartParams?,
+        val lastReportedPosition: Double?,
+        val lastReportedDuration: Double,
+        val lastIsPaused: Boolean,
+        val recoveringFromMissingSession: String?,
+        val flushProgressOnStop: Boolean,
+        val stopActiveSessionOnStop: Boolean,
+        val renewMissingSessionWithLegacyStart: Boolean,
+        val diagnosticsRecording: DiagnosticsPlaybackSessionRecording,
+        val reporterWasActive: Boolean,
+    )
+
+    private data class PendingActiveSessionPublication(
+        val replacementSessionId: String,
+        val predecessor: ActiveSessionSnapshot,
+    )
+
+    private var pendingActiveSessionPublication: PendingActiveSessionPublication? = null
+
     // ---- Public API ---------------------------------------------------------
 
     /**
@@ -103,6 +125,9 @@ class PlaybackSessionLifecycle(
         // New start cancels any in-flight recovery / outage probing, by design:
         // this is the explicit "user/code wants a fresh session now" path.
         cancelRecoveryJobs()
+        mutex.withLock {
+            pendingActiveSessionPublication = null
+        }
         val recording = playbackSessions.recording()
         diagnosticsRecording = recording
         return startInternal(params, recording)
@@ -120,10 +145,43 @@ class PlaybackSessionLifecycle(
         manageProgress: Boolean = true,
         stopSessionOnStop: Boolean = true,
         renewMissingSessionWithLegacyStart: Boolean = true,
+        deferPublication: Boolean = false,
     ) {
         awaitPendingStop()
+        adoptActiveSessionIfCurrent(
+            params = params,
+            session = session,
+            manageProgress = manageProgress,
+            stopSessionOnStop = stopSessionOnStop,
+            renewMissingSessionWithLegacyStart = renewMissingSessionWithLegacyStart,
+            deferPublication = deferPublication,
+            isCurrent = { true },
+        )
+    }
+
+    /**
+     * Atomically adopts an already-started session only while its caller still
+     * owns the surrounding transaction. The predicate is evaluated inside the
+     * lifecycle mutex immediately before any lifecycle state is changed.
+     */
+    suspend fun adoptActiveSessionIfCurrent(
+        params: StartParams,
+        session: PlaybackSessionResponse,
+        manageProgress: Boolean = true,
+        stopSessionOnStop: Boolean = true,
+        renewMissingSessionWithLegacyStart: Boolean = true,
+        deferPublication: Boolean = false,
+        isCurrent: () -> Boolean,
+    ): Boolean {
         val diagnosticsRecording = playbackSessions.recording()
-        mutex.withLock {
+        return mutex.withLock {
+            if (!isCurrent()) return@withLock false
+            val predecessor = if (deferPublication) {
+                pendingActiveSessionPublication?.predecessor
+                    ?: captureActiveSessionSnapshot()
+            } else {
+                null
+            }
             cancelRecoveryJobs()
             reporterJob?.cancel()
             reporterJob = null
@@ -142,6 +200,127 @@ class PlaybackSessionLifecycle(
             if (manageProgress) {
                 startProgressReporter()
             }
+            pendingActiveSessionPublication = predecessor?.let {
+                PendingActiveSessionPublication(
+                    replacementSessionId = session.sessionId,
+                    predecessor = it,
+                )
+            }
+            true
+        }
+    }
+
+    /**
+     * Settles manager and lifecycle publication as one lifecycle-locked
+     * transition. The manager callback runs only after exact replacement
+     * ownership has been verified, and no lifecycle reset/stop/adoption can
+     * enter between manager settlement and the matching lifecycle transition.
+     *
+     * A false callback result leaves the pending lifecycle publication intact
+     * so the caller can retry or choose the opposite settlement.
+     */
+    suspend fun settlePendingPublicationIfCurrent(
+        sessionId: String,
+        confirm: Boolean,
+        settleManager: suspend () -> Boolean,
+    ): Boolean = mutex.withLock {
+        val pending = pendingActiveSessionPublication
+            ?.takeIf { it.replacementSessionId == sessionId }
+            ?: return@withLock false
+        if ((_state.value as? SessionState.Active)?.session?.sessionId != sessionId) {
+            return@withLock false
+        }
+        if (!settleManager()) return@withLock false
+
+        pendingActiveSessionPublication = null
+        if (!confirm) {
+            cancelRecoveryJobs()
+            reporterJob?.cancel()
+            reporterJob = null
+            restoreActiveSessionSnapshot(pending.predecessor)
+        }
+        true
+    }
+
+    /**
+     * Rolls back whichever deferred replacement is currently pending without
+     * requiring the caller to first observe its session id. Exact ownership is
+     * resolved under the lifecycle mutex and supplied to [settleManager], so a
+     * fresh content load cannot race a stale, caller-cached replacement id.
+     *
+     * No pending publication is already settled and therefore succeeds. A
+     * manager failure leaves the replacement and its predecessor snapshot
+     * intact for an exact retry.
+     */
+    suspend fun rollbackCurrentPendingPublication(
+        settleManager: suspend (sessionId: String) -> Boolean,
+    ): Boolean = mutex.withLock {
+        val pending = pendingActiveSessionPublication ?: return@withLock true
+        val sessionId = pending.replacementSessionId
+        if ((_state.value as? SessionState.Active)?.session?.sessionId != sessionId) {
+            return@withLock false
+        }
+        if (!settleManager(sessionId)) return@withLock false
+
+        pendingActiveSessionPublication = null
+        cancelRecoveryJobs()
+        reporterJob?.cancel()
+        reporterJob = null
+        restoreActiveSessionSnapshot(pending.predecessor)
+        true
+    }
+
+    suspend fun confirmActiveSessionPublication(sessionId: String): Boolean =
+        settlePendingPublicationIfCurrent(
+            sessionId = sessionId,
+            confirm = true,
+            settleManager = { true },
+        )
+
+    suspend fun rollbackUnpublishedActiveSession(sessionId: String): Boolean =
+        settlePendingPublicationIfCurrent(
+            sessionId = sessionId,
+            confirm = false,
+            settleManager = { true },
+        )
+
+    private fun captureActiveSessionSnapshot(): ActiveSessionSnapshot =
+        ActiveSessionSnapshot(
+            state = _state.value,
+            notice = _notice.value,
+            lastStartParams = lastStartParams,
+            lastReportedPosition = lastReportedPosition,
+            lastReportedDuration = lastReportedDuration,
+            lastIsPaused = lastIsPaused,
+            recoveringFromMissingSession = recoveringFromMissingSession,
+            flushProgressOnStop = flushProgressOnStop,
+            stopActiveSessionOnStop = stopActiveSessionOnStop,
+            renewMissingSessionWithLegacyStart = renewMissingSessionWithLegacyStart,
+            diagnosticsRecording = diagnosticsRecording,
+            reporterWasActive = reporterJob?.isActive == true,
+        )
+
+    private fun restoreActiveSessionSnapshot(
+        snapshot: ActiveSessionSnapshot,
+        restartReporter: Boolean = true,
+    ) {
+        lastStartParams = snapshot.lastStartParams
+        lastReportedPosition = snapshot.lastReportedPosition
+        lastReportedDuration = snapshot.lastReportedDuration
+        lastIsPaused = snapshot.lastIsPaused
+        recoveringFromMissingSession = snapshot.recoveringFromMissingSession
+        flushProgressOnStop = snapshot.flushProgressOnStop
+        stopActiveSessionOnStop = snapshot.stopActiveSessionOnStop
+        renewMissingSessionWithLegacyStart = snapshot.renewMissingSessionWithLegacyStart
+        diagnosticsRecording = snapshot.diagnosticsRecording
+        _notice.value = snapshot.notice
+        _state.value = snapshot.state
+        if (
+            restartReporter &&
+            snapshot.reporterWasActive &&
+            snapshot.state is SessionState.Active
+        ) {
+            startProgressReporter()
         }
     }
 
@@ -243,35 +422,54 @@ class PlaybackSessionLifecycle(
      */
     suspend fun stop() {
         DiagnosticsPlaybackLogger.sessionEvent("session stop requested")
-        val current = _state.value
-        cancelRecoveryJobs()
-        reporterJob?.cancel()
-        reporterJob = null
+        mutex.withLock {
+            cancelRecoveryJobs()
+            reporterJob?.cancel()
+            reporterJob = null
 
-        val sessionId = (current as? SessionState.Active)?.session?.sessionId
-        // Fire the final snapshot regardless — even during Reconnecting we
-        // want to durably record where the user was so a fresh login resumes
-        // there.
-        if (flushProgressOnStop) {
-            flushFinalProgress()
-        }
-
-        if (sessionId != null && stopActiveSessionOnStop) {
-            when (val r = sessionManager.stopSession(sessionId)) {
-                is ApiResult.Error -> Log.w(TAG, "stopSession error: ${r.code} ${r.message}")
-                is ApiResult.NetworkError -> Log.w(TAG, "stopSession network error: ${r.exception}")
-                else -> {}
+            val pending = pendingActiveSessionPublication
+            val pendingSessionId =
+                (_state.value as? SessionState.Active)?.session?.sessionId
+            if (
+                pending != null &&
+                pendingSessionId != null &&
+                pending.replacementSessionId == pendingSessionId &&
+                sessionManager.rollbackUnpublishedVideoSession(pendingSessionId)
+            ) {
+                pendingActiveSessionPublication = null
+                restoreActiveSessionSnapshot(
+                    snapshot = pending.predecessor,
+                    restartReporter = false,
+                )
             }
+
+            val sessionId = (_state.value as? SessionState.Active)?.session?.sessionId
+            // Fire the final snapshot regardless — even during Reconnecting we
+            // want to durably record where the user was so a fresh login resumes
+            // there.
+            if (flushProgressOnStop) {
+                flushFinalProgress()
+            }
+
+            if (sessionId != null && stopActiveSessionOnStop) {
+                when (val r = sessionManager.stopSession(sessionId)) {
+                    is ApiResult.Error -> Log.w(TAG, "stopSession error: ${r.code} ${r.message}")
+                    is ApiResult.NetworkError ->
+                        Log.w(TAG, "stopSession network error: ${r.exception}")
+                    else -> {}
+                }
+            }
+            lastStartParams = null
+            lastReportedPosition = null
+            lastReportedDuration = 0.0
+            recoveringFromMissingSession = null
+            flushProgressOnStop = true
+            stopActiveSessionOnStop = true
+            renewMissingSessionWithLegacyStart = true
+            pendingActiveSessionPublication = null
+            _notice.value = null
+            _state.value = SessionState.Idle
         }
-        lastStartParams = null
-        lastReportedPosition = null
-        lastReportedDuration = 0.0
-        recoveringFromMissingSession = null
-        flushProgressOnStop = true
-        stopActiveSessionOnStop = true
-        renewMissingSessionWithLegacyStart = true
-        _notice.value = null
-        _state.value = SessionState.Idle
         DiagnosticsPlaybackLogger.sessionEvent("session stopped")
     }
 

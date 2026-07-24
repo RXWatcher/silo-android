@@ -14,9 +14,9 @@ const val SUBTITLE_SOURCE_DOWNLOADED = "downloaded"
  * Mirrors the web reference exactly (web/src/player/hooks/usePlaybackSession.ts
  * `refreshSubtitles`, lines ~473-514):
  *  - strips every previously merged `source == "downloaded"` track and
- *    rebuilds them all from the fresh GET /subtitles/{media_file_id} list
- *    (PlayerSubtitleInfo carries no downloaded-subtitle id, and the web
- *    dedupes by source replacement, not identity)
+ *    rebuilds them all from the fresh GET /subtitles/{media_file_id} list;
+ *    [PlayerSubtitleInfo.downloadId] preserves the persistent downloaded row
+ *    identity separately from the mutable combined playback artifact index
  *  - new indices continue from `max(existing.index) + 1` — not the list size,
  *    since server-side burn-in skipping can leave index gaps — starting at 0
  *    when there are no remaining tracks
@@ -54,6 +54,7 @@ fun mergeDownloadedSubtitles(
             source = SUBTITLE_SOURCE_DOWNLOADED,
             forced = null,
             url = "/stream/$sessionId/subtitles/$index${subtitleUrlExtension(dl.format)}",
+            downloadId = dl.id,
         )
     }
 

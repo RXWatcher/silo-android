@@ -9,6 +9,7 @@ import org.siloserver.silo.common.player.SubtitleManager
 import org.siloserver.silo.common.player.VideoPlayerMediaSpec
 import org.siloserver.silo.common.player.refreshMountedVideoMedia
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
 
 data class VideoPlayerTrackEntry(
     val index: Int,
@@ -47,9 +48,8 @@ class VideoTrackSelectionCoordinator(
 
     fun selectMountedSubtitle(
         player: Player,
-        subtitles: List<PlayerSubtitleInfo>,
-        selectedIndex: Int,
-    ): Boolean = subtitleManager.selectSubtitle(player, subtitles, selectedIndex)
+        identity: SubtitleIdentity,
+    ): Boolean = subtitleManager.selectSubtitle(player, identity)
 
     fun resolveSubtitleTrackId(
         player: Player,

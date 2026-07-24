@@ -21,6 +21,10 @@ class VideoPlaybackBackendInterfaceTest {
         assertTrue(text.contains("fun refresh("))
         assertTrue(text.contains("fun selectSubtitle("))
         assertTrue(text.contains("fun selectMountedSubtitle("))
+        assertTrue(
+            text.contains("identity: SubtitleIdentity"),
+            "mounted subtitle selection must accept the typed domain identity",
+        )
         assertTrue(text.contains("fun selectAudioTrack("))
         assertTrue(text.contains("fun applyTrackSelection("))
         assertTrue(text.contains("fun release()"))

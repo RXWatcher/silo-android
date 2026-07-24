@@ -60,6 +60,8 @@ fun TracksSheet(
     selectedAudioIndex: Int,
     subtitles: List<PlayerSubtitleInfo>,
     selectedSubtitleIndex: Int,
+    pendingSubtitleIndex: Int? = null,
+    subtitleApplying: Boolean = false,
     onSelectAudio: (Int) -> Unit,
     onSelectSubtitle: (Int) -> Unit,
     onDismiss: () -> Unit,
@@ -132,6 +134,9 @@ fun TracksSheet(
             TrackRow(
                 label = "Off",
                 isSelected = selectedSubtitleIndex == -1,
+                attributes = "Applying…".takeIf {
+                    subtitleApplying && pendingSubtitleIndex == -1
+                },
                 onClick = {
                     onSelectSubtitle(-1)
                     scope.launch { sheetState.hide() }
@@ -142,6 +147,9 @@ fun TracksSheet(
                 TrackRow(
                     label = subtitleTrackLabel(sub, index),
                     isSelected = index == selectedSubtitleIndex,
+                    attributes = "Applying…".takeIf {
+                        subtitleApplying && pendingSubtitleIndex == index
+                    },
                     onClick = {
                         onSelectSubtitle(index)
                         scope.launch { sheetState.hide() }

@@ -23,7 +23,72 @@ import org.siloserver.silo.playback.selectPlaybackVersion
 import org.siloserver.silo.repository.CatalogRepository
 import org.siloserver.silo.repository.ProfileRepository
 import org.siloserver.silo.tv.BuildConfig
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
+
+/**
+ * Owns a server session from allocation until the starter successfully
+ * publishes its Ready result. Cancellation and failures clean the unpublished
+ * session without replacing the original failure.
+ */
+internal suspend fun <T> publishTvAllocatedSession(
+    sessionId: String,
+    stopUnpublishedSession: suspend (String) -> Unit,
+    publish: suspend () -> T,
+): T {
+    try {
+        return publish()
+    } catch (failure: CancellationException) {
+        stopUnpublishedTvSession(sessionId, stopUnpublishedSession)
+        throw failure
+    } catch (failure: Exception) {
+        stopUnpublishedTvSession(sessionId, stopUnpublishedSession)
+        throw failure
+    }
+}
+
+/**
+ * Publishes an allocated session only through lifecycle adoption that checks
+ * the fresh-load owner inside the lifecycle transition mutex.
+ *
+ * A false adoption result is a superseded load, not a user-facing playback
+ * failure. Throwing [TvPlayerLoadSupersededException] lets the starter's
+ * cancellation path remain silent while [publishTvAllocatedSession] performs
+ * exact-once cleanup of the session that never transferred to the lifecycle.
+ */
+internal suspend fun <T> publishTvAllocatedSessionIfOwned(
+    sessionId: String,
+    ownership: TvPlayerLoadOwnership?,
+    stopUnpublishedSession: suspend (String) -> Unit,
+    adoptIfCurrent: suspend (isCurrent: () -> Boolean) -> Boolean,
+    publish: suspend () -> T,
+): T = publishTvAllocatedSession(
+    sessionId = sessionId,
+    stopUnpublishedSession = stopUnpublishedSession,
+) {
+    val isCurrent = ownership?.let { loadOwnership ->
+        { loadOwnership.isCurrent() }
+    } ?: { true }
+    if (!adoptIfCurrent(isCurrent)) {
+        throw TvPlayerLoadSupersededException()
+    }
+    publish()
+}
+
+private suspend fun stopUnpublishedTvSession(
+    sessionId: String,
+    stopUnpublishedSession: suspend (String) -> Unit,
+) {
+    withContext(NonCancellable) {
+        try {
+            stopUnpublishedSession(sessionId)
+        } catch (_: Exception) {
+            // The original adoption/publication failure remains authoritative.
+        }
+    }
+}
 
 class TvVideoPlaybackStarter(
     private val catalogRepository: CatalogRepository,
@@ -36,6 +101,7 @@ class TvVideoPlaybackStarter(
 ) : VideoPlaybackStarter {
 
     override suspend fun start(request: VideoPlaybackStartRequest): VideoPlaybackStartResult {
+        val loadOwnership = currentTvPlayerLoadOwnership()
         // Pre-play gate: don't launch a doomed server session when the origin is
         // unreachable (issue #33). TV is streaming-only (no local downloads), so
         // an Unreachable status here always means playback can't proceed.
@@ -121,6 +187,18 @@ class TvVideoPlaybackStarter(
                 ),
             )
 
+            val priorPublicationSettled =
+                sessionLifecycle.rollbackCurrentPendingPublication { sessionId ->
+                    playbackSessionManager.rollbackUnpublishedVideoSession(sessionId)
+                }
+            if (!priorPublicationSettled) {
+                return failure(
+                    request.contentId,
+                    "A previous playback change is still settling. Please try again.",
+                    diagnosticsCode = PlaybackDiagnosticsCode.START_REQUEST,
+                )
+            }
+
             val v3Start = when (
                 val r = playbackSessionManager.startVideoSessionV3(
                     fileId = version.fileId,
@@ -131,6 +209,7 @@ class TvVideoPlaybackStarter(
                     subtitleTrackIndex = request.subtitleTrackIndex,
                     qualityPreference = playbackQualityIntent,
                     startPosition = startRequestPosition,
+                    deferPublication = loadOwnership != null,
                 )
             ) {
                 is ApiResult.Success -> r.data
@@ -160,84 +239,127 @@ class TvVideoPlaybackStarter(
                 )
             }
             val resolved = readyV3.session
-            val effectiveFileId = resolved.mediaFileId.takeIf { it > 0 }
-                ?: readyV3.plan.effectiveMediaFileId
-                ?: version.fileId
-            val effectiveVersion = watchDetail.versions.firstOrNull { it.fileId == effectiveFileId }
-            val resolvedDelivery = resolved.resolvedPlaybackDelivery()
-            val resolvedStreamUrl = resolved.playbackPlan?.stream?.url
-                ?.takeIf { it.isNotBlank() }
-                ?: resolved.streamUrl
-
-            // The server may reanchor an HLS stream at a non-zero movie time
-            // while exposing a player timeline that begins at zero. Preserve
-            // both coordinates so Media3 and the UI each receive the right one.
-            val playerStartPos = readyV3.plan.timeline.playerStartSeconds
-                .takeIf { it.isFinite() && it >= 0.0 }
-                ?: resolved.position.coerceAtLeast(0.0)
-            val sourceStartPos = readyV3.plan.timeline.sourceStartSeconds
-                .takeIf { it.isFinite() && it >= 0.0 }
-                ?: startRequestPosition
-                ?: playerStartPos
-
-            sessionLifecycle.adoptActiveSession(
-                params = StartParams(
-                    contentId = request.contentId,
-                    fileId = effectiveFileId,
-                    capabilities = capabilities,
-                    audioTrackIndex = resolved.audioTrackIndex,
-                    subtitleTrackIndex = request.subtitleTrackIndex,
-                    qualityPreference = playbackQualityIntent,
-                    startPosition = sourceStartPos,
-                    clientPlaybackContext = playbackContext,
-                ),
-                session = resolved,
-                renewMissingSessionWithLegacyStart = false,
-            )
-
-            VideoPlaybackStartResult.Ready(
-                contentId = request.contentId,
-                fileId = effectiveFileId,
-                versions = watchDetail.versions,
-                fileResolution = effectiveVersion?.resolution
-                    ?: readyV3.plan.effectiveRecipe.height?.let { "${it}p" },
+            publishTvAllocatedSessionIfOwned(
                 sessionId = resolved.sessionId,
-                streamUrl = resolvedStreamUrl,
-                playMethod = resolved.playMethod,
-                playbackPlan = resolved.playbackPlan,
-                playbackPlanV3 = readyV3.plan,
-                requestHeaders = readyV3.plan.stream.headers,
-                delivery = resolvedDelivery,
-                container = readyV3.plan.stream.container ?: effectiveVersion?.container,
-                title = watchDetail.title,
-                subtitle = null,
-                artworkUrl = watchDetail.posterUrl?.takeIf { it.isNotBlank() }
-                    ?: watchDetail.backdropUrl?.takeIf { it.isNotBlank() },
-                startPositionSeconds = playerStartPos,
-                sourceStartPositionSeconds = sourceStartPos,
-                serverUrl = serverUrl,
-                accessToken = accessToken,
-                mediaFileId = effectiveFileId,
-                durationSeconds = resolved.durationSeconds ?: effectiveVersion?.duration ?: 0.0,
-                subtitleUrls = buildPlaybackSubtitleChoices(
-                    catalogTracks = effectiveVersion?.subtitleTracks.orEmpty(),
-                    plannedTracks = resolved.subtitleUrls.orEmpty(),
-                ),
-                preferredAudioLanguage = preferredAudioLanguage ?: activeProfile?.language,
-                preferredTextLanguage = watchDetail.effectiveSubtitleLanguage
-                    ?: activeProfile?.subtitleLanguage,
-                preferredSubtitleMode = watchDetail.effectiveSubtitleMode
-                    ?: activeProfile?.subtitleMode,
-                showForcedSubtitles = watchDetail.effectiveShowForcedSubtitles
-                    ?: activeProfile?.showForcedSubtitles
-                    ?: true,
-                intro = watchDetail.intro,
-                credits = watchDetail.credits,
-                chapters = effectiveVersion?.chapters.orEmpty(),
-                seriesId = watchDetail.seriesId,
-                seasonNumber = watchDetail.seasonNumber,
-                episodeNumber = watchDetail.episodeNumber,
+                ownership = loadOwnership,
+                stopUnpublishedSession = { sessionId ->
+                    if (loadOwnership != null) {
+                        val jointlyRolledBack =
+                            sessionLifecycle.settlePendingPublicationIfCurrent(
+                                sessionId = sessionId,
+                                confirm = false,
+                                settleManager = {
+                                    playbackSessionManager
+                                        .rollbackUnpublishedVideoSession(sessionId)
+                                },
+                            )
+                        if (!jointlyRolledBack) {
+                            playbackSessionManager.rollbackUnpublishedVideoSession(sessionId)
+                        }
+                    } else {
+                        playbackSessionManager.stopSession(sessionId)
+                    }
+                    Unit
+                },
+                adoptIfCurrent = { isCurrent ->
+                    val effectiveFileId = resolved.mediaFileId.takeIf { it > 0 }
+                        ?: readyV3.plan.effectiveMediaFileId
+                        ?: version.fileId
+                    val playerStartPos = readyV3.plan.timeline.playerStartSeconds
+                        .takeIf { it.isFinite() && it >= 0.0 }
+                        ?: resolved.position.coerceAtLeast(0.0)
+                    val sourceStartPos = readyV3.plan.timeline.sourceStartSeconds
+                        .takeIf { it.isFinite() && it >= 0.0 }
+                        ?: startRequestPosition
+                        ?: playerStartPos
+                    sessionLifecycle.adoptActiveSessionIfCurrent(
+                        params = StartParams(
+                            contentId = request.contentId,
+                            fileId = effectiveFileId,
+                            capabilities = capabilities,
+                            audioTrackIndex = resolved.audioTrackIndex,
+                            subtitleTrackIndex = request.subtitleTrackIndex,
+                            qualityPreference = playbackQualityIntent,
+                            startPosition = sourceStartPos,
+                            clientPlaybackContext = playbackContext,
+                        ),
+                        session = resolved,
+                        renewMissingSessionWithLegacyStart = false,
+                        deferPublication = loadOwnership != null,
+                        isCurrent = isCurrent,
+                    )
+                },
+                publish = {
+                    val effectiveFileId = resolved.mediaFileId.takeIf { it > 0 }
+                        ?: readyV3.plan.effectiveMediaFileId
+                        ?: version.fileId
+                    val effectiveVersion = watchDetail.versions
+                        .firstOrNull { it.fileId == effectiveFileId }
+                    val resolvedDelivery = resolved.resolvedPlaybackDelivery()
+                    val resolvedStreamUrl = resolved.playbackPlan?.stream?.url
+                        ?.takeIf { it.isNotBlank() }
+                        ?: resolved.streamUrl
+
+                    // The server may reanchor an HLS stream at a non-zero movie time
+                    // while exposing a player timeline that begins at zero. Preserve
+                    // both coordinates so Media3 and the UI each receive the right one.
+                    val playerStartPos = readyV3.plan.timeline.playerStartSeconds
+                        .takeIf { it.isFinite() && it >= 0.0 }
+                        ?: resolved.position.coerceAtLeast(0.0)
+                    val sourceStartPos = readyV3.plan.timeline.sourceStartSeconds
+                        .takeIf { it.isFinite() && it >= 0.0 }
+                        ?: startRequestPosition
+                        ?: playerStartPos
+
+                    VideoPlaybackStartResult.Ready(
+                        contentId = request.contentId,
+                        fileId = effectiveFileId,
+                        versions = watchDetail.versions,
+                        fileResolution = effectiveVersion?.resolution
+                            ?: readyV3.plan.effectiveRecipe.height?.let { "${it}p" },
+                        sessionId = resolved.sessionId,
+                        streamUrl = resolvedStreamUrl,
+                        playMethod = resolved.playMethod,
+                        playbackPlan = resolved.playbackPlan,
+                        playbackPlanV3 = readyV3.plan,
+                        requestHeaders = readyV3.plan.stream.headers,
+                        delivery = resolvedDelivery,
+                        container = readyV3.plan.stream.container ?: effectiveVersion?.container,
+                        title = watchDetail.title,
+                        subtitle = null,
+                        artworkUrl = watchDetail.posterUrl?.takeIf { it.isNotBlank() }
+                            ?: watchDetail.backdropUrl?.takeIf { it.isNotBlank() },
+                        startPositionSeconds = playerStartPos,
+                        sourceStartPositionSeconds = sourceStartPos,
+                        serverUrl = serverUrl,
+                        accessToken = accessToken,
+                        mediaFileId = effectiveFileId,
+                        durationSeconds = resolved.durationSeconds
+                            ?: effectiveVersion?.duration
+                            ?: 0.0,
+                        subtitleUrls = buildPlaybackSubtitleChoices(
+                            catalogTracks = effectiveVersion?.subtitleTracks.orEmpty(),
+                            plannedTracks = resolved.subtitleUrls.orEmpty(),
+                        ),
+                        preferredAudioLanguage = preferredAudioLanguage ?: activeProfile?.language,
+                        preferredTextLanguage = watchDetail.effectiveSubtitleLanguage
+                            ?: activeProfile?.subtitleLanguage,
+                        preferredSubtitleMode = watchDetail.effectiveSubtitleMode
+                            ?: activeProfile?.subtitleMode,
+                        showForcedSubtitles = watchDetail.effectiveShowForcedSubtitles
+                            ?: activeProfile?.showForcedSubtitles
+                            ?: true,
+                        intro = watchDetail.intro,
+                        credits = watchDetail.credits,
+                        chapters = effectiveVersion?.chapters.orEmpty(),
+                        seriesId = watchDetail.seriesId,
+                        seasonNumber = watchDetail.seasonNumber,
+                        episodeNumber = watchDetail.episodeNumber,
+                    )
+                },
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error loading content", e)
             failure(request.contentId, "Unexpected error: ${e.message}", e, PlaybackDiagnosticsCode.UNEXPECTED)

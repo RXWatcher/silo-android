@@ -1,6 +1,9 @@
 package org.siloserver.silo.android.ui.screens.player
 
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
+import org.siloserver.silo.model.playback.SubtitleIdentity
+import org.siloserver.silo.model.playback.SubtitleMediaIdentity
+import org.siloserver.silo.model.playback.mergeDownloadedSubtitles
 import org.siloserver.silo.model.subtitles.DownloadedSubtitle
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -62,5 +65,26 @@ class SubtitleTrackSelectionTest {
         assertEquals(7, selectedServerSubtitleTrackIndex(1, tracks))
         assertEquals(-1, selectedServerSubtitleTrackIndex(-1, tracks))
         assertNull(selectedServerSubtitleTrackIndex(2, tracks))
+    }
+
+    @Test
+    fun freshHydratedPlaybackResolvesPersistedDownloadedIdentityByDownloadId() {
+        val merged = mergeDownloadedSubtitles(
+            existing = listOf(track(0)),
+            downloaded = listOf(dl(312)),
+            sessionId = "fresh-session",
+            serverUrl = "https://silo.test",
+        )
+        val persisted = SubtitleIdentity.Downloaded(
+            downloadId = 312,
+            media = SubtitleMediaIdentity(
+                trackId = "silo-downloaded-subtitle:312",
+                language = "en",
+                codecFamily = "srt",
+            ),
+        )
+
+        assertEquals(1, resolveMobileSubtitleOrdinal(persisted, merged))
+        assertEquals(312, merged[1].downloadId)
     }
 }

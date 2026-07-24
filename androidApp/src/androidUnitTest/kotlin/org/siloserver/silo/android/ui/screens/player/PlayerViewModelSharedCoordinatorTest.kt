@@ -11,6 +11,12 @@ class PlayerViewModelSharedCoordinatorTest {
     private val moduleSource = java.io.File(
         "src/androidMain/kotlin/org/siloserver/silo/android/di/AndroidModule.kt",
     ).readText()
+    private val playerScreenSource = java.io.File(
+        "src/androidMain/kotlin/org/siloserver/silo/android/ui/screens/player/PlayerScreen.kt",
+    ).readText()
+    private val freshRestoreSource = java.io.File(
+        "src/androidMain/kotlin/org/siloserver/silo/android/ui/screens/player/MobileFreshSubtitleRestore.kt",
+    ).readText()
 
     @Test
     fun mobilePlayerViewModelStartsRemotePlaybackThroughSharedCoordinator() {
@@ -96,6 +102,135 @@ class PlayerViewModelSharedCoordinatorTest {
     }
 
     @Test
+    fun freshPlaybackHydratesDownloadedRowsBeforePersistedSubtitleRestore() {
+        val body = viewModelSource
+            .substringAfter("private suspend fun applyCoordinatorStateToUi(")
+            .substringBefore("private fun startIntroAutoSkipObserver")
+        val hydrateIndex = freshRestoreSource.indexOf("loadDownloadedSubtitles(mediaFileId)")
+        val mergeIndex = freshRestoreSource.indexOf("mergeDownloadedSubtitles(")
+        val restoreIndex = freshRestoreSource.indexOf("decodeSubtitleIdentityPreference(")
+
+        assertTrue(body.contains("prepareMobileFreshSubtitleRestore("))
+        assertTrue(body.contains("loadDownloadedSubtitles = subtitlesRepository::list"))
+        assertTrue(hydrateIndex >= 0, "Fresh remote playback must fetch downloaded subtitle rows")
+        assertTrue(mergeIndex > hydrateIndex, "Fresh remote playback must merge fetched downloads")
+        assertTrue(
+            restoreIndex > mergeIndex,
+            "Persisted Downloaded/legacy Local identity must resolve only after download hydration",
+        )
+        assertTrue(
+            freshRestoreSource.contains("persistedSelectionIdentity"),
+            "Fresh restore must preserve authoritative downloaded subtitle identity",
+        )
+    }
+
+    @Test
+    fun freshPlaybackDownloadHydrationFailureIsBestEffort() {
+        val body = viewModelSource
+            .substringAfter("private suspend fun applyCoordinatorStateToUi(")
+            .substringBefore("private fun startIntroAutoSkipObserver")
+
+        assertTrue(freshRestoreSource.contains("is ApiResult.Success ->"))
+        assertTrue(freshRestoreSource.contains("else -> emptyList()"))
+        assertTrue(body.contains("freshSubtitleRestore.persistedPreferencePresent"))
+        assertTrue(body.contains("MobileSubtitleAutoSelection.NoChange -> null"))
+    }
+
+    @Test
+    fun loadContentCreatesAndCancelsGenerationOwnedJob() {
+        val body = viewModelSource
+            .substringAfter("fun loadContent(")
+            .substringBefore("private fun startIntroAutoSkipObserver")
+
+        assertTrue(viewModelSource.contains("private val loadOwners"))
+        assertTrue(viewModelSource.contains("private var loadJob: Job?"))
+        assertTrue(body.contains("loadJob?.cancel()"))
+        assertTrue(body.contains("loadOwners.begin("))
+    }
+
+    @Test
+    fun staleReadyLoadStopsReturnedSessionBeforePublishing() {
+        val body = viewModelSource
+            .substringAfter("private suspend fun applyCoordinatorStateToUi(")
+            .substringBefore("private fun startIntroAutoSkipObserver")
+        val cleanupBody = viewModelSource
+            .substringAfter("private suspend fun stopStaleReadySession(")
+            .substringBefore("private suspend fun applyCoordinatorStateToUi(")
+
+        assertTrue(body.contains("ownsLoad("))
+        assertTrue(body.contains("stopStaleReadySession("))
+        assertTrue(cleanupBody.contains("playbackSessionManager.stopSession(sessionId)"))
+        assertTrue(body.contains("return"))
+    }
+
+    @Test
+    fun exitAndClearInvalidatePlayerLoadOwner() {
+        val exitBody = viewModelSource
+            .substringAfter("fun onExit()")
+            .substringBefore("private fun scheduleControlsHide")
+        val clearBody = viewModelSource.substringAfter("override fun onCleared()")
+
+        assertTrue(exitBody.contains("loadOwners.invalidate()"))
+        assertTrue(exitBody.contains("loadJob?.cancel()"))
+        assertTrue(clearBody.contains("loadOwners.invalidate()"))
+        assertTrue(clearBody.contains("loadJob?.cancel()"))
+    }
+
+    @Test
+    fun trackPersistenceUsesAtomicLogicalPortWrite() {
+        val persistenceBody = viewModelSource
+            .substringAfter("persistencePort = object : MobileSubtitlePersistencePort")
+            .substringBefore("onSnapshotChanged =")
+
+        assertTrue(persistenceBody.contains("userItemStatePort.recordTrackSelection("))
+        assertFalse(persistenceBody.contains("recordAudioTrackSelection("))
+        assertFalse(persistenceBody.contains("recordSubtitleTrackSelection("))
+    }
+
+    @Test
+    fun subtitleOnlyPersistencePreservesUnresolvedAudioFingerprint() {
+        val persistenceBody = viewModelSource
+            .substringAfter("persistencePort = object : MobileSubtitlePersistencePort")
+            .substringBefore("onSnapshotChanged =")
+
+        assertTrue(persistenceBody.contains("TrackSelectionFingerprintUpdate.Preserve"))
+        assertTrue(persistenceBody.contains("TrackSelectionFingerprintUpdate.Set"))
+        assertTrue(
+            persistenceBody.contains(
+                "subtitleUpdate = TrackSelectionFingerprintUpdate.Set(",
+            ),
+        )
+        assertTrue(
+            persistenceBody.indexOf("TrackSelectionFingerprintUpdate.Preserve") <
+                persistenceBody.indexOf("userItemStatePort.recordTrackSelection("),
+        )
+    }
+
+    @Test
+    fun normalExitAwaitsFinalTrackPreferenceFlushBeforeTeardown() {
+        val exitBody = viewModelSource
+            .substringAfter("fun onExit()")
+            .substringBefore("private fun scheduleControlsHide")
+
+        assertTrue(exitBody.contains("persistCommittedSelectionAndFlush("))
+        assertTrue(
+            exitBody.indexOf("persistCommittedSelectionAndFlush(") <
+                exitBody.indexOf("sessionLifecycle.stop()"),
+        )
+    }
+
+    @Test
+    fun onClearedRequestsContainedNonBlockingTrackPersistenceFallback() {
+        val clearBody = viewModelSource
+            .substringAfter("override fun onCleared()")
+
+        assertTrue(
+            clearBody.contains("requestDurableFinalPersistence("),
+            "onCleared must request a contained non-blocking fallback, not add a main-thread blocking track write",
+        )
+    }
+
+    @Test
     fun loadContentRethrowsCoroutineCancellation() {
         val loadContentBody = viewModelSource
             .substringAfter("fun loadContent(")
@@ -133,6 +268,103 @@ class PlayerViewModelSharedCoordinatorTest {
     }
 
     @Test
+    fun mobileSubtitleSelectionDelegatesToTransactionalAdapterWithoutOptimisticMutation() {
+        val body = viewModelSource
+            .substringAfter("fun onSelectSubtitle(index: Int)")
+            .substringBefore("/** Select an audio track")
+
+        assertTrue(body.contains("mobileSubtitleTransactions.select("))
+        assertFalse(body.contains("selectedSubtitleIndex = index"))
+        assertFalse(body.contains("startProtocolV3Replan("))
+        assertFalse(body.contains("recordSubtitleTrackSelection("))
+    }
+
+    @Test
+    fun mobileAudioSelectionJoinsTheTransactionalReducerWithoutOptimisticMutation() {
+        val body = viewModelSource
+            .substringAfter("fun onSelectAudio(index: Int)")
+            .substringBefore("// ---- Subtitle suite")
+
+        assertTrue(body.contains("mobileSubtitleTransactions.selectAudio("))
+        assertTrue(body.contains("selectedServerAudioTrackIndex("))
+        assertFalse(body.contains("selectedAudioIndex = index"))
+        assertFalse(body.contains("persistAudioTrackSelection("))
+        assertFalse(body.contains("startProtocolV3Replan("))
+    }
+
+    @Test
+    fun mobileSubtitleRefreshUsesFullOwnerAndReducerAutoSelection() {
+        val body = viewModelSource
+            .substringAfter("private suspend fun doRefreshSubtitles(")
+            .substringBefore("/** Refresh the transcription quota")
+
+        assertTrue(body.contains("mobileSubtitleTransactions.beginRefresh()"))
+        assertTrue(body.contains("mobileSubtitleTransactions.ownsRefresh(owner)"))
+        assertTrue(body.contains("mobileSubtitleTransactions.selectFromRefresh("))
+        assertFalse(body.contains("selectedSubtitleIndex = autoIndex"))
+    }
+
+    @Test
+    fun mobilePlayerPublishesCommittedAndPendingSubtitleStateSeparately() {
+        assertTrue(viewModelSource.contains("val committedSubtitleIdentity: SubtitleIdentity = SubtitleIdentity.Off"))
+        assertTrue(viewModelSource.contains("val pendingSubtitleIdentity: SubtitleIdentity? = null"))
+        assertTrue(viewModelSource.contains("val localSubtitleMountIdentity: SubtitleIdentity? = null"))
+        assertTrue(viewModelSource.contains("val subtitleApplying: Boolean = false"))
+        assertTrue(viewModelSource.contains("committedSubtitleIdentity = snapshot.committedIdentity"))
+        assertTrue(viewModelSource.contains("selectedSubtitleIndex = resolveMobileSubtitleOrdinal("))
+        assertTrue(viewModelSource.contains("pendingSubtitleIdentity = snapshot.pendingIdentity"))
+        assertTrue(viewModelSource.contains("localSubtitleMountIdentity = snapshot.localMountIdentity"))
+    }
+
+    @Test
+    fun mobilePlayerCommitsLocalSubtitleOnlyAfterMountedResolverConfirmation() {
+        assertTrue(
+            viewModelSource.contains("mobileSubtitleTransactions.reportMountedSelection("),
+            "PlayerViewModel must report the actual Media3 mount result to the transaction adapter",
+        )
+        assertTrue(
+            playerScreenSource.contains("liveState.localSubtitleMountIdentity"),
+            "Track resolution must target the provisional local subtitle, not the prior committed row",
+        )
+        assertTrue(
+            playerScreenSource.contains("selectMountedSubtitle(identity = targetIdentity)"),
+            "Track resolution must select by typed identity rather than a lossy app-list ordinal",
+        )
+        assertFalse(
+            playerScreenSource.contains("committedSubtitleOrdinal("),
+            "PlayerScreen must not gate typed mounted selection through a lossy ordinal mapper",
+        )
+        assertTrue(
+            playerScreenSource.contains("viewModel.onPendingSubtitleMountResult("),
+            "PlayerScreen must return mounted resolver success or failure to PlayerViewModel",
+        )
+        assertTrue(
+            playerScreenSource.contains("media3TextTrackSnapshotKey("),
+            "Mount confirmation must use the real Media3 track snapshot",
+        )
+        assertTrue(
+            playerScreenSource.contains("settled = backend.player.playbackState == Player.STATE_READY") &&
+                playerScreenSource.contains("settled = videoBackend?.player?.playbackState == Player.STATE_READY"),
+            "A stable READY snapshot must make an unresolved local mount terminal",
+        )
+    }
+
+    @Test
+    fun burnInCommitDisablesMedia3TextWithoutExternalSubtitleRefresh() {
+        val selectionEffect = playerScreenSource
+            .substringAfter("// Handle subtitle selection")
+            .substringBefore("LaunchedEffect(mediaController)")
+
+        assertTrue(selectionEffect.contains("targetIdentity is SubtitleIdentity.ServerBurnIn"))
+        assertTrue(
+            selectionEffect.contains(
+                "backend.selectMountedSubtitle(identity = SubtitleIdentity.Off)",
+            ),
+            "burn-in must explicitly disable Media3 text while pixels come from video",
+        )
+    }
+
+    @Test
     fun mobileRecoveryIsSingleFlightAndAttemptScoped() {
         val body = viewModelSource
             .substringAfter("private fun startProtocolV3Replan(")
@@ -147,6 +379,10 @@ class PlayerViewModelSharedCoordinatorTest {
         assertTrue(body.contains("audioTrackIndex = selectedAudioTrackIndex"))
         assertTrue(body.contains("selectedServerAudioTrackIndex("))
         assertTrue(body.contains("subtitleTrackIndex = selectedSubtitleTrackIndex"))
+        assertTrue(body.contains("mobileSubtitleTransactions.hasActiveTransaction"))
+        assertTrue(body.contains("mobileSubtitleTransactions.invalidate()"))
+        assertTrue(body.contains("mobileSubtitleTransactions.restoreCommittedLocalMount()"))
+        assertTrue(body.contains("rebaseDownloadedSubtitleUrl("))
     }
 
     @Test

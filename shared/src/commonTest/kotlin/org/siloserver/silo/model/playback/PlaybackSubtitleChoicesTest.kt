@@ -138,4 +138,38 @@ class PlaybackSubtitleChoicesTest {
         assertEquals(listOf(0), choices.map(PlayerSubtitleInfo::index))
         assertEquals("/a.vtt", choices.single().url)
     }
+
+    @Test
+    fun downloadedSubtitleUrlRebasesOnlyTheSessionPathSegment() {
+        assertEquals(
+            "/stream/new-session/subtitles/17.ass",
+            rebaseDownloadedSubtitleUrl(
+                url = "/stream/old-session/subtitles/17.ass",
+                targetSessionId = "new-session",
+            ),
+        )
+        assertEquals(
+            "https://silo.example/api/v1/stream/new-session/subtitles/203.vtt?token=old-session#cue",
+            rebaseDownloadedSubtitleUrl(
+                url = "https://silo.example/api/v1/stream/old-session/subtitles/203.vtt?token=old-session#cue",
+                targetSessionId = "new-session",
+            ),
+        )
+    }
+
+    @Test
+    fun downloadedSubtitleUrlLeavesNonmatchingPathsUnchanged() {
+        val urls = listOf(
+            "/stream/old-session/video/17.ass",
+            "/stream/old-session/subtitles/no-extension",
+            "/streams/old-session/subtitles/17.ass",
+            "/api/v1/stream/old-session/subtitles/17.ass/extra",
+            "https://silo.example/watch?next=/stream/old-session/subtitles/17.ass",
+        )
+
+        assertEquals(
+            urls,
+            urls.map { rebaseDownloadedSubtitleUrl(it, targetSessionId = "new-session") },
+        )
+    }
 }

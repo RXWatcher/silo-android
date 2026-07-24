@@ -11,6 +11,7 @@ import org.siloserver.silo.common.data.db.dao.DirtyOperationDao
 import org.siloserver.silo.common.data.db.dao.DownloadDao
 import org.siloserver.silo.common.data.db.dao.DownloadDeletionDao
 import org.siloserver.silo.common.data.db.dao.DownloadSubscriptionDao
+import org.siloserver.silo.common.data.db.dao.ServerPurgeDao
 import org.siloserver.silo.common.data.db.dao.HomeCacheDao
 import org.siloserver.silo.common.data.db.dao.LegacyImportDao
 import org.siloserver.silo.common.data.db.dao.UserItemStateDao
@@ -70,6 +71,7 @@ abstract class SiloDatabase : RoomDatabase() {
     abstract fun homeCacheDao(): HomeCacheDao
     abstract fun catalogCacheDao(): CatalogCacheDao
     abstract fun downloadSubscriptionDao(): DownloadSubscriptionDao
+    abstract fun serverPurgeDao(): ServerPurgeDao
 
     companion object {
         const val NAME = "silo.db"

@@ -130,17 +130,22 @@ class SyncEngine(
             }
         }
 
-        // Count remaining for whatever scope is active NOW (re-snapshot), not the
-        // scope we just drained. If the user switched mid-drain, this keeps the
-        // worker's retry chain alive for the newly-active scope — covering the
-        // case where an activation enqueue was dropped by ExistingWorkPolicy.KEEP
-        // while this worker was running.
+        // Count remaining for the scope we just drained AND, if the user switched
+        // mid-drain, for whatever scope is active NOW (re-snapshot). Counting only
+        // the end scope stranded the drained scope's queued work on a switch: the
+        // worker saw remaining=0, reported success and ended the retry chain.
+        // OutboxSyncStarter now also triggers on a profile change, so a switch is
+        // no longer silent, but this stays the in-drain defence — the switch can
+        // land between the drain and the count. Including the end scope covers an
+        // activation enqueue dropped by ExistingWorkPolicy.KEEP while this worker
+        // was running.
+        var remaining = dao.countForScope(serverId, profileId)
         val endScope = snapshotProvider()
         val endProfileId = endScope?.profileId
-        val remaining = if (endScope != null && endProfileId != null) {
-            dao.countForScope(endScope.serverId, endProfileId)
-        } else {
-            0
+        if (endScope != null && endProfileId != null &&
+            (endScope.serverId != serverId || endProfileId != profileId)
+        ) {
+            remaining += dao.countForScope(endScope.serverId, endProfileId)
         }
 
         return DrainResult(

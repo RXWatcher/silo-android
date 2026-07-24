@@ -128,7 +128,7 @@ class PlaybackSessionLifecycle(
      * episode is dead for the rest of playback.
      */
     @Volatile
-    private var ownedSessionId: String? = null
+    private var lastAdoptedSessionId: String? = null
 
     // ---- Public API ---------------------------------------------------------
 
@@ -214,7 +214,7 @@ class PlaybackSessionLifecycle(
             this.renewMissingSessionWithLegacyStart = renewMissingSessionWithLegacyStart
             this.diagnosticsRecording = diagnosticsRecording
             diagnosticsRecording.record(session.sessionId)
-            ownedSessionId = session.sessionId
+            lastAdoptedSessionId = session.sessionId
             _state.value = SessionState.Active(session)
             if (manageProgress) {
                 startProgressReporter()
@@ -334,7 +334,7 @@ class PlaybackSessionLifecycle(
         diagnosticsRecording = snapshot.diagnosticsRecording
         _notice.value = snapshot.notice
         // A rollback to the predecessor hands ownership back to that session.
-        (snapshot.state as? SessionState.Active)?.let { ownedSessionId = it.session.sessionId }
+        (snapshot.state as? SessionState.Active)?.let { lastAdoptedSessionId = it.session.sessionId }
         _state.value = snapshot.state
         if (
             restartReporter &&
@@ -352,7 +352,7 @@ class PlaybackSessionLifecycle(
         _notice.value = null
         // Starting fresh: the previous session is no longer ours. start() has
         // already awaited any pending stop, so nothing is left to guard.
-        ownedSessionId = null
+        lastAdoptedSessionId = null
         _state.value = SessionState.Loading
         lastStartParams = params
         flushProgressOnStop = true
@@ -399,7 +399,7 @@ class PlaybackSessionLifecycle(
                 DiagnosticsPlaybackLogger.sessionEvent("session active")
                 diagnosticsRecording.record(result.data.sessionId)
                 val active = SessionState.Active(result.data)
-                ownedSessionId = result.data.sessionId
+                lastAdoptedSessionId = result.data.sessionId
                 _state.value = active
                 lastReportedPosition = params.startPosition ?: result.data.position
                 // Clear the missing-session debounce — fresh session id.
@@ -488,7 +488,7 @@ class PlaybackSessionLifecycle(
                 // being reconnected or restarted is still owned, and answering
                 // "no id" there let a stale stop cancel a live recovery.
                 val activeSessionId =
-                    (_state.value as? SessionState.Active)?.session?.sessionId ?: ownedSessionId
+                    (_state.value as? SessionState.Active)?.session?.sessionId ?: lastAdoptedSessionId
                 if (activeSessionId != null && activeSessionId != expectedSessionId) {
                     DiagnosticsPlaybackLogger.sessionEvent("session stop skipped, ownership moved")
                     return
@@ -539,7 +539,7 @@ class PlaybackSessionLifecycle(
             renewMissingSessionWithLegacyStart = true
             pendingActiveSessionPublication = null
             _notice.value = null
-            ownedSessionId = null
+            lastAdoptedSessionId = null
             _state.value = SessionState.Idle
         }
         DiagnosticsPlaybackLogger.sessionEvent("session stopped")
@@ -700,7 +700,7 @@ class PlaybackSessionLifecycle(
                     Log.i(TAG, "Health probe succeeded; resuming playback session")
                     DiagnosticsPlaybackLogger.sessionEvent("session reconnected")
                     diagnosticsRecording.record(currentSession.sessionId)
-                    ownedSessionId = currentSession.sessionId
+                    lastAdoptedSessionId = currentSession.sessionId
                     _state.value = SessionState.Active(currentSession)
                     _notice.value = null
                     return@launch

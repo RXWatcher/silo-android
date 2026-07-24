@@ -118,15 +118,18 @@ class AndroidServerRegistry(
     override suspend fun remove(serverId: String) {
         identityTransitions.changing(IdentityTransitionKind.SERVER_REMOVE) {
             mutex.withLock {
-                // Wipe all per-server token keys before dropping the entry, otherwise
-                // they'd linger encrypted on disk indefinitely.
-                prefs.edit()
-                    .remove(serverScopedKey(serverId, EncryptedTokenManagerImpl.KEY_ACCESS_TOKEN))
-                    .remove(serverScopedKey(serverId, EncryptedTokenManagerImpl.KEY_REFRESH_TOKEN))
-                    .remove(serverScopedKey(serverId, EncryptedTokenManagerImpl.KEY_TOKEN_EXPIRY))
-                    .remove(serverScopedKey(serverId, EncryptedTokenManagerImpl.KEY_PROFILE_ID))
-                    .remove(serverScopedKey(serverId, EncryptedTokenManagerImpl.KEY_PROFILE_TOKEN))
-                    .apply()
+                // Wipe every key in this server's "<serverId>." namespace before
+                // dropping the entry, otherwise they'd linger encrypted on disk
+                // indefinitely. Sweeping the prefix rather than a fixed key list
+                // keeps the purge correct as per-server slots are added: ids are
+                // base64url so they never contain the '.' separator, and no other
+                // server's key can match this prefix.
+                val scopePrefix = serverScopedKey(serverId, "")
+                val editor = prefs.edit()
+                prefs.all.keys
+                    .filter { it.startsWith(scopePrefix) }
+                    .forEach { editor.remove(it) }
+                editor.apply()
 
                 val updated = _entries.value.filter { it.id != serverId }
                 val newActive = if (_activeServerId.value == serverId) {

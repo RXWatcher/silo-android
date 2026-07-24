@@ -20,10 +20,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay30
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
@@ -50,6 +53,10 @@ import coil3.compose.AsyncImage
  * <device>" panel with the live remote position, play/pause + stop controls
  * (driven from [SiloCastState]), and a back arrow ([onBack]) to leave the
  * player screen while the cast keeps running.
+ *
+ * When [SiloCastState.loadError] is set the receiver never started the stream,
+ * so the transport controls are replaced by the failure message and a single
+ * "stop casting" action — ending the session is what resumes local playback.
  */
 @Composable
 fun SiloCastOverlay(
@@ -104,18 +111,41 @@ fun SiloCastOverlay(
                 )
             }
 
+            // A rejected load leaves the receiver with nothing to play, so the
+            // transport controls below would drive a stream that never starts.
+            // Show what went wrong and offer the one action that recovers:
+            // ending the session hands playback back to the local player.
+            val loadError = castState.loadError
+
             Icon(
-                imageVector = Icons.Default.CastConnected,
+                imageVector = if (loadError != null) {
+                    Icons.Default.ErrorOutline
+                } else {
+                    Icons.Default.CastConnected
+                },
                 contentDescription = null,
                 modifier = Modifier.size(32.dp),
                 tint = Color.White,
             )
 
             Text(
-                text = "Casting to ${castState.deviceName ?: "device"}",
+                text = if (loadError != null) {
+                    "Couldn't cast to ${castState.deviceName ?: "device"}"
+                } else {
+                    "Casting to ${castState.deviceName ?: "device"}"
+                },
                 color = Color.White,
                 textAlign = TextAlign.Center,
             )
+
+            if (loadError != null) {
+                Text(
+                    text = loadError,
+                    color = Color.White.copy(alpha = 0.7f),
+                    textAlign = TextAlign.Center,
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                )
+            }
 
             if (castState.title.isNotBlank()) {
                 Text(
@@ -125,7 +155,7 @@ fun SiloCastOverlay(
                 )
             }
 
-            if (castState.duration > 0.0) {
+            if (loadError == null && castState.duration > 0.0) {
                 // Real seek bar, not a passive indicator: drag to scrub, seek is
                 // sent to the receiver on release. While dragging, the thumb and
                 // the time readout follow the finger instead of the 1s remote
@@ -155,55 +185,71 @@ fun SiloCastOverlay(
                 )
             }
 
-            // Icon-only transport row: five labeled buttons overflow the width
-            // on phones and wrap grotesquely (a one-letter-per-line "Stop"
-            // pill), so every control is an icon with a content description.
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onSkipBack) {
-                    Icon(
-                        imageVector = Icons.Default.Replay30,
-                        contentDescription = "Back 30 seconds",
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp),
-                    )
+            if (loadError != null) {
+                Button(
+                    onClick = onStopCasting,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White,
+                        contentColor = Color.Black,
+                    ),
+                ) {
+                    Text(text = "Stop casting and play here")
                 }
+            } else {
+                // Icon-only transport row: five labeled buttons overflow the width
+                // on phones and wrap grotesquely (a one-letter-per-line "Stop"
+                // pill), so every control is an icon with a content description.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onSkipBack) {
+                        Icon(
+                            imageVector = Icons.Default.Replay30,
+                            contentDescription = "Back 30 seconds",
+                            tint = Color.White,
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
 
-                IconButton(onClick = onPlayPause, modifier = Modifier.size(64.dp)) {
-                    Icon(
-                        imageVector = if (castState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (castState.isPlaying) "Pause" else "Play",
+                    IconButton(onClick = onPlayPause, modifier = Modifier.size(64.dp)) {
+                        Icon(
+                            imageVector = if (castState.isPlaying) {
+                                Icons.Default.Pause
+                            } else {
+                                Icons.Default.PlayArrow
+                            },
+                            contentDescription = if (castState.isPlaying) "Pause" else "Play",
+                            tint = Color.White,
+                            modifier = Modifier.size(48.dp),
+                        )
+                    }
+
+                    IconButton(onClick = onSkipForward) {
+                        Icon(
+                            imageVector = Icons.Default.Forward30,
+                            contentDescription = "Forward 30 seconds",
+                            tint = Color.White,
+                            modifier = Modifier.size(32.dp),
+                        )
+                    }
+
+                    CastSubtitleMenuButton(
+                        options = castState.subtitleOptions,
+                        activeId = castState.activeSubtitleId,
+                        onSelect = onSelectSubtitle,
                         tint = Color.White,
-                        modifier = Modifier.size(48.dp),
+                        iconSize = 28.dp,
                     )
-                }
 
-                IconButton(onClick = onSkipForward) {
-                    Icon(
-                        imageVector = Icons.Default.Forward30,
-                        contentDescription = "Forward 30 seconds",
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp),
-                    )
-                }
-
-                CastSubtitleMenuButton(
-                    options = castState.subtitleOptions,
-                    activeId = castState.activeSubtitleId,
-                    onSelect = onSelectSubtitle,
-                    tint = Color.White,
-                    iconSize = 28.dp,
-                )
-
-                IconButton(onClick = onStopCasting) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Stop casting",
-                        tint = Color.White,
-                        modifier = Modifier.size(28.dp),
-                    )
+                    IconButton(onClick = onStopCasting) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Stop casting",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp),
+                        )
+                    }
                 }
             }
         }

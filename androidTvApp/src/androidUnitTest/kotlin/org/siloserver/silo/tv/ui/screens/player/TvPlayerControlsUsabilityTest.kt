@@ -312,7 +312,7 @@ class TvPlayerControlsUsabilityTest {
         // rows (HudFocusedSettingRow) that open a centered HudPickerDialog —
         // matching the tvOS row→picker-dialog model.
         assertTrue(hudSource.contains("fun HudSubtitlesPane("))
-        assertTrue(hudSource.contains("onSelectSubtitle(id.toIntOrNull() ?: -1)"))
+        assertTrue(hudSource.contains("presentation.onSelect(row.identity)"))
         assertTrue(hudSource.contains("delayPicker("))
         assertTrue(hudSource.contains("title = \"Subtitle Delay\""))
         assertTrue(hudSource.contains("title = \"Subtitle Size\""))
@@ -439,21 +439,101 @@ class TvPlayerControlsUsabilityTest {
     }
 
     @Test
-    fun subtitleSelectionUpdatesUiAfterBackendTrackApply() {
-        val selectionBlock = screenSource
-            .substringAfter("val applyTvSubtitleSelection")
-            .substringBefore("DisposableEffect(context)")
-        val uiUpdateIndex = selectionBlock.indexOf("viewModel.onSubtitleSelectionApplied(idx)")
-        val backendIndex = selectionBlock.indexOf("backend.selectSubtitle(selectedTrack)")
-        val missingTrackGuardIndex = selectionBlock.indexOf("if (idx >= 0 && selectedTrack == null)")
+    fun ownedSubtitleMountUpdatesUiAfterBackendTrackApply() {
+        val mountCollector = screenSource
+            .substringAfter("viewModel.subtitleSelectRequests.collect")
+            .substringBefore("// Remote set_audio_track")
+        val selectedTrackBlock = mountCollector.substringAfter("val selectedTrack")
+        val uiUpdateIndex = selectedTrackBlock.indexOf("viewModel.onSubtitleSelectionApplied(idx)")
+        val backendIndex = selectedTrackBlock.indexOf("backend.selectSubtitle(selectedTrack)")
 
-        assertTrue(missingTrackGuardIndex >= 0, "unknown positive subtitle indexes must not be treated as Off")
-        assertTrue(uiUpdateIndex >= 0, "selection should update the checkmark after the backend accepts it")
-        assertTrue(backendIndex >= 0, "selection should still apply the Media3 subtitle track")
+        assertTrue(uiUpdateIndex >= 0, "owned mount should acknowledge the applied subtitle")
+        assertTrue(backendIndex >= 0, "owned mount should still apply the Media3 subtitle track")
+        assertTrue(backendIndex < uiUpdateIndex, "the mount must be accepted before acknowledgement")
+    }
+
+    @Test
+    fun subtitleSelectionIsTypedAndNeverOptimisticallyMutatesTheBackendOrCheckmark() {
+        val selectionBlock = screenSource
+            .substringAfter("val selectTvSubtitle")
+            .substringBefore("val subtitlePresentation")
+
+        assertTrue(selectionBlock.contains("viewModel.selectSubtitleOption("))
+        assertFalse(selectionBlock.contains("backend.selectSubtitle("))
+        assertFalse(selectionBlock.contains("viewModel.onSubtitleSelectionApplied("))
+        assertFalse(selectionBlock.contains("viewModel.persistSubtitleTrackSelection("))
+    }
+
+    @Test
+    fun subtitleHudRendersCommittedPendingAndFocusAsIndependentState() {
+        assertTrue(hudSource.contains("TvSubtitleHudPresentation"))
+        assertTrue(hudSource.contains("row.checked"))
+        assertTrue(hudSource.contains("row.applying"))
+        assertTrue(hudSource.contains("row.focused"))
+        assertTrue(hudSource.contains("Applying…"))
+        assertFalse(hudSource.contains("selectedId = selectedSubtitleTrack?.index?.toString()"))
+    }
+
+    @Test
+    fun selectingSubtitleWhilePickerIsOpenDoesNotCloseTheParentHud() {
+        val subtitlePane = hudSource
+            .substringAfter("fun HudSubtitlesPane(")
+            .substringBefore("private fun HudSubtitlePreview(")
+        assertTrue(subtitlePane.contains("presentation.onSelect("))
+        assertFalse(subtitlePane.contains("onCloseHUD"))
+        assertFalse(subtitlePane.contains("activePicker = null"))
+    }
+
+    @Test
+    fun quickSubtitlePickerUsesTypedStableIdsAndApplyingState() {
+        val quickPickerBlock = screenSource
+            .substringAfter("private fun TvQuickSubtitlePicker(")
+            .substringBefore("/**\n * Top-end Watch Together status pill")
+        assertTrue(quickPickerBlock.contains("TvSubtitleHudPresentation"))
+        assertTrue(quickPickerBlock.contains("stableId"))
+        assertTrue(quickPickerBlock.contains("Applying…"))
+        assertFalse(quickPickerBlock.contains("id.toIntOrNull()"))
+    }
+
+    @Test
+    fun subtitlePickerReportsRealDpadFocusByStableIdAndStaysOpenWhileApplying() {
+        val pickerBlock = hudSource
+            .substringAfter("internal fun HudPickerDialog(")
+            .substringBefore("private fun HudPickerOptionRow(")
+        val subtitlePane = hudSource
+            .substringAfter("private fun HudSubtitlesPane(")
+            .substringBefore("private fun HudSubtitlePreview(")
+
+        assertTrue(pickerBlock.contains("key(option.id)"))
+        assertTrue(hudSource.contains("presentation.onFocused(option.id)"))
+        assertTrue(hudSource.contains(".onFocusChanged"))
+        assertTrue(subtitlePane.contains("closeOnSelect = false"))
+        assertTrue(subtitlePane.contains("onFocused = presentation.onFocused"))
+        assertTrue(screenSource.contains("onFocused = { stableId -> subtitleFocusedStableId = stableId }"))
         assertTrue(
-            backendIndex < uiUpdateIndex,
-            "UI state must not advance until Media3 accepts the same subtitle track",
+            hudSource.contains("LaunchedEffect(subtitlePresentation"),
+            "An open subtitle picker must receive refreshed committed/pending rows without losing focus",
         )
+    }
+
+    @Test
+    fun rejectedOwnedSubtitleMountReportsFailureToTheTransactionOwner() {
+        val mountCollector = screenSource
+            .substringAfter("viewModel.subtitleSelectRequests.collect")
+            .substringBefore("// Remote set_audio_track")
+
+        assertTrue(mountCollector.contains("viewModel.onSubtitleSelectionFailed(idx)"))
+    }
+
+    @Test
+    fun preMountRemoteLatchesNeverMutateTheBackendDirectly() {
+        val remoteCollectors = screenSource
+            .substringAfter("// Remote set_audio_track")
+            .substringBefore("// Mirror user-intent pause state")
+
+        assertFalse(remoteCollectors.contains("backend.selectAudioTrack("))
+        assertFalse(remoteCollectors.contains("backend.selectSubtitle("))
+        assertTrue(viewModelSource.contains("retryPendingRemoteTrackIntents("))
     }
 
     @Test
@@ -474,11 +554,11 @@ class TvPlayerControlsUsabilityTest {
 
     @Test
     fun manualSubtitleSelectionSuppressesAutoLanguageReselection() {
-        val selectionBlock = screenSource
-            .substringAfter("val applyTvSubtitleSelection")
-            .substringBefore("fun handleSkipIntroNow")
+        val selectionBody = viewModelSource
+            .substringAfter("fun selectSubtitleOption(identity: SubtitleIdentity)")
+            .substringBefore("fun selectSubtitleOption(serverIndex: Int)")
 
-        assertTrue(selectionBlock.contains("viewModel.onManualSubtitleSelectionIntent(idx)"))
+        assertTrue(selectionBody.contains("manualSubtitleSelectionApplied = true"))
         assertTrue(viewModelSource.contains("manualSubtitleSelectionApplied"))
         assertTrue(viewModelSource.contains("manualSubtitleSelectionApplied = true"))
         assertTrue(

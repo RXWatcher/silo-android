@@ -13,6 +13,10 @@ class MobileDetailOpenPerformanceSourceTest {
         "src/androidMain/kotlin/org/siloserver/silo/android/ui/screens/detail/MovieDetailContent.kt",
     ).readText()
 
+    private val detailScreen = File(
+        "src/androidMain/kotlin/org/siloserver/silo/android/ui/screens/detail/ItemDetailScreen.kt",
+    ).readText()
+
     private val seriesDetail = File(
         "src/androidMain/kotlin/org/siloserver/silo/android/ui/screens/detail/SeriesDetailContent.kt",
     ).readText()
@@ -64,5 +68,29 @@ class MobileDetailOpenPerformanceSourceTest {
                 viewModel.contains("skipSeasonNumber"),
             "Series open should cancel stale season loads, render the selected season first, and defer the full-series episode roll-up.",
         )
+    }
+
+    @Test
+    fun similarHydrationIsDeferredLifecycleBoundAndConcurrencyLimited() {
+        assertTrue(similarRail.contains("LifecycleResumeEffect(contentId)"))
+        assertTrue(similarRail.contains("delay(300)"))
+        assertTrue(similarRail.contains("if (!routeActive) return@LaunchedEffect"))
+        assertTrue(similarRail.contains("mapConcurrentBounded(maxConcurrency = 3)"))
+        assertTrue(!similarRail.contains(".map { ref ->"))
+        assertTrue(!similarRail.contains(".awaitAll()"))
+    }
+
+    @Test
+    fun seriesEpisodeRollupPausesOffRouteAndResumesWhenIncomplete() {
+        assertTrue(detailScreen.contains("LifecycleResumeEffect(viewModel)"))
+        assertTrue(detailScreen.contains("viewModel.onRouteResumed()"))
+        assertTrue(detailScreen.contains("onPauseOrDispose { viewModel.onRoutePaused() }"))
+        assertTrue(viewModel.contains("private data class EpisodeRollupRequest("))
+        assertTrue(viewModel.contains("private var pendingEpisodeRollup: EpisodeRollupRequest?"))
+        assertTrue(viewModel.contains("fun onRoutePaused()"))
+        assertTrue(viewModel.contains("allEpisodeFileIdsJob?.cancel()"))
+        assertTrue(viewModel.contains("fun onRouteResumed()"))
+        assertTrue(viewModel.contains("pendingEpisodeRollup?.let"))
+        assertTrue(viewModel.contains("if (!routeActive) return"))
     }
 }

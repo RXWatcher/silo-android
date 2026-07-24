@@ -32,7 +32,7 @@ class PlayerScreenStartPositionTest {
             "mobile player must not call the raw Media3 mounter directly",
         )
         assertTrue(
-            source.contains("durationSeconds = uiState.duration"),
+            source.contains("durationSeconds = viewModel.uiState.value.duration"),
             "mobile player media specs must carry known duration into system media metadata",
         )
         assertTrue(
@@ -113,6 +113,10 @@ class PlayerScreenStartPositionTest {
         assertTrue(
             trackChangeBody.contains("videoBackend?.selectMountedSubtitle("),
             "track changes must reselect the already-mounted subtitle through the backend",
+        )
+        assertTrue(
+            trackChangeBody.contains("identity = targetIdentity"),
+            "track changes must resolve the complete typed subtitle identity",
         )
         assertFalse(
             trackChangeBody.contains("selectSubtitle("),

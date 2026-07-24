@@ -7,24 +7,50 @@ import org.siloserver.silo.model.section.LibraryCollection
 import org.siloserver.silo.model.section.LibraryCollectionsResponse
 import org.siloserver.silo.model.section.SectionsResponse
 import org.siloserver.silo.network.ApiResult
+import org.siloserver.silo.network.AuthScopeSnapshot
 import org.siloserver.silo.network.api.SectionApi
 import org.siloserver.silo.network.map
 import org.siloserver.silo.repository.port.CatalogCachePort
 import org.siloserver.silo.repository.port.NoOpCatalogCachePort
 import org.siloserver.silo.repository.port.canServeCache
 
-class SectionRepository(
+class SectionRepository internal constructor(
     private val sectionApi: SectionApi,
-    /** Offline read cache for a library's Recommended sections (Track B). No-op by default. */
-    private val catalogCache: CatalogCachePort = NoOpCatalogCachePort,
+    private val catalogCache: CatalogCachePort,
+    private val homeScopeProvider: suspend () -> AuthScopeSnapshot?,
+    private val homeRequestGate: HomeSectionsRequestGate,
 ) {
+    constructor(
+        sectionApi: SectionApi,
+        /** Offline read cache for a library's Recommended sections (Track B). No-op by default. */
+        catalogCache: CatalogCachePort = NoOpCatalogCachePort,
+        homeScopeProvider: suspend () -> AuthScopeSnapshot? = { null },
+    ) : this(sectionApi, catalogCache, homeScopeProvider, HomeSectionsRequestGate())
+
     /** Fetches the home screen layout configuration. */
     suspend fun getHomeLayout(): ApiResult<HomeLayoutResponse> =
         sectionApi.getHomeLayout()
 
     /** Fetches all home screen sections (with items pre-resolved). */
-    suspend fun getHomeSections(): ApiResult<SectionsResponse> =
-        sectionApi.getHomeSections()
+    suspend fun getHomeSections(forceRefresh: Boolean = false): ApiResult<SectionsResponse> {
+        val snapshot = homeScopeProvider()
+        val scopeKey = snapshot?.profileId?.let { profileId ->
+            HomeRequestScope(
+                serverId = snapshot.serverId,
+                profileId = profileId,
+                credentialGenerationId = snapshot.credentialGenerationId,
+                identityGeneration = snapshot.identityGeneration,
+            )
+        }
+        val policy = if (forceRefresh) HomeRequestPolicy.FORCE else HomeRequestPolicy.NORMAL
+        return homeRequestGate.execute(
+            scopeKey = scopeKey,
+            policy = policy,
+            isScopeCurrent = { homeScopeProvider() == snapshot },
+        ) {
+            sectionApi.getHomeSections(snapshot)
+        }
+    }
 
     /** Fetches the items within a specific home section. */
     suspend fun getHomeSectionItems(sectionId: String): ApiResult<HomeSectionItemsResponse> =

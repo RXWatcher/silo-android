@@ -113,6 +113,7 @@ data class PlaybackPlanV3(
     val timeline: PlaybackTimelineV3 = PlaybackTimelineV3(),
     @SerialName("selected_tracks") val selectedTracks: SelectedPlaybackTracksV3 = SelectedPlaybackTracksV3(),
     @SerialName("effective_recipe") val effectiveRecipe: PlaybackEffectiveRecipeV3 = PlaybackEffectiveRecipeV3(),
+    val source: PlaybackSourceV3 = PlaybackSourceV3(),
     val claims: PlaybackValidationClaims = PlaybackValidationClaims(),
     val subtitle: PlaybackSubtitleDecisionV3 = PlaybackSubtitleDecisionV3(),
     val transformations: List<PlaybackTransformationV3> = emptyList(),
@@ -122,6 +123,11 @@ data class PlaybackPlanV3(
     @SerialName("decision_reason") val decisionReason: String,
     @SerialName("requested_media_file_id") val requestedMediaFileId: Int? = null,
     @SerialName("effective_media_file_id") val effectiveMediaFileId: Int? = null,
+)
+
+@Serializable
+data class PlaybackSourceV3(
+    @SerialName("color_range") val colorRange: String? = null,
 )
 
 @Serializable

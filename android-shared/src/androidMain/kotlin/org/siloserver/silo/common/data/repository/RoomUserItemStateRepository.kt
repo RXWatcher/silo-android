@@ -15,6 +15,8 @@ import org.siloserver.silo.repository.port.LocalContentState
 import org.siloserver.silo.repository.port.LocalPlaybackProgress
 import org.siloserver.silo.repository.port.LocalTrackSelection
 import org.siloserver.silo.repository.port.OutboxHandle
+import org.siloserver.silo.repository.port.PlaybackWriteScope
+import org.siloserver.silo.repository.port.TrackSelectionFingerprintUpdate
 import org.siloserver.silo.repository.port.UserItemStatePort
 import org.siloserver.silo.repository.port.WriteOutcome
 import kotlinx.serialization.json.JsonPrimitive
@@ -82,6 +84,51 @@ class RoomUserItemStateRepository(
         positionSeconds: Double,
         durationSeconds: Double?,
     ) {
+        val snapshot = snapshotProvider() ?: return
+        val serverId = snapshot.serverId
+        val profileId = snapshot.profileId ?: return
+        recordPositionOwned(
+            serverId = serverId,
+            profileId = profileId,
+            contentId = contentId,
+            fileId = fileId,
+            positionSeconds = positionSeconds,
+            durationSeconds = durationSeconds,
+        )
+    }
+
+    override suspend fun recordPosition(
+        scope: PlaybackWriteScope,
+        contentId: String,
+        fileId: Int,
+        positionSeconds: Double,
+        durationSeconds: Double?,
+    ): Boolean {
+        val current = snapshotProvider() ?: return false
+        if (current.serverId != scope.serverId ||
+            current.profileId != scope.profileId ||
+            current.credentialGenerationId != scope.credentialGenerationId ||
+            current.identityGeneration != scope.identityGeneration
+        ) return false
+
+        return recordPositionOwned(
+            serverId = scope.serverId,
+            profileId = scope.profileId,
+            contentId = contentId,
+            fileId = fileId,
+            positionSeconds = positionSeconds,
+            durationSeconds = durationSeconds,
+        )
+    }
+
+    private suspend fun recordPositionOwned(
+        serverId: String,
+        profileId: String,
+        contentId: String,
+        fileId: Int,
+        positionSeconds: Double,
+        durationSeconds: Double?,
+    ): Boolean {
         // Reject values that would enqueue invalid JSON and poison the drain
         // (a NaN/Infinity/negative would parse-fail after claim and retry forever).
         // Reject 0 too: a resume row is only readable when positionSeconds > 0, so
@@ -91,12 +138,8 @@ class RoomUserItemStateRepository(
         // 0 overwrites a good resume locally AND syncs SET_POSITION=0 to the server,
         // so re-entering the detail shows "Play" instead of "Resume" (Jim TV/phone
         // QA 2026-07-10). Legit resets go through markUnwatched, not this path.
-        if (contentId.isBlank() || !positionSeconds.isFinite() || positionSeconds <= 0.0) return
+        if (contentId.isBlank() || !positionSeconds.isFinite() || positionSeconds <= 0.0) return false
         val safeDuration = durationSeconds?.takeIf { it.isFinite() && it > 0.0 }
-
-        val snapshot = snapshotProvider() ?: return
-        val serverId = snapshot.serverId
-        val profileId = snapshot.profileId ?: return
         val nowMs = now()
 
         db.withTransaction {
@@ -140,6 +183,7 @@ class RoomUserItemStateRepository(
                 ),
             )
         }
+        return true
     }
 
     override suspend fun localPosition(contentId: String, fileId: Int): Double? {
@@ -177,7 +221,7 @@ class RoomUserItemStateRepository(
         fileId: Int,
         audioFingerprint: String?,
     ) {
-        recordTrackSelection(
+        recordSingleTrackSelection(
             contentId = contentId,
             fileId = fileId,
             update = { it.copy(audioFingerprint = audioFingerprint?.trim()?.takeIf { value -> value.isNotBlank() }) },
@@ -189,11 +233,49 @@ class RoomUserItemStateRepository(
         fileId: Int,
         subtitleFingerprint: String?,
     ) {
-        recordTrackSelection(
+        recordSingleTrackSelection(
             contentId = contentId,
             fileId = fileId,
             update = { it.copy(subtitleFingerprint = subtitleFingerprint?.trim()?.takeIf { value -> value.isNotBlank() }) },
         )
+    }
+
+    override suspend fun recordTrackSelection(
+        contentId: String,
+        fileId: Int,
+        audioUpdate: TrackSelectionFingerprintUpdate,
+        subtitleUpdate: TrackSelectionFingerprintUpdate,
+    ) {
+        if (contentId.isBlank()) return
+        val snapshot = snapshotProvider() ?: return
+        val serverId = snapshot.serverId
+        val profileId = snapshot.profileId ?: return
+        val nowMs = now()
+
+        db.withTransaction {
+            val existing = userStateDao.get(serverId, profileId, contentId, fileId)
+            val row = existing ?: UserItemStateEntity(
+                serverId = serverId,
+                profileId = profileId,
+                contentId = contentId,
+                fileId = fileId,
+                positionSeconds = 0.0,
+                durationSeconds = null,
+                audioFingerprint = null,
+                subtitleFingerprint = null,
+                cfi = null,
+                readProgress = null,
+                clientUpdatedAtMs = nowMs,
+                serverUpdatedAtMs = null,
+            )
+            userStateDao.upsert(
+                row.copy(
+                    audioFingerprint = audioUpdate.applyTo(row.audioFingerprint),
+                    subtitleFingerprint = subtitleUpdate.applyTo(row.subtitleFingerprint),
+                    clientUpdatedAtMs = nowMs,
+                ),
+            )
+        }
     }
 
     override suspend fun localTrackSelection(contentId: String, fileId: Int): LocalTrackSelection? {
@@ -395,7 +477,7 @@ class RoomUserItemStateRepository(
         return OutboxHandle(opId, snapshot)
     }
 
-    private suspend fun recordTrackSelection(
+    private suspend fun recordSingleTrackSelection(
         contentId: String,
         fileId: Int,
         update: (UserItemStateEntity) -> UserItemStateEntity,
@@ -426,6 +508,13 @@ class RoomUserItemStateRepository(
         }
     }
 }
+
+private fun TrackSelectionFingerprintUpdate.applyTo(current: String?): String? =
+    when (this) {
+        TrackSelectionFingerprintUpdate.Preserve -> current
+        TrackSelectionFingerprintUpdate.Clear -> null
+        is TrackSelectionFingerprintUpdate.Set -> fingerprint.trim()
+    }
 
 // Newest local write wins — NOT the furthest position. Picking the max
 // position made a deliberate backward seek (or an old row for a different

@@ -447,16 +447,42 @@ fun TvMainShell(
     // Which libraries actually HAVE collections — gates the cascade's
     // Collections pill so an empty library doesn't offer a dead-end section
     // (QA 2026-07-08: Movies → Collections → black 'No collections' page).
-    // null = unknown (still loading) → pill stays visible.
-    var librariesWithCollections by remember { mutableStateOf<Set<Int>?>(null) }
-    LaunchedEffect(libraries) {
-        if (libraries.isEmpty()) return@LaunchedEffect
+    // Save the result in Main's back-stack entry so detail/player round trips
+    // do not re-probe every library. null = unknown → pill stays visible.
+    val collectionsIdentityKey = remember(activeServerEntry?.id, activeServerEntry?.profileId) {
+        "${activeServerEntry?.id.orEmpty()}\u0000${activeServerEntry?.profileId.orEmpty()}"
+    }
+    var probedCollectionsIdentityKey by rememberSaveable { mutableStateOf("") }
+    var probedCollectionLibraryIds by rememberSaveable { mutableStateOf(intArrayOf()) }
+    var librariesWithCollectionsSnapshot by rememberSaveable { mutableStateOf(intArrayOf()) }
+    val currentLibraryIds = remember(libraries) { libraries.map { it.id }.toIntArray() }
+    val librariesWithCollections = if (
+        probedCollectionsIdentityKey == collectionsIdentityKey &&
+        probedCollectionLibraryIds.contentEquals(currentLibraryIds)
+    ) {
+        librariesWithCollectionsSnapshot.toSet()
+    } else {
+        null
+    }
+    LaunchedEffect(libraries, currentLibraryIds, collectionsIdentityKey) {
+        if (
+            probedCollectionsIdentityKey == collectionsIdentityKey &&
+            probedCollectionLibraryIds.contentEquals(currentLibraryIds)
+        ) return@LaunchedEffect
+        if (libraries.isEmpty()) {
+            probedCollectionsIdentityKey = collectionsIdentityKey
+            probedCollectionLibraryIds = intArrayOf()
+            librariesWithCollectionsSnapshot = intArrayOf()
+            return@LaunchedEffect
+        }
         val ids = mutableSetOf<Int>()
         libraries.forEach { lib ->
             val result = runCatching { sectionRepository.getLibraryCollections(lib.id) }.getOrNull()
             if (result is ApiResult.Success && result.data.isNotEmpty()) ids += lib.id
         }
-        librariesWithCollections = ids
+        librariesWithCollectionsSnapshot = ids.toIntArray()
+        probedCollectionsIdentityKey = collectionsIdentityKey
+        probedCollectionLibraryIds = currentLibraryIds
     }
 
     val navigateToRoute: (String) -> Unit = { route ->

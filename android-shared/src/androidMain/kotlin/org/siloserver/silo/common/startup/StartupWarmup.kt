@@ -5,13 +5,16 @@ import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
 import org.siloserver.silo.common.ui.components.resolveAvatarUrl
 import org.siloserver.silo.model.profile.Profile
+import org.siloserver.silo.model.section.HomeSectionItemsResponse
 import org.siloserver.silo.model.section.ResolvedSection
+import org.siloserver.silo.model.section.resolveHomeSectionItems
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.AuthRepository
 import org.siloserver.silo.repository.PersonalDataRepository
 import org.siloserver.silo.repository.ProfileRepository
 import org.siloserver.silo.repository.SectionRepository
 import org.siloserver.silo.repository.port.HomeCachePort
+import org.siloserver.silo.util.mapConcurrentBounded
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -67,6 +70,36 @@ data class StartupArtworkPlan(
             backdropHeightPx = 270,
         )
     }
+}
+
+internal data class StartupHomeResolution(
+    val sections: List<ResolvedSection>,
+    val fullyResolved: Boolean,
+)
+
+internal suspend fun hydrateStartupHomeSections(
+    sections: List<ResolvedSection>,
+    fetchItems: suspend (String) -> ApiResult<HomeSectionItemsResponse>,
+): StartupHomeResolution {
+    val unresolved = sections.filter { it.items.isEmpty() && it.totalCount > 0 }
+    val fallbackById = unresolved.mapConcurrentBounded(maxConcurrency = 4) { section ->
+        val hydrated = when (val result = fetchItems(section.id)) {
+            is ApiResult.Success -> resolveHomeSectionItems(section, result.data)
+            is ApiResult.Error,
+            is ApiResult.NetworkError -> null
+        }
+        section.id to hydrated
+    }.toMap()
+
+    val fullyResolved = unresolved.all { fallbackById[it.id] != null }
+    val resolved = sections.mapNotNull { section ->
+        when {
+            section.items.isNotEmpty() -> section
+            section.totalCount == 0 -> null
+            else -> fallbackById[section.id]?.takeIf { it.items.isNotEmpty() }
+        }
+    }
+    return StartupHomeResolution(resolved, fullyResolved)
 }
 
 /**
@@ -138,23 +171,12 @@ private suspend fun CoroutineScope.warmHome(
 ) {
     when (val result = sectionRepository.getHomeSections()) {
         is ApiResult.Success -> {
-            val resolvedPairs: List<Pair<ResolvedSection, Boolean>> =
-                result.data.sections.map { section ->
-                    async {
-                        when (val itemsResult = sectionRepository.getHomeSectionItems(section.id)) {
-                            is ApiResult.Success -> (itemsResult.data.section ?: section) to true
-                            is ApiResult.Error,
-                            is ApiResult.NetworkError -> section to false
-                        }
-                    }
-                }.awaitAll()
-
-            if (resolvedPairs.all { it.second }) {
-                val resolved = resolvedPairs.map { it.first }.filter { it.items.isNotEmpty() }
-                if (resolved.isNotEmpty()) {
-                    homeCache.cacheHome(resolved)
-                    warmHomeArtwork(context, resolved, artworkPlan)
-                }
+            val resolution = hydrateStartupHomeSections(result.data.sections) { sectionId ->
+                sectionRepository.getHomeSectionItems(sectionId)
+            }
+            if (resolution.fullyResolved && resolution.sections.isNotEmpty()) {
+                homeCache.cacheHome(resolution.sections)
+                warmHomeArtwork(context, resolution.sections, artworkPlan)
             }
         }
         is ApiResult.Error,

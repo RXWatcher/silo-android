@@ -3,6 +3,7 @@ package org.siloserver.silo.common.player
 import org.siloserver.silo.model.playback.PlaybackDelivery
 import org.siloserver.silo.model.playback.PlaybackEngineKind
 import org.siloserver.silo.model.playback.PlaybackPlanV3
+import org.siloserver.silo.model.playback.PlaybackSourceV3
 import org.siloserver.silo.model.playback.PlaybackStreamProtocol
 import org.siloserver.silo.model.playback.PlaybackStreamV3
 import org.siloserver.silo.model.playback.PlaybackSubtitleArtifactV3
@@ -75,11 +76,24 @@ class PlaybackV3SessionTest {
         assertEquals(timeline.seekRestoration, converted.seekRestoration)
     }
 
+    @Test
+    fun sourceColorRangeSurvivesLegacySessionConversion() {
+        val response = plan(
+            mode = PlaybackSubtitleModeV3.OFF,
+            format = "",
+            url = "",
+            source = PlaybackSourceV3(colorRange = "pc"),
+        ).toSessionResponse("session", "profile", 482)
+
+        assertEquals("pc", response.playbackPlan?.source?.colorRange)
+    }
+
     private fun plan(
         mode: PlaybackSubtitleModeV3,
         format: String,
         url: String,
         timeline: PlaybackTimelineV3 = PlaybackTimelineV3(),
+        source: PlaybackSourceV3 = PlaybackSourceV3(),
     ) = PlaybackPlanV3(
         planId = "plan",
         delivery = PlaybackDelivery.ORIGINAL_HTTP,
@@ -90,6 +104,7 @@ class PlaybackV3SessionTest {
             container = "mkv",
         ),
         timeline = timeline,
+        source = source,
         selectedTracks = SelectedPlaybackTracksV3(
             subtitle = PlaybackTrackIdentityV3("subtitle", 2),
         ),

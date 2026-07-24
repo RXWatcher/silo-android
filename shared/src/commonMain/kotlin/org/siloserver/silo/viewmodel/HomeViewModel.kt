@@ -6,14 +6,14 @@ import org.siloserver.silo.domain.MediaActionsCoordinator
 import org.siloserver.silo.model.catalog.MediaItemUserState
 import org.siloserver.silo.model.section.ResolvedSection
 import org.siloserver.silo.model.section.SectionItem
+import org.siloserver.silo.model.section.resolveHomeSectionItems
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.SectionRepository
 import org.siloserver.silo.repository.port.HomeCachePort
 import org.siloserver.silo.repository.port.NoOpHomeCachePort
 import org.siloserver.silo.repository.port.NoOpUserItemStatePort
 import org.siloserver.silo.repository.port.UserItemStatePort
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
+import org.siloserver.silo.util.mapConcurrentBounded
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,21 +59,25 @@ class HomeViewModel(
         }
     }
 
-    private var realtimeRefreshInFlight = false
+    private var quietRefreshInFlight = false
 
     /**
-     * Debounced realtime refetch: quiet (no spinner) and single-flight —
-     * an in-flight realtime or manual refresh already delivers the fresh
-     * sections, so overlapping signals are dropped rather than raced.
+     * Quiet realtime/lifecycle refetch: no spinner and single-flight. The
+     * repository coalesces this with startup, warmup, and Watch Next work;
+     * lifecycle resumes force freshness only when no matching fetch is active.
      */
-    fun refreshFromRealtime() {
-        if (realtimeRefreshInFlight || _uiState.value.isRefreshing) return
-        realtimeRefreshInFlight = true
+    fun refreshFromRealtime() = quietRefresh(forceRefresh = false)
+
+    fun refreshAfterResume() = quietRefresh(forceRefresh = true)
+
+    private fun quietRefresh(forceRefresh: Boolean) {
+        if (quietRefreshInFlight || _uiState.value.isRefreshing) return
+        quietRefreshInFlight = true
         viewModelScope.launch {
             try {
-                fetchSections()
+                fetchSections(forceRefresh = forceRefresh)
             } finally {
-                realtimeRefreshInFlight = false
+                quietRefreshInFlight = false
             }
         }
     }
@@ -96,7 +100,7 @@ class HomeViewModel(
     fun refresh() {
         viewModelScope.launch {
             _uiState.update { it.copy(isRefreshing = true, error = null) }
-            fetchSections()
+            fetchSections(forceRefresh = true)
             _uiState.update { it.copy(isRefreshing = false) }
         }
     }
@@ -116,11 +120,11 @@ class HomeViewModel(
         )
     }
 
-    private suspend fun fetchSections() {
+    private suspend fun fetchSections(forceRefresh: Boolean = false) {
         // Whether we already have something to show (cached or prior fetch) — if a
         // refresh fails we keep it rather than replacing it with a blocking error.
         val hadSections = _uiState.value.sections.isNotEmpty()
-        when (val result = sectionRepository.getHomeSections()) {
+        when (val result = sectionRepository.getHomeSections(forceRefresh = forceRefresh)) {
             is ApiResult.Success -> {
                 val sections = result.data.sections
                 // `/home/sections` already returns each section with its items
@@ -134,34 +138,20 @@ class HomeViewModel(
                 val resolvedPairs: List<Pair<ResolvedSection, Boolean>> = if (needsFetch.isEmpty()) {
                     sections.map { it to true }
                 } else {
-                    val byId = needsFetch.map { section ->
-                        viewModelScope.async {
-                            section.id to when (val itemsResult = sectionRepository.getHomeSectionItems(section.id)) {
-                                is ApiResult.Success -> {
-                                    // The response carries items either nested under
-                                    // `section` or as a sibling top-level `items` list.
-                                    // Honor both — using only `.section` silently drops
-                                    // a successful refetch that returned items at the top
-                                    // level, leaving the section empty and filtered out.
-                                    val data = itemsResult.data
-                                    val responseSection = data.section
-                                    val hydrated = when {
-                                        responseSection != null && responseSection.items.isNotEmpty() ->
-                                            responseSection
-                                        responseSection != null && responseSection.totalCount == 0 ->
-                                            responseSection
-                                        responseSection != null && data.items.isNotEmpty() ->
-                                            responseSection.copy(items = data.items)
-                                        data.items.isNotEmpty() ->
-                                            section.copy(items = data.items)
-                                        else -> null
-                                    }
-                                    if (hydrated != null) hydrated to true else section to false
-                                }
-                                else -> section to false
+                    val byId = needsFetch.mapConcurrentBounded(maxConcurrency = 4) { section ->
+                        section.id to when (val itemsResult = sectionRepository.getHomeSectionItems(section.id)) {
+                            is ApiResult.Success -> {
+                                // The response carries items either nested under
+                                // `section` or as a sibling top-level `items` list.
+                                // Honor both — using only `.section` silently drops
+                                // a successful refetch that returned items at the top
+                                // level, leaving the section empty and filtered out.
+                                val hydrated = resolveHomeSectionItems(section, itemsResult.data)
+                                if (hydrated != null) hydrated to true else section to false
                             }
+                            else -> section to false
                         }
-                    }.awaitAll().toMap()
+                    }.toMap()
                     sections.map { section -> byId[section.id] ?: (section to true) }
                 }
                 val resolved = resolvedPairs.map { it.first }.filter { it.items.isNotEmpty() }

@@ -86,6 +86,7 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import org.siloserver.silo.audiobook.AudioPlaybackTrack
 import org.siloserver.silo.audiobook.AudiobookTimeline
 import org.siloserver.silo.audiobook.buildAudiobookTimeline
@@ -145,22 +146,11 @@ fun TvItemDetailScreen(
 
     BackHandler(enabled = true) { onBack() }
 
-    // Refresh on return (e.g. backing out of the player): the ViewModel loads
-    // once in init, so without this the Play button keeps the resume label
-    // computed before playback. Fires on every ON_RESUME (like TvHomeScreen);
-    // no first-entry guard — the composable is recreated on back-stack pop, so
-    // any effect-local "skip the first" flag would reset and swallow exactly
-    // the resume we care about. refreshOnReturn() no-ops while detail is still
-    // null, which covers the initial load.
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                viewModel.refreshOnReturn()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    // Secondary recommendation/favorite enrichment belongs to this route: it
+    // stops before player composition and resumes only if data is still absent.
+    LifecycleResumeEffect(viewModel) {
+        viewModel.onRouteResumed()
+        onPauseOrDispose { viewModel.onRoutePaused() }
     }
 
     LaunchedEffect(state.detail?.contentId, seasonNumber, state.seasons, state.selectedSeason) {

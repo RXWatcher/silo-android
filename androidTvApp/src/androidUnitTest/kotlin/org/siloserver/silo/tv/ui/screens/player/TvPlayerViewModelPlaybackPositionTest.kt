@@ -48,8 +48,8 @@ class TvPlayerViewModelPlaybackPositionTest {
     @Test
     fun stopSessionForExitClearsPlayableStateBeforeNavigationCompletes() {
         val stopBody = source
-            .substringAfter("suspend fun stopSessionForExit()")
-            .substringBefore("fun onExit()")
+            .substringAfter("private fun prepareSessionExit()")
+            .substringBefore("suspend fun stopSessionForExit()")
 
         assertTrue(
             stopBody.contains("sessionId = null"),
@@ -63,5 +63,16 @@ class TvPlayerViewModelPlaybackPositionTest {
             stopBody.contains("playMethod = null"),
             "TV exit must clear play method along with the stale stream URL",
         )
+    }
+
+    @Test
+    fun ordinaryExitIsNonBlockingAndTeardownNeverUsesRunBlocking() {
+        assertTrue(source.contains("fun stopSessionForExitAsync()"))
+        assertTrue(source.contains("private var finalPositionScope: PlaybackWriteScope? = null"))
+        assertTrue(source.contains("finalPositionScope = finalPlaybackPositionWriter.captureScope()"))
+        assertTrue(source.contains("val scope = finalPositionScope"))
+        assertTrue(source.contains("scope = scope,"))
+        assertTrue(source.contains("finalPlaybackPositionWriter.submit("))
+        assertFalse(source.contains("runBlocking("))
     }
 }

@@ -24,11 +24,10 @@ import org.siloserver.silo.repository.EbookReaderRepository
 import org.siloserver.silo.repository.PersonalDataRepository
 import org.siloserver.silo.viewmodel.applyLocalPlaybackProgress
 import org.siloserver.silo.model.download.DownloadQuality
-import org.siloserver.silo.playback.SUBTITLE_OFF_FINGERPRINT
 import org.siloserver.silo.playback.audioTrackFingerprint
+import org.siloserver.silo.playback.encodeCatalogSubtitlePreference
 import org.siloserver.silo.playback.resolveAudioTrackOrdinal
-import org.siloserver.silo.playback.resolveSubtitleTrackOrdinal
-import org.siloserver.silo.playback.subtitleTrackFingerprint
+import org.siloserver.silo.playback.resolveCatalogSubtitlePreferenceOrdinal
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -72,6 +71,33 @@ data class ItemDetailUiState(
     val kindleConversionAvailable: Boolean = false,
 )
 
+internal class EpisodeRollupAccumulator(
+    val seriesId: String,
+    private val seasonNumbers: Set<Int>,
+) {
+    private val completedSeasonNumbers = linkedSetOf<Int>()
+    private val accumulatedFileIds = linkedSetOf<Int>()
+
+    val fileIds: List<Int>
+        get() = accumulatedFileIds.toList()
+
+    val isComplete: Boolean
+        get() = completedSeasonNumbers.containsAll(seasonNumbers)
+
+    fun matches(seriesId: String, seasonNumbers: Set<Int>): Boolean =
+        this.seriesId == seriesId && this.seasonNumbers == seasonNumbers
+
+    fun recordSeason(seasonNumber: Int, episodes: List<EpisodeListItem>) {
+        episodes.forEach { episode ->
+            episode.files.firstOrNull()?.fileId?.let(accumulatedFileIds::add)
+        }
+        completedSeasonNumbers += seasonNumber
+    }
+
+    fun remainingSeasons(seasons: List<Season>): List<Season> =
+        seasons.filterNot { it.seasonNumber in completedSeasonNumbers }
+}
+
 /**
  * ViewModel for the item detail screen.
  *
@@ -98,6 +124,15 @@ class ItemDetailViewModel(
     val uiState: StateFlow<ItemDetailUiState> = _uiState.asStateFlow()
     private var episodeLoadJob: Job? = null
     private var allEpisodeFileIdsJob: Job? = null
+    private data class EpisodeRollupRequest(
+        val seriesId: String,
+        val seasons: List<Season>,
+        val seedEpisodes: List<EpisodeListItem>,
+        val skipSeasonNumber: Int?,
+    )
+    private var routeActive = true
+    private var pendingEpisodeRollup: EpisodeRollupRequest? = null
+    private var episodeRollupAccumulator: EpisodeRollupAccumulator? = null
     // The season number the currently-shown episodes actually belong to. A
     // failed season switch reverts the optimistic selection to THIS season —
     // not merely the previously-selected one, which may itself have failed —
@@ -455,39 +490,84 @@ class ItemDetailViewModel(
         seedEpisodes: List<EpisodeListItem> = emptyList(),
         skipSeasonNumber: Int? = null,
     ) {
+        pendingEpisodeRollup = EpisodeRollupRequest(
+            seriesId = seriesId,
+            seasons = seasons,
+            seedEpisodes = seedEpisodes,
+            skipSeasonNumber = skipSeasonNumber,
+        )
         allEpisodeFileIdsJob?.cancel()
+        if (!routeActive) return
         allEpisodeFileIdsJob = viewModelScope.launch {
-            val fileIds = mutableListOf<Int>()
-            seedEpisodes.forEach { ep -> ep.files.firstOrNull()?.fileId?.let { fileIds += it } }
-            val canSkipSeedSeason = skipSeasonNumber != null && seedEpisodes.isNotEmpty()
-            if (fileIds.isNotEmpty()) {
-                _uiState.update {
-                    it.copy(
-                        allEpisodeFileIds = fileIds.distinct(),
-                        allEpisodeIdsComplete = canSkipSeedSeason && seasons.size <= 1,
-                    )
+            val seasonNumbers = seasons.mapTo(linkedSetOf()) { it.seasonNumber }
+            val accumulator = episodeRollupAccumulator
+                ?.takeIf { it.matches(seriesId, seasonNumbers) }
+                ?: EpisodeRollupAccumulator(seriesId, seasonNumbers).also {
+                    episodeRollupAccumulator = it
                 }
+            val canSkipSeedSeason = skipSeasonNumber != null && seedEpisodes.isNotEmpty()
+            if (canSkipSeedSeason) {
+                accumulator.recordSeason(checkNotNull(skipSeasonNumber), seedEpisodes)
+            }
+            _uiState.update {
+                it.copy(
+                    allEpisodeFileIds = accumulator.fileIds,
+                    allEpisodeIdsComplete = accumulator.isComplete,
+                )
+            }
+            if (accumulator.isComplete) {
+                pendingEpisodeRollup = null
+                return@launch
             }
 
             // This roll-up is only for the detail download badge. Let the selected
             // season render and become interactive before crawling the rest.
             delay(350)
+            if (!routeActive) return@launch
 
-            var complete = true
-            for (season in seasons) {
-                if (canSkipSeedSeason && season.seasonNumber == skipSeasonNumber) continue
+            for (season in accumulator.remainingSeasons(seasons)) {
+                if (!routeActive) return@launch
                 when (val r = catalogRepository.getEpisodes(seriesId, season.seasonNumber)) {
-                    is ApiResult.Success -> r.data.episodes.forEach { ep ->
-                        ep.files.firstOrNull()?.fileId?.let { fileIds += it }
+                    is ApiResult.Success -> {
+                        accumulator.recordSeason(season.seasonNumber, r.data.episodes)
+                        _uiState.update {
+                            it.copy(
+                                allEpisodeFileIds = accumulator.fileIds,
+                                allEpisodeIdsComplete = accumulator.isComplete,
+                            )
+                        }
                     }
-                    // A season we couldn't load means we can't prove series-completeness.
-                    else -> complete = false
+                    // Leave a failed season incomplete so a later route resume retries it.
+                    else -> Unit
                 }
             }
+            if (!routeActive) return@launch
             _uiState.update {
                 it.copy(
-                    allEpisodeFileIds = fileIds.distinct(),
-                    allEpisodeIdsComplete = complete,
+                    allEpisodeFileIds = accumulator.fileIds,
+                    allEpisodeIdsComplete = accumulator.isComplete,
+                )
+            }
+            if (accumulator.isComplete) pendingEpisodeRollup = null
+        }
+    }
+
+    fun onRoutePaused() {
+        routeActive = false
+        allEpisodeFileIdsJob?.cancel()
+    }
+
+    fun onRouteResumed() {
+        val wasPaused = !routeActive
+        routeActive = true
+        refreshOnReturn()
+        if (wasPaused && !_uiState.value.allEpisodeIdsComplete) {
+            pendingEpisodeRollup?.let { request ->
+                loadAllEpisodeFileIds(
+                    seriesId = request.seriesId,
+                    seasons = request.seasons,
+                    seedEpisodes = request.seedEpisodes,
+                    skipSeasonNumber = request.skipSeasonNumber,
                 )
             }
         }
@@ -681,7 +761,7 @@ class ItemDetailViewModel(
                 hasExplicitAudioSelection = true,
             )
         }
-        persistTrackSelection()
+        persistAudioTrackSelection()
     }
 
     /** Back to Auto — playback falls through to the file's default track. */
@@ -692,7 +772,7 @@ class ItemDetailViewModel(
                 hasExplicitAudioSelection = false,
             )
         }
-        persistTrackSelection()
+        persistAudioTrackSelection()
     }
 
     fun selectSubtitle(index: Int) {
@@ -702,7 +782,7 @@ class ItemDetailViewModel(
                 hasExplicitSubtitleSelection = true,
             )
         }
-        persistTrackSelection()
+        persistSubtitleTrackSelection()
     }
 
     /** Back to Auto — distinct from an explicit -1 ("Off") selection. */
@@ -713,29 +793,18 @@ class ItemDetailViewModel(
                 hasExplicitSubtitleSelection = false,
             )
         }
-        persistTrackSelection()
+        persistSubtitleTrackSelection()
     }
 
     /**
-     * Persist the current audio/subtitle override for the selected version's
-     * file, so it survives leaving and re-opening the detail page (and lines up
-     * with the player, which records the same fingerprints against the same
-     * port). Auto (no explicit pick) writes null to clear any prior override;
-     * an explicit "Off" writes the shared off sentinel; a concrete pick writes
-     * the catalog track's fingerprint. Keyed on (contentId, fileId) — different
-     * versions carry independent selections, matching [selectVersion]'s reset.
+     * Persist only the audio dimension changed by the current action. Keeping
+     * the writes separate prevents an audio-only detail update from clearing a
+     * typed subtitle preference written by the player.
      */
-    private fun persistTrackSelection() {
+    private fun persistAudioTrackSelection() {
         val state = _uiState.value
         val detail = state.detail ?: return
         val version = detail.versions.getOrNull(state.selectedVersionIndex) ?: return
-        val subtitleFingerprint = when {
-            !state.hasExplicitSubtitleSelection -> null
-            state.selectedSubtitleIndex == -1 -> SUBTITLE_OFF_FINGERPRINT
-            else -> version.subtitleTracks.orEmpty()
-                .getOrNull(state.selectedSubtitleIndex)
-                ?.let(::subtitleTrackFingerprint)
-        }
         val audioFingerprint = when {
             !state.hasExplicitAudioSelection -> null
             else -> version.audioTracks.orEmpty()
@@ -743,17 +812,38 @@ class ItemDetailViewModel(
                 ?.let(::audioTrackFingerprint)
         }
         viewModelScope.launch {
-            userItemState.recordSubtitleTrackSelection(detail.contentId, version.fileId, subtitleFingerprint)
             userItemState.recordAudioTrackSelection(detail.contentId, version.fileId, audioFingerprint)
+        }
+    }
+
+    private fun persistSubtitleTrackSelection() {
+        val state = _uiState.value
+        val detail = state.detail ?: return
+        val version = detail.versions.getOrNull(state.selectedVersionIndex) ?: return
+        val subtitlePreference = if (!state.hasExplicitSubtitleSelection) {
+            null
+        } else {
+            encodeCatalogSubtitlePreference(
+                tracks = version.subtitleTracks.orEmpty(),
+                selectedOrdinal = state.selectedSubtitleIndex,
+            )
+        }
+        viewModelScope.launch {
+            userItemState.recordSubtitleTrackSelection(
+                detail.contentId,
+                version.fileId,
+                subtitlePreference,
+            )
         }
     }
 
     /**
      * Seed the audio/subtitle selectors from a previously persisted override
      * for the selected version's file, so re-opening the detail page restores
-     * what the user last chose. Fingerprints map back to the catalog list via
-     * the shared resolvers (Off -> -1). Only applies a dimension when a saved
-     * fingerprint actually matches a current track, leaving Auto otherwise.
+     * what the user last chose. Subtitle preferences resolve typed-first and
+     * then fall back to legacy fingerprints during migration. Only applies a
+     * dimension when a saved value matches a current track, leaving Auto
+     * otherwise.
      */
     private fun seedPersistedTrackSelection() {
         val state = _uiState.value
@@ -761,7 +851,7 @@ class ItemDetailViewModel(
         val version = detail.versions.getOrNull(state.selectedVersionIndex) ?: return
         viewModelScope.launch {
             val saved = userItemState.localTrackSelection(detail.contentId, version.fileId) ?: return@launch
-            val subtitleOrdinal = resolveSubtitleTrackOrdinal(
+            val subtitleOrdinal = resolveCatalogSubtitlePreferenceOrdinal(
                 version.subtitleTracks.orEmpty(),
                 saved.subtitleFingerprint,
             )

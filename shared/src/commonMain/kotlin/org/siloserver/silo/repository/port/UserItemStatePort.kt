@@ -2,6 +2,32 @@ package org.siloserver.silo.repository.port
 
 import org.siloserver.silo.network.AuthScopeSnapshot
 
+data class PlaybackWriteScope(
+    val serverId: String,
+    val profileId: String,
+    val credentialGenerationId: String?,
+    val identityGeneration: Long,
+)
+
+/**
+ * One column of a logical track-selection write.
+ *
+ * [Preserve] keeps the stored fingerprint when the caller has no authoritative
+ * value, [Clear] explicitly removes it, and [Set] replaces it. This distinction
+ * prevents a subtitle-only commit from erasing an unresolved audio preference
+ * and applies symmetrically to future audio-only commits.
+ */
+sealed interface TrackSelectionFingerprintUpdate {
+    data object Preserve : TrackSelectionFingerprintUpdate
+    data object Clear : TrackSelectionFingerprintUpdate
+
+    data class Set(val fingerprint: String) : TrackSelectionFingerprintUpdate {
+        init {
+            require(fingerprint.isNotBlank()) { "Track-selection fingerprint must not be blank" }
+        }
+    }
+}
+
 /**
  * Local-first side-channel for **content-level** user-state mutations
  * (watched / favorite / rating). The strangler entry point for Track B:
@@ -45,6 +71,18 @@ interface UserItemStatePort {
     }
 
     /**
+     * Records a final playback position only while the captured playback
+     * identity is still current. Returns true only when the write was accepted.
+     */
+    suspend fun recordPosition(
+        scope: PlaybackWriteScope,
+        contentId: String,
+        fileId: Int,
+        positionSeconds: Double,
+        durationSeconds: Double?,
+    ): Boolean = false
+
+    /**
      * The locally-recorded resume position for an item, or null if none. Lets the
      * player resume from the last on-device position when offline (no server
      * round-trip). No-op (null) on the default port.
@@ -75,6 +113,48 @@ interface UserItemStatePort {
     }
 
     suspend fun recordSubtitleTrackSelection(contentId: String, fileId: Int, subtitleFingerprint: String?) {
+    }
+
+    /** Compatible nullable API: `null` explicitly clears that fingerprint. */
+    suspend fun recordTrackSelection(
+        contentId: String,
+        fileId: Int,
+        audioFingerprint: String?,
+        subtitleFingerprint: String?,
+    ) {
+        recordTrackSelection(
+            contentId = contentId,
+            fileId = fileId,
+            audioUpdate = audioFingerprint.toTrackSelectionFingerprintUpdate(),
+            subtitleUpdate = subtitleFingerprint.toTrackSelectionFingerprintUpdate(),
+        )
+    }
+
+    /**
+     * Record one logical audio/subtitle choice with explicit preserve/clear/set
+     * semantics. The compatible default delegates only changed columns to legacy
+     * methods; durable implementations should override this when they can commit
+     * both fields atomically. Failures and cancellation deliberately propagate so
+     * callers can retry or acknowledge only a completed logical write.
+     */
+    suspend fun recordTrackSelection(
+        contentId: String,
+        fileId: Int,
+        audioUpdate: TrackSelectionFingerprintUpdate,
+        subtitleUpdate: TrackSelectionFingerprintUpdate,
+    ) {
+        when (audioUpdate) {
+            TrackSelectionFingerprintUpdate.Preserve -> Unit
+            TrackSelectionFingerprintUpdate.Clear -> recordAudioTrackSelection(contentId, fileId, null)
+            is TrackSelectionFingerprintUpdate.Set ->
+                recordAudioTrackSelection(contentId, fileId, audioUpdate.fingerprint.trim())
+        }
+        when (subtitleUpdate) {
+            TrackSelectionFingerprintUpdate.Preserve -> Unit
+            TrackSelectionFingerprintUpdate.Clear -> recordSubtitleTrackSelection(contentId, fileId, null)
+            is TrackSelectionFingerprintUpdate.Set ->
+                recordSubtitleTrackSelection(contentId, fileId, subtitleUpdate.fingerprint.trim())
+        }
     }
 
     suspend fun localTrackSelection(contentId: String, fileId: Int): LocalTrackSelection? = null
@@ -146,6 +226,13 @@ data class OutboxHandle(val opId: Long, val scope: AuthScopeSnapshot? = null) {
  * - [TERMINAL] — server rejected it (4xx); drop the op so a doomed write is not replayed.
  */
 enum class WriteOutcome { SYNCED, RETRIABLE, TERMINAL }
+
+private fun String?.toTrackSelectionFingerprintUpdate(): TrackSelectionFingerprintUpdate =
+    this
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?.let(TrackSelectionFingerprintUpdate::Set)
+        ?: TrackSelectionFingerprintUpdate.Clear
 
 /** Network-only behaviour: records nothing, resolves to nothing. */
 object NoOpUserItemStatePort : UserItemStatePort {

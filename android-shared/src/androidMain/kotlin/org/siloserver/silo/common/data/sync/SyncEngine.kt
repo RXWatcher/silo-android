@@ -165,9 +165,10 @@ class SyncEngine(
         // Count remaining for the scope we just drained AND, if the user switched
         // mid-drain, for whatever scope is active NOW (re-snapshot). Counting only
         // the end scope stranded the drained scope's queued work on a switch: the
-        // worker saw remaining=0, reported success and ended the retry chain, and
-        // nothing re-triggers a drain for a profile change (OutboxSyncStarter only
-        // watches the active *server*). Including the end scope still covers an
+        // worker saw remaining=0, reported success and ended the retry chain.
+        // OutboxSyncStarter now also triggers on a profile change, so a switch is
+        // no longer silent, but this stays the in-drain defence — the switch can
+        // land between the drain and the count. Including the end scope covers an
         // activation enqueue dropped by ExistingWorkPolicy.KEEP while this worker
         // was running.
         var remaining = dao.countForScope(serverId, profileId)

@@ -38,6 +38,12 @@ data class SiloCastState(
     val subtitleOptions: List<CastSubtitleOption> = emptyList(),
     /** Track id (from [subtitleOptions]) the receiver is rendering, null = off. */
     val activeSubtitleId: Long? = null,
+    /**
+     * Non-null when the receiver rejected the media load. The cast overlay is
+     * dead in that state, so the UI must surface this and hand playback back
+     * to the local player instead of waiting on a stream that never starts.
+     */
+    val loadError: String? = null,
 )
 
 /** A selectable receiver text track (id is the declared MediaTrack id). */
@@ -233,7 +239,11 @@ class SiloCastSessionManager(private val context: Context) {
         ensureInitialized()
         pending = spec
         lastPosition = spec.positionSeconds
-        _castState.value = _castState.value.copy(title = spec.title, fileId = spec.fileId)
+        _castState.value = _castState.value.copy(
+            title = spec.title,
+            fileId = spec.fileId,
+            loadError = null,
+        )
         val session = sessionManager?.currentCastSession
         if (session != null && session.isConnected) loadPendingMedia(session)
     }
@@ -286,6 +296,7 @@ class SiloCastSessionManager(private val context: Context) {
             // The MediaInfo-embedded style alone doesn't reach the receiver's
             // renderer; re-assert via the tracks channel once the load lands.
             if (result.status.isSuccess) {
+                _castState.value = _castState.value.copy(loadError = null)
                 remoteClient.setTextTrackStyle(castTextTrackStyle()).setResultCallback { styleResult ->
                     Log.i(
                         TAG,
@@ -293,7 +304,20 @@ class SiloCastSessionManager(private val context: Context) {
                             "code=${styleResult.status.statusCode} msg=${styleResult.status.statusMessage}",
                     )
                 }
+            } else {
+                DiagnosticsCastLogger.warning("cast media load failed")
+                _castState.value = _castState.value.copy(
+                    loadError = result.status.statusMessage?.takeIf { it.isNotBlank() }
+                        ?: "Cast playback failed (code ${result.status.statusCode})",
+                )
             }
+        }
+    }
+
+    /** Acknowledges a surfaced [SiloCastState.loadError] so the UI can move on. */
+    fun clearLoadError() {
+        if (_castState.value.loadError != null) {
+            _castState.value = _castState.value.copy(loadError = null)
         }
     }
 
@@ -475,6 +499,9 @@ class SiloCastSessionManager(private val context: Context) {
                 activeSubtitleId = subtitleOptions
                     .firstOrNull { option -> activeIds?.contains(option.id) == true }
                     ?.id,
+                // A failed load is followed by receiver status callbacks; drop
+                // it here and the error would be erased before the UI sees it.
+                loadError = _castState.value.loadError,
             )
         } else {
             _castState.value.copy(isConnected = false, deviceName = null, isPlaying = false)

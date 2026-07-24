@@ -91,7 +91,12 @@ class CrashCaptureTest {
         )
         val marker = Json.decodeFromString<JvmCrashMarkerRecord>(bytes.decodeToString())
 
-        assertTrue(marker.logLines.isEmpty())
+        // The identity gate is about WHOSE lines these are, not whether any
+        // exist: a line offered after the rotation belongs to the new identity
+        // and must never appear here. The runtime's own lines, captured while it
+        // was still current, are its to report — dropping those too is what made
+        // crash markers arrive with no logs at all.
+        assertFalse(marker.logLines.any { it.contains("new identity") })
     }
 
     @Test

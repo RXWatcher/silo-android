@@ -23,6 +23,28 @@ fun downloadedSubtitleArtifactTrackId(downloadId: Int): String =
     "$DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX$downloadId"
 
 /**
+ * True when a mounted Media3 `Format.id` denotes [expected].
+ *
+ * A sidecar merged with the primary stream comes back from Media3 carrying the
+ * MergingMediaSource child index: the id we authored as `silo-subtitle:0` is
+ * reported as `1:silo-subtitle:0`, while the primary stream's own tracks read
+ * `0:3`, `0:4` and so on. Comparing with `==` therefore never matches a merged
+ * sidecar, so the mount waits for a track that appears to be absent and the
+ * whole subtitle transaction times out and rolls back.
+ *
+ * Only a purely numeric prefix is accepted, so this can never collide with an
+ * authored id that happens to contain a colon.
+ */
+fun trackIdDenotes(actual: String?, expected: String): Boolean {
+    if (actual == null) return false
+    if (actual == expected) return true
+    val separator = actual.indexOf(':')
+    if (separator <= 0) return false
+    if (!actual.substring(0, separator).all(Char::isDigit)) return false
+    return actual.substring(separator + 1) == expected
+}
+
+/**
  * Complete Media3 subtitle metadata retained by both phone and TV adapters.
  */
 data class MountedSubtitleTrack(
@@ -53,7 +75,7 @@ fun resolveMountedSubtitle(
 ): MountedSubtitleMatch? {
     val expectedTrackId = identity.expectedMediaTrackId()
     if (expectedTrackId != null) {
-        tracks.firstOrNull { it.trackId == expectedTrackId }
+        tracks.firstOrNull { trackIdDenotes(it.trackId, expectedTrackId) }
             ?.let { return MountedSubtitleMatch(it) }
     }
 

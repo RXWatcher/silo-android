@@ -191,8 +191,13 @@ private class RecordingSettingsApi(
         return ApiResult.Success(Unit)
     }
 
-    override suspend fun deleteDeviceSetting(key: String): ApiResult<Unit> {
-        calls.add(Call(Call.Kind.DELETE, key, null, null))
+    override suspend fun deleteDeviceSetting(
+        key: String,
+        profileId: String?,
+    ): ApiResult<Unit> {
+        // profileId is recorded so a test can assert the delete is pinned to the
+        // profile the operation was queued for, not whichever is active now.
+        calls.add(Call(Call.Kind.DELETE, key, null, profileId))
         return ApiResult.Success(Unit)
     }
 }

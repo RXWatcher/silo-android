@@ -1,5 +1,6 @@
 package org.siloserver.silo.tv.ui.screens.player
 
+import org.siloserver.silo.common.player.subtitleArtifactTrackId
 import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.SubtitleMediaIdentity
 import java.io.File
@@ -226,6 +227,53 @@ class SubtitleRemountReselectionTest {
     }
 
     @Test
+    fun `merged sidecar carrying the Media3 source prefix still mounts`() {
+        // Media3 reports a merged sidecar's Format.id with the MergingMediaSource
+        // child index: the id authored as "silo-subtitle:0" comes back as
+        // "1:silo-subtitle:0", alongside primary-stream tracks like "0:3".
+        // Exact equality never matched, so the mount timed out and the whole
+        // subtitle transaction rolled back to Off.
+        val latch = SubtitleRemountReselection()
+        latch.arm(SubtitleIdentity.ServerSidecar(serverIndex = 0), generation = 1)
+
+        val event = assertIs<TvSubtitleRemountEvent.Select>(
+            latch.consume(
+                listOf(
+                    track(index = 0, trackId = "0:3"),
+                    track(index = 19, trackId = "0:22"),
+                    track(index = 20, trackId = "1:" + subtitleArtifactTrackId(0)),
+                ),
+                snapshotKey = "merged",
+                settled = true,
+            ),
+        )
+        assertEquals(20, event.trackIndex)
+    }
+
+    @Test
+    fun `settled empty snapshot never fails the mount before tracks publish`() {
+        // A replanned server stream reports READY before it publishes its text
+        // tracks. Failing here cleared the pending owner, so the tracks arrived
+        // with nobody to match them and the transaction rolled back to Off --
+        // subtitles silently refused to turn on.
+        val latch = SubtitleRemountReselection()
+        val identity = SubtitleIdentity.ServerSidecar(serverIndex = 3)
+        latch.arm(identity, generation = 1)
+
+        assertNull(latch.consume(emptyList(), snapshotKey = "ready-no-tracks", settled = true))
+        assertTrue(latch.hasPendingOwner)
+
+        val event = assertIs<TvSubtitleRemountEvent.Select>(
+            latch.consume(
+                listOf(track(index = 4, trackId = subtitleArtifactTrackId(3))),
+                snapshotKey = "tracks-arrived",
+                settled = true,
+            ),
+        )
+        assertEquals(4, event.trackIndex)
+    }
+
+    @Test
     fun `settled unique remount miss rolls back without selecting another row`() {
         val latch = SubtitleRemountReselection()
         latch.arm(
@@ -317,7 +365,7 @@ class SubtitleRemountReselectionTest {
     fun `Off emits exactly one owned disable request`() {
         val latch = SubtitleRemountReselection()
         latch.arm(SubtitleIdentity.Off, generation = 5)
-
+        // A track is actually selected, so there is something to turn off.
         val event = assertIs<TvSubtitleRemountEvent.Select>(
             latch.consume(emptyList(), snapshotKey = null, settled = false),
         )
@@ -368,6 +416,7 @@ class SubtitleRemountReselectionTest {
         language: String? = "en",
         codec: String? = "webvtt",
         forced: Boolean = false,
+        selected: Boolean = false,
     ): PlayerTrackEntry = PlayerTrackEntry(
         index = index,
         trackId = trackId,
@@ -375,7 +424,7 @@ class SubtitleRemountReselectionTest {
         displayLabel = label,
         language = language,
         codecOrMime = codec,
-        isSelected = false,
+        isSelected = selected,
         isForced = forced,
     )
 }

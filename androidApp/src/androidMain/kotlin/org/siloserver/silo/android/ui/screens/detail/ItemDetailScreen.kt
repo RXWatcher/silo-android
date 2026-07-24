@@ -23,6 +23,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -32,6 +33,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.siloserver.silo.android.downloads.LEGACY_PUBLIC_DOWNLOAD_PERMISSION
 import org.siloserver.silo.android.downloads.hasLegacyPublicDownloadPermission
 import org.siloserver.silo.android.ui.components.DetailLoadingSkeleton
@@ -42,6 +45,7 @@ import org.siloserver.silo.android.ui.util.playbackResumePosition
 import org.siloserver.silo.cast.SiloCastLaunchRequest
 import org.siloserver.silo.cast.SiloCastPlaybackRequest
 import org.siloserver.silo.common.downloads.DownloadEnqueuer
+import org.siloserver.silo.common.downloads.DownloadLocation
 import org.siloserver.silo.common.downloads.DownloadOpenTarget
 import org.siloserver.silo.common.downloads.DownloadStorage
 import org.siloserver.silo.model.catalog.FileVersion
@@ -51,6 +55,7 @@ import org.siloserver.silo.model.ebook.chooseEbookVersion
 import org.siloserver.silo.model.ebook.isInAppReadableEbookVersion
 import org.siloserver.silo.model.ebook.isSupportedEbookVersion
 import org.siloserver.silo.model.download.DownloadQuality
+import org.siloserver.silo.model.download.DownloadRecord
 import org.siloserver.silo.model.feature.CLIENT_WATCH_TOGETHER_SURFACE_ENABLED
 import org.siloserver.silo.common.settings.PlayerSettingsStore
 import org.siloserver.silo.network.ServerRegistry
@@ -61,6 +66,55 @@ import org.siloserver.silo.model.feature.MetadataAiFeatureStore
 import org.siloserver.silo.model.metadata.MetadataAiOnView
 
 private const val PLAY_ON_DEVICE_LABEL = "Play on device"
+
+/**
+ * Outcome of a finished local-media lookup. The wrapper exists so callers can
+ * tell "still looking" (null lookup) from "looked, found nothing"
+ * ([location] null) — the former must stay the optimistic "unknown" state.
+ */
+private class LocalMediaLookup(val location: DownloadLocation?)
+
+/** Null while the lookup is still running — "unknown", not "missing". */
+private val LocalMediaLookup?.hasLocalMedia: Boolean?
+    get() = this?.let { it.location != null }
+
+/**
+ * Resolves the downloaded bytes for [fileId] off the main thread — on Q+ the
+ * lookup is a MediaStore ContentResolver query, which janks the detail screen
+ * if it runs during composition. Re-runs when [records] change so a download
+ * that finishes (or is deleted) still flips the button, matching what the old
+ * per-recomposition read gave us.
+ */
+@Composable
+private fun rememberLocalMedia(
+    downloadStorage: DownloadStorage,
+    serverId: String,
+    profileId: String,
+    fileId: Int?,
+    records: List<DownloadRecord>,
+): LocalMediaLookup? {
+    val lookup by produceState<LocalMediaLookup?>(
+        null,
+        downloadStorage,
+        serverId,
+        profileId,
+        fileId,
+        records,
+    ) {
+        value = LocalMediaLookup(
+            fileId?.let {
+                withContext(Dispatchers.IO) {
+                    downloadStorage.locateLocalMedia(
+                        serverId = serverId,
+                        profileId = profileId,
+                        fileId = it,
+                    )
+                }
+            },
+        )
+    }
+    return lookup
+}
 
 /**
  * Item detail dispatcher. Routes to [MovieDetailContent] or
@@ -218,15 +272,15 @@ fun ItemDetailScreen(
         }
     }
 
-    fun localDownloadFor(fileId: Int) =
-        downloadStorage.locateLocalMedia(
-            serverId = serverRegistry.activeServerId.value ?: DownloadEnqueuer.DEFAULT_SERVER_ID,
-            profileId = serverRegistry.activeEntry.value?.profileId ?: DownloadEnqueuer.DEFAULT_PROFILE_ID,
-            fileId = fileId,
-        )
+    val activeServerId = serverRegistry.activeServerId.value ?: DownloadEnqueuer.DEFAULT_SERVER_ID
+    val activeProfileId = serverRegistry.activeEntry.value?.profileId
+        ?: DownloadEnqueuer.DEFAULT_PROFILE_ID
 
-    fun openExternalDownload(version: FileVersion, displayTitle: String) {
-        val local = localDownloadFor(version.fileId)
+    fun openExternalDownload(
+        local: DownloadLocation?,
+        version: FileVersion,
+        displayTitle: String,
+    ) {
         val target = DownloadOpenTarget.from(
             isComplete = local != null,
             localUri = local?.uriString,
@@ -342,13 +396,19 @@ fun ItemDetailScreen(
                         val audiobookVersion = effectiveAudiobookFileId
                             ?.let { fileId -> detail.versions.firstOrNull { it.fileId == fileId } }
                             ?: detail.versions.firstOrNull()
-                        val audiobookLocalDownload = audiobookVersion?.let { version ->
-                            localDownloadFor(version.fileId)
-                        }
+                        val audiobookLocalDownload = rememberLocalMedia(
+                            downloadStorage = downloadStorage,
+                            serverId = activeServerId,
+                            profileId = activeProfileId,
+                            fileId = audiobookVersion?.fileId,
+                            records = downloadRecords,
+                        )
                         val downloadState = detailDownloadStateFor(
                             version = audiobookVersion,
                             records = downloadRecords,
-                            hasLocalMedia = audiobookVersion?.let { audiobookLocalDownload != null },
+                            hasLocalMedia = audiobookVersion?.let {
+                                audiobookLocalDownload.hasLocalMedia
+                            },
                         )
 
                         org.siloserver.silo.android.ui.screens.audiobook.AudiobookDetailContent(
@@ -418,14 +478,20 @@ fun ItemDetailScreen(
                             ?.let { version -> detail.versions.indexOfFirst { it.fileId == version.fileId } }
                             ?.takeIf { it >= 0 }
                             ?: 0
-                        val selectedBookLocalDownload = selectedBookVersion?.let { version ->
-                            localDownloadFor(version.fileId)
-                        }
                         val downloadRecords by viewModel.downloads.collectAsState()
+                        val selectedBookLocalDownload = rememberLocalMedia(
+                            downloadStorage = downloadStorage,
+                            serverId = activeServerId,
+                            profileId = activeProfileId,
+                            fileId = selectedBookVersion?.fileId,
+                            records = downloadRecords,
+                        )
                         val downloadState = detailDownloadStateFor(
                             version = selectedBookVersion,
                             records = downloadRecords,
-                            hasLocalMedia = selectedBookVersion?.let { selectedBookLocalDownload != null },
+                            hasLocalMedia = selectedBookVersion?.let {
+                                selectedBookLocalDownload.hasLocalMedia
+                            },
                         )
 
                         org.siloserver.silo.android.ui.screens.book.BookDetailContent(
@@ -472,10 +538,16 @@ fun ItemDetailScreen(
                                 ?.takeIf {
                                     !it.isInAppReadableEbookVersion(state.kindleConversionAvailable) &&
                                         downloadState.isDownloaded &&
-                                        selectedBookLocalDownload != null
+                                        selectedBookLocalDownload?.location != null
                                 }
                                 ?.let { version ->
-                                    { openExternalDownload(version, detail.title) }
+                                    {
+                                        openExternalDownload(
+                                            selectedBookLocalDownload?.location,
+                                            version,
+                                            detail.title,
+                                        )
+                                    }
                                 },
                         )
                     }
@@ -676,13 +748,19 @@ fun ItemDetailScreen(
                                 ?: effectiveSelectedVersionIndex
                         }
                         val selectedVersion = detail.versions.getOrNull(videoDisplayVersionIndex)
-                        val selectedLocalDownload = selectedVersion?.let { version ->
-                            localDownloadFor(version.fileId)
-                        }
+                        val selectedLocalDownload = rememberLocalMedia(
+                            downloadStorage = downloadStorage,
+                            serverId = activeServerId,
+                            profileId = activeProfileId,
+                            fileId = selectedVersion?.fileId,
+                            records = downloadRecords,
+                        )
                         val downloadState = detailDownloadStateFor(
                             version = selectedVersion,
                             records = downloadRecords,
-                            hasLocalMedia = selectedVersion?.let { selectedLocalDownload != null },
+                            hasLocalMedia = selectedVersion?.let {
+                                selectedLocalDownload.hasLocalMedia
+                            },
                         )
 
                         val movieResume = playbackResumePosition(detail.userData)

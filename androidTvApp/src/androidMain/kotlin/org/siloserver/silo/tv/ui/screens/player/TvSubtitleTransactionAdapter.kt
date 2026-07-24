@@ -23,6 +23,7 @@ import org.siloserver.silo.common.player.StagedVideoReplan
 import org.siloserver.silo.common.player.VideoSessionStartV3
 import org.siloserver.silo.common.player.downloadedSubtitleArtifactTrackId
 import org.siloserver.silo.common.player.subtitleLabelIndicatesHearingImpaired
+import org.siloserver.silo.common.player.SubDiag
 import org.siloserver.silo.model.catalog.AudioTrack
 import org.siloserver.silo.model.playback.ClientCodecCapabilities
 import org.siloserver.silo.model.playback.ClientPlaybackContext
@@ -249,6 +250,12 @@ internal class TvSubtitleTransactionAdapter(
         Boolean,
     ) -> Boolean = { _, _ -> true },
     private val onCommittedPlaybackFailure: suspend (String) -> Unit = {},
+    /**
+     * Whether the player currently exposes any text track to mount against.
+     * The mount deadline must not run while the answer is "none": a freshly
+     * replanned stream reports READY seconds before publishing its tracks.
+     */
+    private val hasMountableTracks: () -> Boolean = { true },
 ) {
     private data class PendingLocalSelection(
         val generation: Long,
@@ -277,6 +284,14 @@ internal class TvSubtitleTransactionAdapter(
         var ownerGeneration: Long,
         val completion: CompletableDeferred<Boolean>,
         var phase: PublicationSettlementPhase,
+        /**
+         * Identity whose mount was confirmed while this settlement was open.
+         *
+         * A mount reported during a settlement used to be dropped on the floor,
+         * so a settlement could go on rolling back a publication whose mount had
+         * in fact succeeded — the proof arrived and was thrown away.
+         */
+        var mountedIdentity: SubtitleIdentity? = null,
     )
 
     private data class PendingLocalRestore(
@@ -341,6 +356,9 @@ internal class TvSubtitleTransactionAdapter(
         get() = publicationSettlement?.completion
     private var discardQueuedAfterSettlement = false
     private var resetAfterSettlement: Pair<TvSubtitlePlaybackContext, SubtitleIdentity>? = null
+
+    /** A fresh-preference restore deferred because a publication was unsettled. */
+    private var pendingFreshRestoreAfterSettlement: Pair<SubtitleIdentity, Boolean>? = null
 
     val snapshot: TvSubtitleTransactionSnapshot
         get() {
@@ -410,6 +428,7 @@ internal class TvSubtitleTransactionAdapter(
         context: TvSubtitlePlaybackContext,
         committedIdentity: SubtitleIdentity,
     ) {
+        SubDiag.trace("ADAPTER resetContent session=${context.sessionId} committed=$committedIdentity")
         val unpublished = pendingLocalSelection
             ?.takeIf { it.committedPlayback != null }
         if (commitInFlight && unpublished == null) {
@@ -424,7 +443,11 @@ internal class TvSubtitleTransactionAdapter(
             resetAfterSettlement = context to committedIdentity
             discardQueuedAfterSettlement = true
             queuedMutations.clear()
-            if (unpublished != null) requestSupersessionSettlement(unpublished, restoreUi = true)
+            // resetContent is installing NEW content and its own UI, and the
+            // TV rollback path has already restored the predecessor UI before
+            // calling here. Restoring again would re-apply the predecessor's
+            // state over the incoming content and re-arm its identity.
+            if (unpublished != null) requestSupersessionSettlement(unpublished, restoreUi = false)
             return
         }
         resetContentNow(context, committedIdentity)
@@ -490,10 +513,16 @@ internal class TvSubtitleTransactionAdapter(
 
     fun updatePlaybackContext(updated: TvSubtitlePlaybackContext) {
         val current = context
+        // Content identity is the item and its file. versionId is
+        // "<fileId>:<planId>", so its stable half is already covered by
+        // mediaFileId and the rest is the plan — which every replan changes by
+        // design. Treating a new plan as new content made the subtitle
+        // transaction destroy itself: its own replan produced a new planId, this
+        // check called it a content change, and resetContent tore down the
+        // in-flight selection microseconds after its mount had matched.
         if (current == null ||
             current.contentId != updated.contentId ||
-            current.mediaFileId != updated.mediaFileId ||
-            current.versionId != updated.versionId
+            current.mediaFileId != updated.mediaFileId
         ) {
             resetContent(updated, transition.committed.identity)
             return
@@ -519,7 +548,9 @@ internal class TvSubtitleTransactionAdapter(
                 discardQueuedAfterSettlement = true
                 queuedMutations.clear()
                 if (publicationSettlement == null && publicationOwner != null) {
-                    requestSupersessionSettlement(publicationOwner, restoreUi = true)
+                    // Same as resetContent: this branch is adopting a new
+                    // session and installs its own UI.
+                    requestSupersessionSettlement(publicationOwner, restoreUi = false)
                 }
                 return
             }
@@ -556,6 +587,7 @@ internal class TvSubtitleTransactionAdapter(
     }
 
     fun select(identity: SubtitleIdentity) {
+        SubDiag.log("ADAPTER select $identity")
         mutate(SelectSubtitle(identity), explicit = true)
     }
 
@@ -573,6 +605,23 @@ internal class TvSubtitleTransactionAdapter(
             if (identity is SubtitleIdentity.ServerBurnIn) {
                 if (migrationRequired) persist(transition.committed, current)
             } else {
+                // mutate() refuses to touch local state while a publication is
+                // unsettled; this branch reached beginLocalSelection directly,
+                // which nulls pendingLocalSelection via invalidateLocalMount. If
+                // that owner still held an unsettled committedPlayback the
+                // server publication was orphaned — never confirmed, never
+                // rolled back — and the in-flight settlement lost its owner.
+                // The TV load path calls this on the line after resetContent,
+                // i.e. exactly while such a settlement is open.
+                val unpublished = pendingLocalSelection
+                    ?.takeIf { it.committedPlayback != null }
+                if (unpublished != null || settlementInFlight) {
+                    pendingFreshRestoreAfterSettlement = identity to migrationRequired
+                    if (unpublished != null) {
+                        requestSupersessionSettlement(unpublished, restoreUi = false)
+                    }
+                    return
+                }
                 beginLocalSelection(
                     identity = identity,
                     proposedState = transition,
@@ -801,7 +850,14 @@ internal class TvSubtitleTransactionAdapter(
         snapshotKey: String?,
         settled: Boolean = false,
     ) {
-        if (settlementInFlight) return
+        SubDiag.log("REPORT mounted=$identity selected=$selected settled=$settled pendingLocal=${pendingLocalSelection?.identity}")
+        if (settlementInFlight) {
+            // Record it rather than discarding it: a settlement that is
+            // rolling back a publication whose mount has actually succeeded is
+            // deciding against the evidence.
+            if (selected) publicationSettlement?.mountedIdentity = identity
+            return
+        }
         val pendingSelection = pendingLocalSelection
             ?.takeIf { it.identity == identity && it.exposesMountBoundary }
         if (pendingSelection != null) {
@@ -1451,6 +1507,7 @@ internal class TvSubtitleTransactionAdapter(
             val confirmed = confirmCommittedPlayback(playback)
             val currentOwner = currentSettlementOwner(settlement)
             if (currentOwner == null) {
+                drainOrphanedSettlement(settlement)
                 finishSettlement(settlement, false)
                 return@launch
             }
@@ -1468,6 +1525,15 @@ internal class TvSubtitleTransactionAdapter(
                 return@launch
             }
 
+            // If the mount this settlement is compensating for actually
+            // succeeded while the settlement was open, there is nothing to
+            // compensate: rolling back would tear down a subtitle the user can
+            // see, and re-arm the predecessor identity over it.
+            if (settlement.mountedIdentity == owner.identity) {
+                SubDiag.log("SETTLE skip compensation, mount confirmed ${owner.identity}")
+                finishSettlement(settlement, true)
+                return@launch
+            }
             settlement.phase = PublicationSettlementPhase.Compensating
             if (!rollbackCommittedPlayback(playback, restoreUi = true)) {
                 failureMessage = "Playback publication could not be rolled back."
@@ -1477,6 +1543,7 @@ internal class TvSubtitleTransactionAdapter(
             }
             val compensatedOwner = currentSettlementOwner(settlement)
             if (compensatedOwner == null) {
+                drainOrphanedSettlement(settlement)
                 finishSettlement(settlement, false)
                 return@launch
             }
@@ -1510,6 +1577,7 @@ internal class TvSubtitleTransactionAdapter(
             } ?: true
             val currentOwner = currentSettlementOwner(settlement)
             if (currentOwner == null) {
+                drainOrphanedSettlement(settlement)
                 finishSettlement(settlement, settled)
                 return@launch
             }
@@ -1546,6 +1614,7 @@ internal class TvSubtitleTransactionAdapter(
                 rollbackCommittedPlayback(playback, restoreUi = true)
             val currentOwner = currentSettlementOwner(settlement)
             if (currentOwner == null) {
+                drainOrphanedSettlement(settlement)
                 finishSettlement(settlement, rolledBack)
                 return@launch
             }
@@ -1605,6 +1674,46 @@ internal class TvSubtitleTransactionAdapter(
         invalidateLocalMount()
     }
 
+
+    /**
+     * Handles a settlement whose owner has been replaced or invalidated.
+     *
+     * These paths used to `finishSettlement` and return, leaving
+     * `resetAfterSettlement` / `discardQueuedAfterSettlement` / `queuedMutations`
+     * undrained. The deferred reset then leaked and was picked up by an
+     * unrelated later settlement, which reset to a dead content generation while
+     * `context` still pointed at the abandoned session — so the next staged
+     * replan targeted it.
+     *
+     * When no owner remains at all, the deferred work is ours to run. When a
+     * NEWER owner exists it has already rewritten `transition`/`context`, so we
+     * only clear the bookkeeping and must not write state back over it.
+     */
+    private fun drainOrphanedSettlement(settlement: PublicationSettlement) {
+        val supersededByNewerOwner = pendingLocalSelection != null
+        val reset = resetAfterSettlement
+        val deferredRestore = pendingFreshRestoreAfterSettlement
+        val discardQueued = discardQueuedAfterSettlement
+        resetAfterSettlement = null
+        pendingFreshRestoreAfterSettlement = null
+        discardQueuedAfterSettlement = false
+
+        if (supersededByNewerOwner) {
+            // The newer owner owns the state; drop only what we were holding.
+            if (discardQueued) queuedMutations.clear()
+            return
+        }
+        queuedMutations.clear()
+        when {
+            reset != null -> resetContentNow(reset.first, reset.second)
+            deferredRestore != null -> restoreFreshPreference(
+                identity = deferredRestore.first,
+                migrationRequired = deferredRestore.second,
+            )
+            discardQueued -> invalidateNow()
+        }
+    }
+
     private fun drainSettledPublication(
         owner: PendingLocalSelection,
         confirmed: Boolean,
@@ -1614,6 +1723,17 @@ internal class TvSubtitleTransactionAdapter(
         resetAfterSettlement = null
         val discardQueued = discardQueuedAfterSettlement
         discardQueuedAfterSettlement = false
+        // A restore deferred by restoreFreshPreference runs once the settlement
+        // it was blocked on is done — unless a content reset supersedes it, in
+        // which case the identity it wanted to restore belongs to dead content.
+        val deferredRestore = pendingFreshRestoreAfterSettlement
+        pendingFreshRestoreAfterSettlement = null
+        if (deferredRestore != null && reset == null) {
+            restoreFreshPreference(
+                identity = deferredRestore.first,
+                migrationRequired = deferredRestore.second,
+            )
+        }
         when {
             reset != null -> {
                 queuedMutations.clear()
@@ -1870,8 +1990,18 @@ internal class TvSubtitleTransactionAdapter(
     }
 
     private fun scheduleLocalMountTimeout(generation: Long) {
+        localMountTimeout?.cancel()
         localMountTimeout = scope.launch {
-            delay(LOCAL_MOUNT_TIMEOUT_MS)
+            var waited = 0L
+            while (true) {
+                delay(LOCAL_MOUNT_TIMEOUT_MS)
+                waited += LOCAL_MOUNT_TIMEOUT_MS
+                // Only count against the mount once there is something to
+                // mount; the onTracksChanged callback may not arrive inside the
+                // window at all, so ask rather than wait to be told.
+                if (hasMountableTracks() || waited >= MAX_LOCAL_MOUNT_WAIT_MS) break
+            }
+            SubDiag.log("mountDeadline FAIL gen=$generation")
             failLocalMount(generation)
         }
     }
@@ -1963,11 +2093,13 @@ internal class TvSubtitleTransactionAdapter(
     }
 
     private fun publish() {
+        SubDiag.log("SNAPSHOT applying=${snapshot.subtitleApplying} committed=${snapshot.committedIdentity} pending=${snapshot.pendingIdentity} localMount=${snapshot.localMountIdentity} failure=${snapshot.failureMessage}")
         onSnapshotChanged(snapshot)
     }
 
     private companion object {
         const val LOCAL_MOUNT_TIMEOUT_MS = 5_000L
+        const val MAX_LOCAL_MOUNT_WAIT_MS = 30_000L
         const val PERSISTENCE_ATTEMPTS = 2
         const val PRIMARY_PERSISTENCE_TIMEOUT_MS = 5_000L
         const val DURABLE_PERSISTENCE_TIMEOUT_MS = 5_000L

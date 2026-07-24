@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -331,6 +332,13 @@ fun PlayerScreen(
         }
     }
 
+    // A backend instance is rebuilt whenever any key above changes (controller
+    // rebind, plan mutation, activity recreation) and starts with NO mounted
+    // media spec. Selecting a sidecar (external-file) subtitle in that window
+    // throws inside the backend, so the sidecar path waits for this flag.
+    // remember(videoBackend) resets it for every new instance.
+    var backendMounted by remember(videoBackend) { mutableStateOf(false) }
+
     LaunchedEffect(videoBackend) {
         videoBackend?.let { backend ->
             viewModel.onBackendCapabilities(backend.capabilities)
@@ -446,16 +454,25 @@ fun PlayerScreen(
         }
     }
 
+    // Survives process death (the ViewModel and its load gate do not), so a
+    // restored player knows the route's resumePositionOverride was already
+    // consumed. Replaying it would rewind to wherever playback started, so the
+    // restored load passes null and lets the VM resolve the CURRENT position
+    // from the durable local/server state instead.
+    var routeResumeConsumed by rememberSaveable { mutableStateOf(false) }
+
     // Load content on first composition
     LaunchedEffect(contentId, initialFileId, initialQuality, initialAudioTrackIndex, initialSubtitleTrackIndex, resumePositionOverride) {
         if (!viewModel.claimInitialRouteLoad()) return@LaunchedEffect
+        val startPosition = resumePositionOverride?.takeIf { !routeResumeConsumed }
+        routeResumeConsumed = true
         viewModel.loadContent(
             contentId = contentId,
             preferredFileId = initialFileId,
             preferredQuality = initialQuality,
             initialAudioTrackIndex = initialAudioTrackIndex,
             initialSubtitleTrackIndex = initialSubtitleTrackIndex,
-            resumePositionOverride = resumePositionOverride,
+            resumePositionOverride = startPosition,
             // Watch Together's synced anchor must land exactly — don't nudge it back.
             suppressResumeRewind = !roomId.isNullOrBlank(),
         )
@@ -598,6 +615,7 @@ fun PlayerScreen(
             )
         }
         backend.mount(mediaSpec, playWhenReady = !viewModel.uiState.value.isPaused)
+        backendMounted = true
         viewModel.onMediaMountApplied(uiState.mediaMountGeneration)
     }
 
@@ -645,6 +663,7 @@ fun PlayerScreen(
             runtimeCorrections = plan?.runtimeCorrections.orEmpty(),
         )
         backend.refresh(mediaSpec)
+        backendMounted = true
     }
 
     // Sync play/pause from ViewModel to player
@@ -919,6 +938,7 @@ fun PlayerScreen(
     // Handle subtitle selection
     LaunchedEffect(
         videoBackend,
+        backendMounted,
         uiState.subtitleTracks,
         uiState.selectedSubtitleIndex,
         uiState.committedSubtitleIdentity,
@@ -945,7 +965,13 @@ fun PlayerScreen(
                 )
             }
         } else {
-            backend.selectSubtitle(subtitleTrackEntry(uiState.subtitleTracks, selectedIndex))
+            val entry = subtitleTrackEntry(uiState.subtitleTracks, selectedIndex)
+            // A sidecar entry makes the backend rebuild the MediaItem from the
+            // spec it mounted; before this instance has mounted anything that
+            // call throws. Skip until the mount effect lands — this effect
+            // re-runs on backendMounted and applies the selection then.
+            if (entry?.subtitle != null && !backendMounted) return@LaunchedEffect
+            backend.selectSubtitle(entry)
         }
     }
 

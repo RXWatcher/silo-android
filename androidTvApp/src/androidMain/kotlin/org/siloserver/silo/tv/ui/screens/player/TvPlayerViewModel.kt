@@ -14,6 +14,7 @@ import org.siloserver.silo.tv.data.preferences.PlaybackQuality
 import org.siloserver.silo.common.player.PlaybackAnalyticsListener
 import org.siloserver.silo.common.player.PlaybackCapabilityDetector
 import org.siloserver.silo.common.player.PlaybackSessionLifecycle
+import org.siloserver.silo.common.player.SubDiag
 import org.siloserver.silo.common.player.PlaybackSessionManager
 import org.siloserver.silo.common.player.FinalPlaybackPosition
 import org.siloserver.silo.common.player.FinalPlaybackPositionWriter
@@ -861,7 +862,11 @@ class TvPlayerViewModel(
             val localMountIdentity = snapshot.localMountIdentity
             if (localMountIdentity != null && localMountIdentity != lastAdapterMountIdentity) {
                 subtitleMountGeneration += 1
-                subtitleRemountReselection.arm(localMountIdentity, subtitleMountGeneration)
+                subtitleRemountReselection.arm(
+                    identity = localMountIdentity,
+                    generation = subtitleMountGeneration,
+                    priority = TvSubtitleMountPriority.UserTransaction,
+                )
                 subtitleSnapshotSettlement.reset()
                 lastAdapterMountIdentity = localMountIdentity
             } else if (localMountIdentity == null) {
@@ -898,6 +903,7 @@ class TvPlayerViewModel(
         onCommittedPlaybackFailure = { message ->
             _uiState.update { it.copy(error = message) }
         },
+        hasMountableTracks = { _uiState.value.subtitleTracks.isNotEmpty() },
     )
     private val playbackMutationFence by lazy {
         TvPlayerMutationFence(loadOwners, subtitleTransactions::invalidate)
@@ -960,6 +966,58 @@ class TvPlayerViewModel(
     private val _subtitleSelectRequests = MutableSharedFlow<Int>(extraBufferCapacity = 1)
     val subtitleSelectRequests: SharedFlow<Int> = _subtitleSelectRequests
 
+    /**
+     * The track a remount already matched, kept until the screen consumes it.
+     *
+     * The request carries only an ordinal, and it is delivered asynchronously:
+     * a stream swap can publish an empty track list in between, leaving the
+     * screen to resolve the ordinal against a list that no longer holds it. The
+     * match was already made against the correct snapshot, so hand that result
+     * over rather than resolving the same ordinal twice against a moving list.
+     */
+    private var pendingRemountTrack: Pair<Int, PlayerTrackEntry>? = null
+
+    /**
+     * Single gate for the shared subtitle-select channel.
+     *
+     * Eight producers emit into one bare-ordinal channel, and all of them run
+     * from onTracksChanged — which the transaction's own replan triggers. A
+     * lower-authority producer must not be able to retarget or cancel a mount
+     * the user asked for, so anything below the pending authority is dropped
+     * here rather than racing the transaction to the player.
+     */
+    private fun emitSubtitleSelectRequest(
+        index: Int,
+        priority: TvSubtitleMountPriority,
+        // True when the latch itself resolved an owner it had already accepted.
+        // Such a request has already passed admission at arm() time, so the
+        // in-flight-transaction gate must not re-judge it: a compensating
+        // restore legitimately runs at Restore authority WHILE a pending
+        // identity exists, and dropping it would strand the restore forever.
+        fromLatchOwner: Boolean = false,
+    ) {
+        val held = subtitleRemountReselection.pendingPriority
+        if (held != null && held > priority) {
+            SubDiag.log("EMIT DROPPED idx=$index prio=$priority held=$held")
+            return
+        }
+        if (!fromLatchOwner &&
+            priority < TvSubtitleMountPriority.UserTransaction &&
+            subtitleTransactions.snapshot.pendingIdentity != null
+        ) {
+            SubDiag.log("EMIT DROPPED idx=$index prio=$priority (transaction in flight)")
+            return
+        }
+        SubDiag.log("EMIT idx=$index prio=$priority")
+        _subtitleSelectRequests.tryEmit(index)
+    }
+
+    fun consumePendingRemountTrack(index: Int): PlayerTrackEntry? =
+        pendingRemountTrack
+            ?.takeIf { it.first == index }
+            ?.second
+            ?.also { pendingRemountTrack = null }
+
     // Remote track-selection latches. A remote command can land before the
     // screen's video backend attaches OR before Media3 reports its tracks
     // (onTracksChanged), yet the controller already reported the command
@@ -969,6 +1027,10 @@ class TvPlayerViewModel(
     // are loaded but contain no match). `null` = nothing pending. The raw index
     // is latched WITHOUT validation here precisely because the track list may
     // not be populated yet.
+    // Bound the retry of an unresolvable remote intent and let it yield to a
+    // local pick; the flows below stay as the UI-facing surface.
+    private val remoteAudioIntentLatch = TvRemoteTrackIntentLatch()
+    private val remoteSubtitleIntentLatch = TvRemoteTrackIntentLatch()
     private val _pendingRemoteAudioIndex = MutableStateFlow<Int?>(null)
     val pendingRemoteAudioIndex: StateFlow<Int?> = _pendingRemoteAudioIndex.asStateFlow()
     private val _pendingRemoteSubtitleIndex = MutableStateFlow<Int?>(null)
@@ -1143,6 +1205,8 @@ class TvPlayerViewModel(
         } else {
             transportMountSequence + 1L
         }
+        // Authority is arbitrated by the latch: this restore arms at Restore
+        // priority and is ignored while a UserTransaction mount is pending.
         subtitleServerIndexToRestore?.let { serverIndex ->
             subtitleSnapshotSettlement.reset()
             subtitleRemountReselection.arm(
@@ -1152,13 +1216,23 @@ class TvPlayerViewModel(
                     SubtitleIdentity.ServerSidecar(serverIndex)
                 },
                 generation = transportMountSequence,
+                priority = TvSubtitleMountPriority.Restore,
             )
         }
         transportMountGate.expect(transportMountSequence)
         return transportMountSequence
     }
 
-    private fun nextTypedSubtitleMountNonce(identity: SubtitleIdentity): Long {
+    /**
+     * @param priority who is asking. Rollback and restore paths pass [Restore]:
+     * they arm the PREDECESSOR's identity, which must never outrank the
+     * selection the user is currently applying — that is how a rollback-armed
+     * Off switched off a subtitle moments after it had mounted successfully.
+     */
+    private fun nextTypedSubtitleMountNonce(
+        identity: SubtitleIdentity,
+        priority: TvSubtitleMountPriority = TvSubtitleMountPriority.UserTransaction,
+    ): Long {
         transportMountSequence = if (transportMountSequence == Long.MAX_VALUE) {
             1L
         } else {
@@ -1167,7 +1241,11 @@ class TvPlayerViewModel(
         subtitleMountGeneration += 1
         if (subtitleRemountReselection.requiresRemount(identity)) {
             subtitleSnapshotSettlement.reset()
-            subtitleRemountReselection.arm(identity, subtitleMountGeneration)
+            subtitleRemountReselection.arm(
+                identity = identity,
+                generation = subtitleMountGeneration,
+                priority = priority,
+            )
         }
         transportMountGate.expect(transportMountSequence)
         return transportMountSequence
@@ -1300,7 +1378,10 @@ class TvPlayerViewModel(
         if (restoreUi && predecessor != null) {
             val identity = predecessor.committedSubtitleIdentity
             _uiState.value = predecessor.copy(
-                transportMountNonce = nextTypedSubtitleMountNonce(identity),
+                transportMountNonce = nextTypedSubtitleMountNonce(
+                        identity = identity,
+                        priority = TvSubtitleMountPriority.Restore,
+                    ),
             )
         }
         return true
@@ -1322,7 +1403,10 @@ class TvPlayerViewModel(
             if (predecessor != null && _uiState.value.sessionId == sessionId) {
                 val identity = predecessor.state.committedSubtitleIdentity
                 _uiState.value = predecessor.state.copy(
-                    transportMountNonce = nextTypedSubtitleMountNonce(identity),
+                    transportMountNonce = nextTypedSubtitleMountNonce(
+                        identity = identity,
+                        priority = TvSubtitleMountPriority.Restore,
+                    ),
                 )
                 subtitleTransactions.resetContent(
                     context = predecessor.context,
@@ -1397,7 +1481,10 @@ class TvPlayerViewModel(
         resetSeekRecoveryForContentChange()
         transportMountGate.beginLoad()
         introAutoSkipController.reset()
-        manualSubtitleSelectionApplied = false
+        // Deliberately NOT clearing manualSubtitleSelectionApplied here: on the
+        // initial load it is already false, and on every other call site (404
+        // renewal, retry, version switch) clearing it re-opens the auto pipeline
+        // mid-playback, which then overrides a subtitle the user has chosen.
         _uiState.update { it.copy(isBuffering = false) }
 
         _uiState.update {
@@ -1489,8 +1576,17 @@ class TvPlayerViewModel(
                                 hydrateDownloadedRows = {
                                     when (val listing = subtitlesRepository.list(readyMediaFileId)) {
                                         is ApiResult.Success -> ApiResult.Success(
+                                            // Downloaded rows must be numbered
+                                            // AFTER the server's rows. Passing
+                                            // an empty list restarted them at 0
+                                            // — the server's own index space —
+                                            // so a downloaded subtitle resolved
+                                            // to a server track's URL and
+                                            // rendered the wrong text, and the
+                                            // duplicate indices were then
+                                            // dropped by distinctBy on replan.
                                             mergeDownloadedSubtitles(
-                                                existing = emptyList(),
+                                                existing = result.subtitleUrls,
                                                 downloaded = listing.data.subtitles,
                                                 sessionId = readySessionId,
                                                 serverUrl = result.serverUrl,
@@ -2628,12 +2724,14 @@ class TvPlayerViewModel(
                 .orEmpty(),
         )
         if (selected != null) {
+            remoteAudioIntentLatch.resolved(index)
             _pendingRemoteAudioIndex.compareAndSet(index, null)
             pendingPersistedAudioFingerprint = null
             playbackMutationFence.beginReplan()
             subtitleTransactions.updatePlaybackContext(subtitlePlaybackContext(state))
             subtitleTransactions.selectAudio(selected)
         } else {
+            remoteAudioIntentLatch.latch(index)
             _pendingRemoteAudioIndex.value = index
         }
     }
@@ -2646,18 +2744,25 @@ class TvPlayerViewModel(
             subtitleRows = state.subtitleUrls,
         )
         if (identity != null) {
+            remoteSubtitleIntentLatch.resolved(index)
             _pendingRemoteSubtitleIndex.compareAndSet(index, null)
             playbackMutationFence.beginReplan()
             subtitleTransactions.updatePlaybackContext(subtitlePlaybackContext(_uiState.value))
             subtitleTransactions.select(identity)
         } else {
+            remoteSubtitleIntentLatch.latch(index)
             _pendingRemoteSubtitleIndex.value = index
         }
     }
 
     private fun retryPendingRemoteTrackIntents() {
-        _pendingRemoteAudioIndex.value?.let(::remoteSelectAudio)
-        _pendingRemoteSubtitleIndex.value?.let(::remoteSelectSubtitle)
+        // nextRetry() returns null once the attempt budget is spent, so an
+        // ordinal no track snapshot can resolve stops re-applying itself on
+        // every onTracksChanged for the rest of the session.
+        remoteAudioIntentLatch.nextRetry()?.let(::remoteSelectAudio)
+            ?: run { _pendingRemoteAudioIndex.value = null }
+        remoteSubtitleIntentLatch.nextRetry()?.let(::remoteSelectSubtitle)
+            ?: run { _pendingRemoteSubtitleIndex.value = null }
     }
 
     /**
@@ -2916,7 +3021,8 @@ class TvPlayerViewModel(
             if (fingerprint == SUBTITLE_OFF_FINGERPRINT) {
                 pendingPersistedSubtitleFingerprint = null
                 manualSubtitleSelectionApplied = true
-                _subtitleSelectRequests.tryEmit(-1)
+                SubDiag.log("EMIT line=2938 value=${-1}")
+                emitSubtitleSelectRequest(-1, TvSubtitleMountPriority.Restore)
                 return
             }
             if (subtitle.isEmpty()) return
@@ -2933,7 +3039,8 @@ class TvPlayerViewModel(
             resolveMountedSubtitleTrack(mounted, subtitle)
                 ?.let {
                     manualSubtitleSelectionApplied = true
-                    _subtitleSelectRequests.tryEmit(it.index)
+                    SubDiag.log("EMIT line=2955 value=${it.index}")
+                    emitSubtitleSelectRequest(it.index, TvSubtitleMountPriority.Restore)
                 }
         }
     }
@@ -2948,6 +3055,14 @@ class TvPlayerViewModel(
         // resolve leaves the flag clear, so auto still runs instead of stranding
         // subtitles Off.
         if (manualSubtitleSelectionApplied) return
+        // The flag alone is not enough: it is per-load mutable state, while the
+        // transaction is the authority on whether a real choice is in force.
+        val subtitleSnapshot = subtitleTransactions.snapshot
+        if (subtitleSnapshot.pendingIdentity != null ||
+            subtitleSnapshot.committedIdentity != SubtitleIdentity.Off
+        ) {
+            return
+        }
         if (autoTextSubtitleSelectionAttempted) return
         if (subtitle.isEmpty()) return
 
@@ -2961,13 +3076,22 @@ class TvPlayerViewModel(
         )
         autoTextSubtitleSelectionAttempted = true
         when (selection) {
-            SubtitleAutoSelection.Disable -> _subtitleSelectRequests.tryEmit(-1)
-            is SubtitleAutoSelection.Select -> _subtitleSelectRequests.tryEmit(selection.index)
+            SubtitleAutoSelection.Disable -> {
+                SubDiag.log("EMIT autoSelect=Disable value=-1")
+                emitSubtitleSelectRequest(-1, TvSubtitleMountPriority.Auto)
+            }
+            is SubtitleAutoSelection.Select -> {
+                SubDiag.log("EMIT autoSelect=Select value=${selection.index}")
+                emitSubtitleSelectRequest(selection.index, TvSubtitleMountPriority.Auto)
+            }
             // Launch-time only: NoChange means Auto picked nothing, but Media3's
             // default selector may still have a track on — Apple's engines start
             // subs OFF, so the detail preview truthfully shows "Auto - None".
             // Disable explicitly so the launch state matches that preview.
-            SubtitleAutoSelection.NoChange -> _subtitleSelectRequests.tryEmit(-1)
+            SubtitleAutoSelection.NoChange -> {
+                SubDiag.log("EMIT autoSelect=NoChange value=-1")
+                emitSubtitleSelectRequest(-1, TvSubtitleMountPriority.Auto)
+            }
         }
     }
 
@@ -2993,7 +3117,8 @@ class TvPlayerViewModel(
             // the persisted/auto fallback so it isn't overridden.
             manualSubtitleSelectionApplied = true
             pendingPersistedSubtitleFingerprint = null
-            _subtitleSelectRequests.tryEmit(-1)
+            SubDiag.log("EMIT line=3015 value=${-1}")
+            emitSubtitleSelectRequest(-1, TvSubtitleMountPriority.Restore)
             return
         }
         // Wait for a non-empty track list. The pick is only CONSUMED when it
@@ -3015,7 +3140,8 @@ class TvPlayerViewModel(
             pendingInitialSubtitleAttempts = 0
             manualSubtitleSelectionApplied = true
             pendingPersistedSubtitleFingerprint = null
-            _subtitleSelectRequests.tryEmit(resolved)
+            SubDiag.log("EMIT line=3037 value=${resolved}")
+            emitSubtitleSelectRequest(resolved, TvSubtitleMountPriority.Restore)
             return
         }
         // Bounded retry: keep the pick pending across a few callbacks so a
@@ -3029,7 +3155,12 @@ class TvPlayerViewModel(
     }
 
     fun onSubtitleSelectionApplied(index: Int) {
-        val owner = pendingSubtitleMountAcknowledgement ?: return
+        SubDiag.log("VM selectionApplied idx=$index")
+        val owner = pendingSubtitleMountAcknowledgement ?: run {
+            subtitleRemountReselection.releaseResolved()
+            return
+        }
+        subtitleRemountReselection.acknowledgeResolved(owner.generation)
         pendingSubtitleMountAcknowledgement = null
         subtitleTransactions.reportMountedSelection(
             identity = owner.identity,
@@ -3040,6 +3171,11 @@ class TvPlayerViewModel(
     }
 
     fun selectAudioOption(index: Int) {
+        // Symmetric with selectSubtitleOption: an explicit local pick supersedes
+        // any unresolved remote intent, which the next retry pass would
+        // otherwise re-apply on top of the track the user just chose.
+        remoteAudioIntentLatch.dropForLocalSelection()
+        _pendingRemoteAudioIndex.value = null
         val state = _uiState.value
         val selected = selectedServerAudioTrackIndex(
             selectedPlayerOrdinal = index,
@@ -3070,6 +3206,11 @@ class TvPlayerViewModel(
     }
 
     fun selectSubtitleOption(identity: SubtitleIdentity) {
+        SubDiag.log("VM selectSubtitleOption $identity")
+        // An explicit local pick supersedes any unresolved remote intent, which
+        // would otherwise be re-applied over it by the next retry pass.
+        remoteSubtitleIntentLatch.dropForLocalSelection()
+        _pendingRemoteSubtitleIndex.value = null
         manualSubtitleSelectionApplied = true
         playbackMutationFence.beginReplan()
         subtitleTransactions.updatePlaybackContext(subtitlePlaybackContext(_uiState.value))
@@ -3086,7 +3227,12 @@ class TvPlayerViewModel(
     }
 
     fun onSubtitleSelectionFailed(index: Int) {
-        val owner = pendingSubtitleMountAcknowledgement ?: return
+        SubDiag.log("VM selectionFAILED idx=$index")
+        val owner = pendingSubtitleMountAcknowledgement ?: run {
+            subtitleRemountReselection.releaseResolved()
+            return
+        }
+        subtitleRemountReselection.acknowledgeResolved(owner.generation)
         pendingSubtitleMountAcknowledgement = null
         subtitleTransactions.reportMountedSelection(
             identity = owner.identity,
@@ -3101,7 +3247,16 @@ class TvPlayerViewModel(
      * subtitles Off, or otherwise changed their mind) so the pending pick can't
      * re-enable itself when a later track refresh arrives.
      */
+    /**
+     * Drops the latch's resolved claim when its acknowledgement can no longer
+     * arrive — the collector that would deliver it has been torn down.
+     */
+    fun releaseResolvedSubtitleMount() {
+        subtitleRemountReselection.releaseResolved()
+    }
+
     fun cancelPendingCatalogSubtitle() {
+        subtitleRemountReselection.releaseResolved()
         subtitleRemountReselection.clear()
         subtitleSnapshotSettlement.reset()
         pendingSubtitleMountAcknowledgement = null
@@ -3120,7 +3275,15 @@ class TvPlayerViewModel(
         ) {
             is TvSubtitleRemountEvent.Select -> {
                 pendingSubtitleMountAcknowledgement = event.owner
-                _subtitleSelectRequests.tryEmit(event.trackIndex)
+                pendingRemountTrack = subtitle
+                    .firstOrNull { it.index == event.trackIndex }
+                    ?.let { event.trackIndex to it }
+                SubDiag.log("EMIT line=3148 value=${event.trackIndex}")
+                emitSubtitleSelectRequest(
+                    index = event.trackIndex,
+                    priority = event.owner.priority,
+                    fromLatchOwner = true,
+                )
             }
             is TvSubtitleRemountEvent.Failed -> subtitleTransactions.reportMountedSelection(
                 identity = event.owner.identity,
@@ -3178,7 +3341,19 @@ class TvPlayerViewModel(
     }
 
     fun openHUD() {
-        _uiState.update { it.copy(hudOpen = true, showSubtitleMenu = false, showControls = true) }
+        // Opening the HUD abandons an in-progress scrub: the scrubber is no
+        // longer on screen or focused, so the user cannot finish it. Leaving
+        // isScrubbing set meant closing the HUD later committed a seek to a
+        // preview position the user had walked away from.
+        _uiState.update {
+            it.copy(
+                hudOpen = true,
+                showSubtitleMenu = false,
+                showControls = true,
+                isScrubbing = false,
+                scrubPreviewSec = if (it.isScrubbing) 0.0 else it.scrubPreviewSec,
+            )
+        }
     }
 
     fun closeHUD() {
@@ -3186,7 +3361,16 @@ class TvPlayerViewModel(
     }
 
     fun openSubtitleMenu() {
-        _uiState.update { it.copy(showSubtitleMenu = true, hudOpen = false, showControls = true) }
+        // Same reasoning as openHUD: this surface replaces the scrubber.
+        _uiState.update {
+            it.copy(
+                showSubtitleMenu = true,
+                hudOpen = false,
+                showControls = true,
+                isScrubbing = false,
+                scrubPreviewSec = if (it.isScrubbing) 0.0 else it.scrubPreviewSec,
+            )
+        }
     }
 
     fun closeSubtitleMenu() {
@@ -3439,8 +3623,10 @@ class TvPlayerViewModel(
             subtitleTransactions.cancelRefresh(owner)
             throw cancellation
         }
+        // Same index-space rule as the load path: number downloaded rows after
+        // the server rows currently presented, never from 0.
         val downloadedRows = mergeDownloadedSubtitles(
-            existing = emptyList(),
+            existing = state.subtitleUrls,
             downloaded = downloaded,
             sessionId = sessionId,
             serverUrl = state.serverUrl,
@@ -3903,10 +4089,15 @@ class TvPlayerViewModel(
     }
 
     override fun onCleared() {
+        // Capture the session NOW: this teardown is deferred behind settlement
+        // work, and during the navigation fade the next screen has already
+        // started and adopted its own session. Without this the stop landed on
+        // the episode the user had just started and killed it seconds in.
+        val teardownSessionId = _uiState.value.sessionId
         subtitleTransactions.invalidateAndSettleAsync(restoreUi = false) {
             subtitleTransactions.requestDurableFinalPersistence()
             playbackMutationFence.invalidateAll()
-            sessionLifecycle.stop()
+            sessionLifecycle.stop(expectedSessionId = teardownSessionId)
         }
         subtitleSnapshotSettlement.reset()
         org.siloserver.silo.common.player.debug.PlaybackDebugState.screenError = null

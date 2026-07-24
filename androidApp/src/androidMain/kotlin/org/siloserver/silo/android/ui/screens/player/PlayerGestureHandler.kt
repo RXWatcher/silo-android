@@ -162,15 +162,19 @@ fun PlayerGestureHandler(
                                 holdTriggered = true
                                 onFastForwardHold(true)
                             }
-                            try {
+                            val released = try {
                                 tryAwaitRelease()
                             } finally {
                                 holdJob.cancel()
                                 if (holdTriggered) {
-                                    suppressTapAfterFastForwardHold = true
                                     onFastForwardHold(false)
                                 }
                             }
+                            // A cancelled press (the finger drifted into a drag)
+                            // never reaches onTap, so arming the suppressor there
+                            // would latch it and swallow every later tap. Assign
+                            // unconditionally so any stale latch clears too.
+                            suppressTapAfterFastForwardHold = holdTriggered && released
                         }
                     },
                     onTap = {

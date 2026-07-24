@@ -57,6 +57,11 @@ class SubtitleManager(
         subtitles: List<PlayerSubtitleInfo>,
         serverUrl: String,
     ): List<MediaItem.SubtitleConfiguration> {
+        SubDiag.log(
+            "BUILD sidecars idx=" + subtitles.map { it.index } +
+                " src=" + subtitles.map { it.source } +
+                " urlBlank=" + subtitles.map { it.url.isBlank() },
+        )
         return subtitles.mapNotNull { subtitle ->
             // V3 embedded-bitmap rows intentionally carry a blank URL: they
             // are selection metadata for a track already in the primary
@@ -103,6 +108,7 @@ class SubtitleManager(
      * @param subtitleIndex The subtitle track index to select, or -1 to disable subtitles
      */
     fun selectSubtitle(player: Player, subtitleIndex: Int): Boolean {
+        SubDiag.log("MGR selectSubtitle(index=$subtitleIndex)")
         if (subtitleIndex < 0) {
             disableSubtitles(player)
             return true
@@ -159,6 +165,15 @@ class SubtitleManager(
     }
 
     /**
+     * True when [subtitle] is already exposed by the player's current tracks,
+     * i.e. the mounted MediaItem already carries this sidecar. Callers use this
+     * to decide whether a media rebuild is needed at all; resolution is the same
+     * metadata/ID matching [selectSubtitle] performs, minus the failure log.
+     */
+    fun isSubtitleMounted(player: Player, subtitle: PlayerSubtitleInfo): Boolean =
+        resolveSubtitleSelection(player.currentTracks, subtitle) != null
+
+    /**
      * Selects a track already present in the Media3 snapshot by its complete
      * domain identity. This path never converts the identity back to an app
      * list ordinal, so exact artifact and Format ids survive list reordering.
@@ -179,6 +194,7 @@ class SubtitleManager(
             return false
         }
 
+        val chosen = selection.mediaTrackGroup.getFormat(selection.trackIndex)
         applySubtitleSelection(player, selection)
         return true
     }
@@ -245,6 +261,15 @@ class SubtitleManager(
      * this after PlayerView/player/resize-mode changes; the installed sync also
      * reacts to later layout and video-size callbacks.
      */
+    /**
+     * Applies measured hard-coded letterbox bars so the subtitle layer tracks
+     * the picture rather than the encoded frame. Safe to call repeatedly; only
+     * a change in the measurement triggers a re-layout.
+     */
+    fun applyLetterboxInsets(playerView: PlayerView, insets: LetterboxInsets) {
+        videoRectSyncs[playerView]?.letterbox = insets
+    }
+
     fun syncSubtitleVideoBounds(playerView: PlayerView) {
         playerView.subtitleView?.let { libassBridge?.attachTo(it) }
         val existing = videoRectSyncs[playerView]
@@ -361,6 +386,7 @@ class SubtitleManager(
         }
 
     private fun disableSubtitles(player: Player) {
+        SubDiag.log("MGR disable text")
         // Disable all text tracks
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
@@ -372,6 +398,8 @@ class SubtitleManager(
         player: Player,
         selection: SubtitleSelection,
     ) {
+        SubDiag.log("MGR apply lang=${selection.mediaTrackGroup.getFormat(selection.trackIndex).language} id=${selection.mediaTrackGroup.getFormat(selection.trackIndex).id}")
+        val fmt = selection.mediaTrackGroup.getFormat(selection.trackIndex)
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
@@ -530,6 +558,13 @@ private class SubtitleVideoRectSync(playerView: PlayerView) :
     )
     private var observedPlayer: Player? = null
 
+    var letterbox: LetterboxInsets = LetterboxInsets.NONE
+        set(value) {
+            if (field == value) return
+            field = value
+            update()
+        }
+
     var isDisposed: Boolean = false
         private set
 
@@ -605,15 +640,17 @@ private class SubtitleVideoRectSync(playerView: PlayerView) :
     private fun applyRect(playerView: PlayerView) {
         val subtitleView = playerView.subtitleView ?: return
         val videoSize = playerView.player?.videoSize ?: VideoSize.UNKNOWN
-        val rect = playerView.contentFrameSubtitleRect()
-            ?: displayedSubtitleVideoRect(
-                viewWidth = playerView.width,
-                viewHeight = playerView.height,
-                videoWidth = videoSize.width,
-                videoHeight = videoSize.height,
-                videoPixelWidthHeightRatio = videoSize.pixelWidthHeightRatio,
-                resizeMode = playerView.resizeMode,
-            )
+        val rect = (
+            playerView.contentFrameSubtitleRect()
+                ?: displayedSubtitleVideoRect(
+                    viewWidth = playerView.width,
+                    viewHeight = playerView.height,
+                    videoWidth = videoSize.width,
+                    videoHeight = videoSize.height,
+                    videoPixelWidthHeightRatio = videoSize.pixelWidthHeightRatio,
+                    resizeMode = playerView.resizeMode,
+                )
+            ).insetByLetterbox(letterbox)
         val current = subtitleView.layoutParams as? FrameLayout.LayoutParams
         val params = current ?: FrameLayout.LayoutParams(rect.width, rect.height)
         val gravity = Gravity.TOP or Gravity.START

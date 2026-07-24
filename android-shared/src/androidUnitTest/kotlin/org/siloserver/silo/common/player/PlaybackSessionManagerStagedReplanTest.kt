@@ -143,6 +143,81 @@ class PlaybackSessionManagerStagedReplanTest {
     }
 
     @Test
+    fun `rolling back an in-place replan keeps addressing the server's current plan`() = runTest {
+        // POST /replan is a commit. For an in-place replan the server keeps the
+        // session id but moves to a new plan, and nothing can un-commit it.
+        // Reverting the client's plan identity on rollback retires a plan the
+        // server has already superseded, after which every later replan is
+        // rejected 409 "The failed plan is no longer current" for the rest of
+        // the session — which is exactly what stopped a second subtitle pick
+        // from ever working.
+        val harness = Harness(
+            replanResponse = { _, _ ->
+                response(sidecarPlan(sessionId = "s1", planId = "plan-server-v2"))
+            },
+        )
+        harness.start()
+
+        val staged = assertIs<ApiResult.Success<StagedVideoReplan>>(
+            harness.manager.stageActiveVideoSessionReplan(
+                classification = "subtitle_track_changed",
+                positionSeconds = 42.0,
+                audioTrackIndex = 0,
+                subtitleTrackIndex = 4,
+            ),
+        ).data
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(staged = staged, deferPublication = true),
+        )
+        assertTrue(harness.manager.rollbackUnpublishedVideoSession("s1"))
+
+        // A further replan must address plan-server-v2, not the retired plan.
+        harness.manager.stageActiveVideoSessionReplan(
+            classification = "subtitle_track_changed",
+            positionSeconds = 42.0,
+            audioTrackIndex = 0,
+            subtitleTrackIndex = 5,
+        )
+        val lastFailedPlanId = harness.replanBodies.last()["failed_plan_id"]?.toString()?.trim('"')
+        assertEquals(
+            "plan-server-v2",
+            lastFailedPlanId,
+            "rollback retired the plan the server actually holds",
+        )
+    }
+
+    @Test
+    fun `rolling back an in-place replan never stops the session still playing`() = runTest {
+        // Production servers replan IN PLACE, returning the same session id they
+        // were given. Rolling back such a publication reverts ownership to that
+        // very session, so stopping the "replacement" deletes the session the
+        // user is watching — after which every later replan 404s.
+        val harness = Harness(
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s1")) },
+        )
+        harness.start()
+
+        val staged = assertIs<ApiResult.Success<StagedVideoReplan>>(
+            harness.manager.stageActiveVideoSessionReplan(
+                classification = "subtitle_track_changed",
+                positionSeconds = 42.0,
+                audioTrackIndex = 0,
+                subtitleTrackIndex = 4,
+            ),
+        ).data
+        assertEquals(staged.baseSessionId, staged.candidateSessionId)
+
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(staged = staged, deferPublication = true),
+        )
+
+        assertTrue(harness.manager.rollbackUnpublishedVideoSession("s1"))
+
+        assertEquals(emptyList(), harness.stoppedSessions)
+        assertEquals("s1", harness.manager.activeSessionIdForTest())
+    }
+
+    @Test
     fun `staged replacement exposes manager derived output route generation`() = runTest {
         val harness = Harness(
             replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
@@ -1414,8 +1489,13 @@ class PlaybackSessionManagerStagedReplanTest {
         fun basePlan(
             sessionId: String = "s1",
             fileId: Int = 42,
+            // An in-place replan returns the SAME session id with a NEW plan id.
+            // Deriving planId from sessionId alone made such a test pass
+            // vacuously: the "stale" plan id it asserted against was identical
+            // to the current one.
+            planId: String = "plan-$sessionId",
         ): PlaybackPlanV3 = PlaybackPlanV3(
-            planId = "plan-$sessionId",
+            planId = planId,
             sessionId = sessionId,
             delivery = PlaybackDelivery.SERVER_REMUX_HLS,
             engine = PlaybackEngineKind.MEDIA3_HLS,
@@ -1435,7 +1515,10 @@ class PlaybackSessionManagerStagedReplanTest {
             effectiveMediaFileId = fileId,
         )
 
-        fun sidecarPlan(sessionId: String): PlaybackPlanV3 = basePlan(sessionId).copy(
+        fun sidecarPlan(
+            sessionId: String,
+            planId: String = "plan-$sessionId",
+        ): PlaybackPlanV3 = basePlan(sessionId, planId = planId).copy(
             selectedTracks = SelectedPlaybackTracksV3(
                 audio = audioTrack(fileId = 42),
                 subtitle = PlaybackTrackIdentityV3(

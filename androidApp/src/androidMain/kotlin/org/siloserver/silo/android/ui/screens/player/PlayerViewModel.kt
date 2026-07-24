@@ -241,6 +241,9 @@ class PlayerViewModel(
         val suppressResumeRewind: Boolean,
     )
 
+    /** An in-flight version/quality switch: how to recover if its load fails. */
+    private data class VersionSwitchAttempt(val previousIndex: Int, val isRecovery: Boolean)
+
     companion object {
         private const val TAG = "PlayerViewModel"
         const val SERVER_UNREACHABLE_MESSAGE =
@@ -550,6 +553,12 @@ class PlayerViewModel(
     // message early (repeated identical failures used to be dismissed within a
     // second by an uncancelled, message-equality-gated coroutine).
     private var versionSwitchMessageJob: Job? = null
+    // Set by [startVersionPlayback] immediately before its loadContent call and
+    // consumed by that load, so a load failure can be routed to
+    // [failVersionSwitch] (revert to the working version) instead of the generic
+    // error screen. Consumed unconditionally at the top of every loadContent, so
+    // it can never leak onto an unrelated load.
+    private var pendingVersionSwitch: VersionSwitchAttempt? = null
     // Runtime recovery is a single protocol-v3 replan flight. A transient
     // network failure gets one same-route reopen before server replanning.
     private var transientNetworkRetries = 0
@@ -818,6 +827,9 @@ class PlayerViewModel(
         force: Boolean = false,
     ) {
         loadJob?.cancel()
+        // Claim any version-switch recovery contract for THIS load only.
+        val versionSwitch = pendingVersionSwitch
+        pendingVersionSwitch = null
         val loadOwner = loadOwners.begin(
             contentId = contentId,
             preferredFileId = preferredFileId,
@@ -918,8 +930,16 @@ class PlayerViewModel(
                     }
                     is VideoPlayerUiState.Error -> {
                         loadOwners.runIfOwned(loadOwner) {
-                            _uiState.update {
-                                it.copy(isLoading = false, error = playbackState.message)
+                            if (versionSwitch != null) {
+                                failVersionSwitch(
+                                    previousIndex = versionSwitch.previousIndex,
+                                    rawReason = playbackState.message,
+                                    isRecovery = versionSwitch.isRecovery,
+                                )
+                            } else {
+                                _uiState.update {
+                                    it.copy(isLoading = false, error = playbackState.message)
+                                }
                             }
                         }
                     }
@@ -944,8 +964,16 @@ class PlayerViewModel(
                 if (!ownsLoad(loadOwner)) return@launch
                 Log.e(TAG, "Error loading content", e)
                 loadOwners.runIfOwned(loadOwner) {
-                    _uiState.update {
-                        it.copy(isLoading = false, error = "Unexpected error: ${e.message}")
+                    if (versionSwitch != null) {
+                        failVersionSwitch(
+                            previousIndex = versionSwitch.previousIndex,
+                            rawReason = e.message.orEmpty(),
+                            isRecovery = versionSwitch.isRecovery,
+                        )
+                    } else {
+                        _uiState.update {
+                            it.copy(isLoading = false, error = "Unexpected error: ${e.message}")
+                        }
                     }
                 }
             }
@@ -1298,6 +1326,11 @@ class PlayerViewModel(
         ) {
             transientNetworkRetries++
             val plan = state.playbackPlan
+            // The screen's mount effect only applies the generation it is
+            // waiting for, so a same-route retry MUST claim one — otherwise the
+            // new plan re-runs the effect and it bails at the gate, leaving the
+            // old (stalled) media item mounted forever.
+            val mountGeneration = expectNextMediaMount()
             _uiState.update {
                 it.copy(
                     error = null,
@@ -1310,6 +1343,7 @@ class PlayerViewModel(
                     ),
                     startPosition = plan.timeline.playerPositionForSource(state.position)
                         ?: plan.timeline.playerStartSeconds,
+                    mediaMountGeneration = mountGeneration,
                 )
             }
             return
@@ -1363,6 +1397,9 @@ class PlayerViewModel(
             if (mime != null && plan != null &&
                 playbackSessionManager.trySingleLocalPcmRetry(mime, track?.channels ?: 0)
             ) {
+                // Same-route remount: claim the generation the screen's mount
+                // effect waits for (see the transport-reopen retry above).
+                val mountGeneration = expectNextMediaMount()
                 _uiState.update {
                     it.copy(
                         error = null,
@@ -1382,6 +1419,7 @@ class PlayerViewModel(
                         ),
                         startPosition = plan.timeline.playerPositionForSource(state.position)
                             ?: plan.timeline.playerStartSeconds,
+                        mediaMountGeneration = mountGeneration,
                     )
                 }
                 return
@@ -1427,8 +1465,10 @@ class PlayerViewModel(
             transientNetworkRetries++
             Log.i(TAG, "Transient network error; retrying same route ($transientNetworkRetries/$MAX_TRANSIENT_NETWORK_RETRIES)")
             // Appending to the decision trace produces a new plan object, which
-            // re-runs the screen's mount effect — a same-route remount at the
-            // current position, without a server round-trip.
+            // re-runs the screen's mount effect, and the claimed generation lets
+            // that effect through its gate — a same-route remount at the current
+            // position, without a server round-trip.
+            val mountGeneration = expectNextMediaMount()
             _uiState.update {
                 it.copy(
                     isLoading = false,
@@ -1443,6 +1483,7 @@ class PlayerViewModel(
                     ),
                     startPosition = plan.timeline.playerPositionForSource(state.position)
                         ?: plan.timeline.playerStartSeconds,
+                    mediaMountGeneration = mountGeneration,
                 )
             }
             return
@@ -3039,8 +3080,9 @@ class PlayerViewModel(
         upNextCountdownJob?.cancel()
         upNextCountdownJob = null
         _uiState.update { it.copy(showUpNext = false, upNextCountdownSeconds = null) }
+        val previousSessionId = _uiState.value.sessionId
         viewModelScope.launch {
-            sessionLifecycle.stop()
+            sessionLifecycle.stop(expectedSessionId = previousSessionId)
             loadContent(contentId = contentId)
         }
     }
@@ -3254,8 +3296,9 @@ class PlayerViewModel(
         }
         val nextContentId = _uiState.value.nextEpisode?.contentId ?: return
         _uiState.update { it.copy(showUpNext = false, upNextCountdownSeconds = null) }
+        val previousSessionId = _uiState.value.sessionId
         viewModelScope.launch {
-            sessionLifecycle.stop()
+            sessionLifecycle.stop(expectedSessionId = previousSessionId)
             loadContent(
                 contentId = nextContentId,
                 resumePositionOverride = 0.0,
@@ -3360,8 +3403,13 @@ class PlayerViewModel(
         val state = _uiState.value
         val version = state.versions.getOrNull(index) ?: return
         if (!isRecovery && index == state.selectedVersionIndex) return
+        // Captured now: selectedVersionIndex is only rewritten by a SUCCESSFUL
+        // load, so this still names the version that is currently playing.
+        val previousIndex = state.selectedVersionIndex
+        val previousSessionId = state.sessionId
         viewModelScope.launch {
-            sessionLifecycle.stop()
+            sessionLifecycle.stop(expectedSessionId = previousSessionId)
+            pendingVersionSwitch = VersionSwitchAttempt(previousIndex, isRecovery)
             loadContent(
                 contentId = state.contentId,
                 preferredFileId = version.fileId,
@@ -3459,9 +3507,13 @@ class PlayerViewModel(
         loadJob = null
         mobileSubtitleTransactions.invalidate()
         mobileSubtitleTransactions.requestDurableFinalPersistence()
+        // Capture before deferring: the lifecycle is a process-scoped singleton
+        // and this stop waits on a flush first, so by the time it runs another
+        // screen may already have adopted its own session.
+        val exitSessionId = _uiState.value.sessionId
         viewModelScope.launch {
             mobileSubtitleTransactions.persistCommittedSelectionAndFlush()
-            sessionLifecycle.stop()
+            sessionLifecycle.stop(expectedSessionId = exitSessionId)
         }
         val state = _uiState.value
         val cid = state.contentId.takeIf { it.isNotBlank() }

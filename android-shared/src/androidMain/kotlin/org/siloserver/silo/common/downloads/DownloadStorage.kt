@@ -523,7 +523,21 @@ fun legacyPublicCollectionRoots(): Map<PublicDownloadCollection, File> =
 enum class PublicDownloadCollection(val directoryName: String, val relativeRoot: String) {
     Video("Movies", "Movies"),
     Audio("Music", "Music"),
-    Downloads("Downloads", "Downloads"),
+    // MediaProvider validates RELATIVE_PATH against its own allow-list, which
+    // holds the SINGULAR "Download" (Environment.DIRECTORY_DOWNLOADS). The
+    // plural spelling is rejected with IllegalArgumentException — not an
+    // IOException — so DownloadWorker failed the download permanently and every
+    // retry failed identically; ebooks could never be downloaded at all.
+    //
+    // These are written as literals rather than Environment constants because
+    // this enum is constructed in plain JVM unit tests, where android.os
+    // statics are unavailable and would fail class initialisation. The values
+    // are fixed platform API and are asserted against the real constants in
+    // publicDownloadRelativeRootsMatchPlatformConstants().
+    //
+    // directoryName stays plural: it drives the file-backed layout, not the
+    // MediaStore insert.
+    Downloads("Downloads", "Download"),
     ;
 
     fun contentUri(): Uri = when (this) {

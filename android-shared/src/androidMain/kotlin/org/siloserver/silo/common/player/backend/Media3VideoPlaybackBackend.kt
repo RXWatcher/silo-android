@@ -49,13 +49,19 @@ class Media3VideoPlaybackBackend(
         )
     }
 
-    override fun selectSubtitle(track: VideoPlayerTrackEntry?): Boolean =
-        trackSelectionCoordinator.selectSubtitle(
+    override fun selectSubtitle(track: VideoPlayerTrackEntry?): Boolean {
+        // A sidecar cannot be merged before the video media exists. This used to
+        // throw, which crashed the app outright when a same-route retry asked
+        // for a subtitle before the remount had happened; the caller already
+        // treats false as "not selected" and retries once tracks publish.
+        val mediaSpec = mediaSpecForExternalSubtitle(track) ?: return false
+        return trackSelectionCoordinator.selectSubtitle(
             player = player,
             playerFactory = playerFactory,
-            mediaSpec = requireMediaSpecForExternalSubtitle(track),
+            mediaSpec = mediaSpec,
             selectedTrack = track,
         )
+    }
 
     override fun selectMountedSubtitle(
         identity: SubtitleIdentity,
@@ -93,7 +99,10 @@ class Media3VideoPlaybackBackend(
         player.release()
     }
 
-    private fun requireMediaSpecForExternalSubtitle(track: VideoPlayerTrackEntry?): VideoPlayerMediaSpec {
+    /** Null when a sidecar is requested before any video media has been mounted. */
+    private fun mediaSpecForExternalSubtitle(
+        track: VideoPlayerTrackEntry?,
+    ): VideoPlayerMediaSpec? {
         val spec = mountedSpec
         if (spec != null) return spec
         if (track?.subtitle == null) {
@@ -103,6 +112,6 @@ class Media3VideoPlaybackBackend(
                 serverUrl = "",
             )
         }
-        error("Cannot select an external subtitle before video media has been mounted.")
+        return null
     }
 }

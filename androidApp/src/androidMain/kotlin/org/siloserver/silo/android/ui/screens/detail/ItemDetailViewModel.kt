@@ -197,8 +197,13 @@ class ItemDetailViewModel(
         ) {
             DetailDownloadTapAction.Cancel -> {
                 existing?.let { record ->
-                    downloadEnqueuer.cancel(record.id)
-                    viewModelScope.launch { downloadsRepository.delete(record.id) }
+                    viewModelScope.launch {
+                        // fileId overload: also drops the local metadata row, without
+                        // which the cancelled file stays "downloading" locally and the
+                        // button can never start it again.
+                        downloadEnqueuer.cancel(record.id, record.mediaFileId)
+                        downloadsRepository.delete(record.id)
+                    }
                 }
             }
             DetailDownloadTapAction.Ignore -> Unit  // Manage via Downloads tab.
@@ -253,8 +258,10 @@ class ItemDetailViewModel(
         when (detailDownloadTapAction(existing?.statusEnum(), forceRedownloadMissingLocal = false)) {
             DetailDownloadTapAction.Ignore -> Unit
             DetailDownloadTapAction.Cancel -> existing?.let { record ->
-                downloadEnqueuer.cancel(record.id)
-                viewModelScope.launch { downloadsRepository.delete(record.id) }
+                viewModelScope.launch {
+                    downloadEnqueuer.cancel(record.id, record.mediaFileId)
+                    downloadsRepository.delete(record.id)
+                }
             }
             DetailDownloadTapAction.Start, DetailDownloadTapAction.ReplaceAndStart -> viewModelScope.launch {
                 // Episode pages load the episode itself as `detail`, so the

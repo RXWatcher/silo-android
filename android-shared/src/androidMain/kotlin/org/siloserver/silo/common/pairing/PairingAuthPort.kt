@@ -52,7 +52,15 @@ class RegistryPairingAuthPort(
                 tokenManager.switchActiveServer(serverId)
                 tokenManager.setProfileId(null)
                 tokenManager.setProfileToken(null)
-                tokenManager.saveTokens(
+                // Scope-PINNED write: the registry still points at
+                // previousServerId here, and the active-scope saveTokens()
+                // re-syncs its cache to the registry before writing — which
+                // would file the approved server's tokens under the previous
+                // server. Naming the server id keeps the credentials with the
+                // account they were issued for without publishing the switch
+                // early.
+                tokenManager.saveTokensForScope(
+                    serverId = serverId,
                     accessToken = accessToken,
                     refreshToken = refreshToken,
                     expiresIn = expiresIn,

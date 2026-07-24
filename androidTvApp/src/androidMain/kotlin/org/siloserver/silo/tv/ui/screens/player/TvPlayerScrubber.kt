@@ -198,10 +198,31 @@ fun TvPlayerScrubber(
         setRate(rates[next])
     }
 
+    // A scrub can only be blurred away by an instance that actually held focus.
+    // On the FIRST composition isFocused is already false, so without this the
+    // blur effect below fires immediately and treats an inherited scrub as a
+    // blur — see the !hadFocus branch.
+    var hadFocus by remember { mutableStateOf(false) }
+
     // Cancel any in-flight scrub on focus loss when the shell asks us to
     // (HUD opens, screen exit). Otherwise treat blur as commit.
     LaunchedEffect(isFocused) {
-        if (!isFocused && (isScrubbing || isTimelineScrubbing)) {
+        if (isFocused) {
+            hadFocus = true
+            return@LaunchedEffect
+        }
+        if (!hadFocus) {
+            // Never focused, yet the VM says a scrub is live: it belongs to a
+            // previous instance that was DISPOSED rather than blurred (opening
+            // the HUD removes the whole overlay, so no blur ever runs).
+            // Committing it would seek to a preview the user abandoned; leaving
+            // it set strands the overlay in scrub mode (auto-hide is gated on
+            // !isScrubbing). Drop it instead.
+            if (isScrubbing) onCancelScrub()
+            return@LaunchedEffect
+        }
+        hadFocus = false
+        if (isScrubbing || isTimelineScrubbing) {
             isTimelineScrubbing = false
             stopAutoSeek()
             if (cancelOnBlur) onCancelScrub() else onCommitScrub()

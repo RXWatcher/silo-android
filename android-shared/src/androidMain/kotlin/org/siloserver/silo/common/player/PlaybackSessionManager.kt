@@ -88,6 +88,27 @@ open class PlaybackSessionManager(
         val attemptCount: Int,
         val startedAtElapsedRealtimeMs: Long,
         val firstFrameReported: Boolean,
+        /**
+         * The plan the SERVER currently holds for this session.
+         *
+         * POST /replan is a commit: once it returns 200 the server has moved on,
+         * and for an in-place replan (same session id) there is nothing to undo.
+         * `plan` describes what is actually rendering and must still revert on
+         * rollback, but the cursor must not — reverting it retires a planId the
+         * server has already superseded, after which every later replan is
+         * rejected 409 "The failed plan is no longer current" for the rest of
+         * the session. Null until this attempt has replanned at least once.
+         */
+        val serverPlanCursor: ServerPlanCursor? = null,
+    )
+
+    /** Identity of the plan the server last acknowledged for a session. */
+    private data class ServerPlanCursor(
+        val planId: String,
+        val planAttemptId: String,
+        val planAttemptKey: String,
+        val attemptedPlanKeys: List<String>,
+        val attemptCount: Int,
     )
 
     private data class PreparedStagedVideoReplan(
@@ -103,6 +124,7 @@ open class PlaybackSessionManager(
 
     private data class PendingPublicationRollback(
         val replacementSessionId: String,
+        val predecessorSessionId: String?,
         val candidateSessionIds: List<String>,
         val settled: CompletableDeferred<Unit>,
     )
@@ -280,7 +302,7 @@ open class PlaybackSessionManager(
                                     if (replacement?.sessionId == active.sessionId) {
                                         abandonedSessionId = active.sessionId
                                     }
-                                    activeVideoAttempt.set(predecessorForPublication)
+                                    revertRenderedPlanKeepingCursor(predecessorForPublication)
                                     predecessorForPublication?.let {
                                         PassthroughSuppressionRegistry.beginAttempt(it.planAttemptKey)
                                     }
@@ -566,11 +588,15 @@ open class PlaybackSessionManager(
                     network.asRouteDiagnostics(),
             ),
         )
+        // Address the server by the plan IT holds, not the one we are rendering.
+        // After a rollback those differ, and using the rendered plan sends a
+        // retired failedPlanId that the server rejects with 409.
+        val cursor = active.serverPlanCursor
         val request = PlaybackReplanRequestV3(
             playbackAttemptId = active.playbackAttemptId,
             replanRequestId = UUID.randomUUID().toString(),
-            failedPlanId = active.plan.planId,
-            planAttemptId = active.planAttemptId,
+            failedPlanId = cursor?.planId ?: active.plan.planId,
+            planAttemptId = cursor?.planAttemptId ?: active.planAttemptId,
             planAttemptKey = failedKey,
             attemptedPlanKeys = attemptedKeys,
             attemptCount = requestAttemptCount,
@@ -588,7 +614,41 @@ open class PlaybackSessionManager(
             capabilities = currentCapabilities,
             clientPlaybackContext = currentContext,
         )
-        when (val result = playbackRepository.replanPlaybackV3(active.sessionId, request)) {
+        val result = playbackRepository.replanPlaybackV3(active.sessionId, request)
+        if (result is ApiResult.Success) {
+            // The server has committed this plan. Record it before any
+            // validation branch: several of those return early (loop detected,
+            // invalid candidate, discard) and every one of them would otherwise
+            // leave the cursor addressing a plan the server has already retired.
+            result.data.playbackPlan?.let { committedPlan ->
+                val committedKey = committedPlan.planAttemptKey(
+                    currentContext.output.outputRouteGeneration,
+                )
+                // Compare-and-set: a supersession may already have swapped the
+                // attempt while this response was in flight, and a plain
+                // get()/set() would silently restore the superseded one.
+                activeVideoAttempt.get()
+                    ?.takeIf { it.sessionId == active.sessionId }
+                    ?.let { live ->
+                        activeVideoAttempt.compareAndSet(
+                            live,
+                            live.copy(
+                                serverPlanCursor = ServerPlanCursor(
+                                    planId = committedPlan.planId,
+                                    // planAttemptId is client-generated per
+                                    // attempt; the server keys currency off
+                                    // planId, so carry ours forward unchanged.
+                                    planAttemptId = live.planAttemptId,
+                                    planAttemptKey = committedKey,
+                                    attemptedPlanKeys = (attemptedKeys + committedKey).distinct(),
+                                    attemptCount = requestAttemptCount,
+                                ),
+                            ),
+                        )
+                    }
+            }
+        }
+        when (result) {
             is ApiResult.Success -> when (val validated = result.data.validateForMedia3()) {
                 is PlaybackV3Validation.Playable -> {
                     val nextKey = validated.plan.planAttemptKey(currentContext.output.outputRouteGeneration)
@@ -834,10 +894,20 @@ open class PlaybackSessionManager(
         } ?: return false
         return try {
             try {
-                stopSessionAfterOwnershipCleared(
-                    sessionId = rollback.replacementSessionId,
-                    candidateSessionIds = rollback.candidateSessionIds,
-                )
+                if (rollback.replacementSessionId == rollback.predecessorSessionId) {
+                    // In-place replan: the server reused the session id, so the
+                    // "replacement" we would stop is the session still playing.
+                    // Ownership already reverted to it; only candidates go.
+                    stopSessionAfterOwnershipCleared(
+                        sessionId = null,
+                        candidateSessionIds = rollback.candidateSessionIds,
+                    )
+                } else {
+                    stopSessionAfterOwnershipCleared(
+                        sessionId = rollback.replacementSessionId,
+                        candidateSessionIds = rollback.candidateSessionIds,
+                    )
+                }
             } catch (_: Throwable) {
                 // Ownership already converged to the predecessor under
                 // videoAttemptMutex. The replacement is orphan-tracked before
@@ -852,6 +922,23 @@ open class PlaybackSessionManager(
         }
     }
 
+
+    /**
+     * Reverts what is rendering while KEEPING the server-side plan cursor.
+     *
+     * A replan the server has acknowledged cannot be un-acknowledged — for an
+     * in-place replan there is not even a second session to discard. Restoring
+     * the predecessor wholesale also restores its plan identity, which the
+     * server has already retired, so every subsequent replan is rejected 409
+     * "The failed plan is no longer current" until playback restarts.
+     */
+    private fun revertRenderedPlanKeepingCursor(predecessor: ActiveVideoAttempt?) {
+        val cursor = activeVideoAttempt.get()?.serverPlanCursor
+        activeVideoAttempt.set(
+            predecessor?.copy(serverPlanCursor = cursor ?: predecessor.serverPlanCursor),
+        )
+    }
+
     private fun rollbackPendingPublicationLocked(
         sessionId: String,
     ): PendingPublicationRollback? {
@@ -861,7 +948,7 @@ open class PlaybackSessionManager(
         if (activeVideoAttempt.get()?.sessionId != sessionId) return null
 
         pendingVideoPublication = null
-        activeVideoAttempt.set(pending.predecessor)
+        revertRenderedPlanKeepingCursor(pending.predecessor)
         pending.predecessor?.let {
             PassthroughSuppressionRegistry.beginAttempt(it.planAttemptKey)
         }
@@ -875,6 +962,7 @@ open class PlaybackSessionManager(
         )
         return PendingPublicationRollback(
             replacementSessionId = sessionId,
+            predecessorSessionId = pending.predecessor?.sessionId,
             candidateSessionIds = candidates,
             settled = pending.settled,
         )
@@ -924,7 +1012,8 @@ open class PlaybackSessionManager(
 
     private suspend fun drainOrphanedSessions(protectedSessionIds: Set<String>) {
         val orphanIds = videoAttemptMutex.withLock {
-            orphanedSessionIds.filterNot { it in protectedSessionIds }
+            val live = setOfNotNull(activeVideoAttempt.get()?.sessionId)
+            orphanedSessionIds.filterNot { it in protectedSessionIds || it in live }
         }
         orphanIds.forEach { sessionId ->
             val result = try {
@@ -966,7 +1055,11 @@ open class PlaybackSessionManager(
         val candidateSessionId = videoAttemptMutex.withLock {
             if (stagedVideoReplans.remove(staged) == null) return
             staged.candidateSessionId?.takeIf { candidateSessionId ->
-                candidateSessionId != activeVideoAttempt.get()?.sessionId &&
+                // The server may replan in place and hand back the SAME session
+                // id it was given. Such a candidate is not a disposable session:
+                // stopping it kills the playback the user is still watching.
+                candidateSessionId != staged.baseSessionId &&
+                    candidateSessionId != activeVideoAttempt.get()?.sessionId &&
                     stagedVideoReplans.keys.none {
                         it.candidateSessionId == candidateSessionId
                     }
@@ -1000,6 +1093,7 @@ open class PlaybackSessionManager(
     ) {
         if (candidateSessionId == null ||
             candidateSessionId == activeSessionId ||
+            candidateSessionId == activeVideoAttempt.get()?.sessionId ||
             stagedVideoReplans.keys.any { it.candidateSessionId == candidateSessionId }
         ) {
             return
@@ -1876,8 +1970,13 @@ open class PlaybackSessionManager(
         )
     }
 
+    /**
+     * Stops [sessionId] once ownership no longer points at it. A null
+     * [sessionId] cleans up only the candidates — used when the server replanned
+     * in place and the "replacement" is the session still playing.
+     */
     private suspend fun stopSessionAfterOwnershipCleared(
-        sessionId: String,
+        sessionId: String?,
         candidateSessionIds: List<String>,
     ): ApiResult<Unit> {
         val callerContext = currentCoroutineContext()
@@ -1886,18 +1985,22 @@ open class PlaybackSessionManager(
         withContext(NonCancellable) {
             try {
                 stopSessionsRetainingFailures(candidateSessionIds)
-                videoAttemptMutex.withLock {
-                    orphanedSessionIds += sessionId
-                }
-                try {
-                    result = playbackRepository.stopPlayback(sessionId)
-                    if (result is ApiResult.Success) {
-                        videoAttemptMutex.withLock {
-                            orphanedSessionIds -= sessionId
-                        }
+                if (sessionId != null) {
+                    videoAttemptMutex.withLock {
+                        orphanedSessionIds += sessionId
                     }
-                } catch (failure: Throwable) {
-                    requestedFailure = failure
+                    try {
+                        result = playbackRepository.stopPlayback(sessionId)
+                        if (result is ApiResult.Success) {
+                            videoAttemptMutex.withLock {
+                                orphanedSessionIds -= sessionId
+                            }
+                        }
+                    } catch (failure: Throwable) {
+                        requestedFailure = failure
+                    }
+                } else {
+                    result = ApiResult.Success(Unit)
                 }
             } finally {
                 drainOrphanedSessions(

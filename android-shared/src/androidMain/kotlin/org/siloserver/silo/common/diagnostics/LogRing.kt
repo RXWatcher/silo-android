@@ -7,10 +7,12 @@ data class LogSnapshot(
     val lines: List<String>,
     val droppedCount: Long,
     val tornCount: Long,
+    /** Buffer's live generation; differs from the requested one when the view is stale. */
     val generation: Long,
 )
 
 interface DiagnosticsLogBuffer : DiagnosticsLogSink {
+    /** Identity gate: buffered lines are only ever readable by a holder of this generation. */
     val currentGeneration: Long
     fun rotateGeneration(): Long
     fun snapshot(expectedGeneration: Long = currentGeneration): LogSnapshot
@@ -92,7 +94,9 @@ class LogRing(
         val activeGeneration = generation.get()
         val activeEpoch = epoch.get()
         if (expectedGeneration != activeGeneration) {
-            return LogSnapshot(emptyList(), 0, 0, expectedGeneration)
+            // Report the live generation so a stale reader can tell "your view rotated away" apart
+            // from "this generation simply has no lines", and fall back to its own captured lines.
+            return LogSnapshot(emptyList(), 0, 0, activeGeneration)
         }
         val entries = ArrayList<Entry>(capacity)
         repeat(capacity) { index ->

@@ -86,6 +86,7 @@ import org.siloserver.silo.common.player.AudioCapabilityManager
 import org.siloserver.silo.common.player.SiloPlaybackService
 import org.siloserver.silo.common.player.DisplayHdrProbe
 import org.siloserver.silo.common.player.HdrDisplayController
+import org.siloserver.silo.common.player.SubDiag
 import org.siloserver.silo.common.player.PlaybackCapabilityDetector
 import org.siloserver.silo.common.player.PlaybackPreflightListener
 import org.siloserver.silo.common.player.SessionState
@@ -987,6 +988,26 @@ fun TvPlayerScreen(
                 return@handler true
             }
 
+            // While the auto-skip is COUNTING DOWN, Cancel is the focused
+            // control and Select must reach it. KEYCODE_DPAD_CENTER maps to no
+            // action, so without this the `null ->` catch-all below consumed the
+            // press to reveal the transport bar and yanked focus to Play/Pause —
+            // the countdown then ran to completion and the intro was skipped
+            // anyway, and a second tap toggled playback.
+            if (event.action == KeyEvent.ACTION_DOWN &&
+                event.repeatCount == 0 &&
+                latestIntroSkipState is IntroAutoSkipState.CountingDown &&
+                !playerState.showControls &&
+                event.keyCode in setOf(
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_NUMPAD_ENTER,
+                )
+            ) {
+                viewModel.onCancelIntroAutoSkip()
+                return@handler true
+            }
+
             if (event.action == KeyEvent.ACTION_DOWN &&
                 event.repeatCount == 0 &&
                 latestIntroSkipState is IntroAutoSkipState.ShowingButton &&
@@ -1497,6 +1518,12 @@ fun TvPlayerScreen(
     // and emits the ordinal text-group index). Mirrors the seekRequests idiom.
     LaunchedEffect(videoBackend) {
         val backend = videoBackend ?: return@LaunchedEffect
+        // The acknowledgement travels over a replay-0 flow collected here, so a
+        // backend swap (auto-advance, version switch) tears this collector down
+        // and any in-flight emission is lost. Release the latch's resolved claim
+        // on (re)start, or a mount that can never be acknowledged would keep
+        // defending itself and block every later subtitle change.
+        viewModel.releaseResolvedSubtitleMount()
         viewModel.subtitleSelectRequests.collect { idx ->
             if (idx == -1) {
                 if (backend.selectSubtitle(null)) {
@@ -1506,9 +1533,14 @@ fun TvPlayerScreen(
                 }
                 return@collect
             }
-            val selectedTrack = viewModel.uiState.value.subtitleTracks
-                .firstOrNull { it.index == idx }
-                ?.toVideoTrackEntry()
+            val selectedTrack = (
+                viewModel.uiState.value.subtitleTracks.firstOrNull { it.index == idx }
+                    // A stream swap can empty the live list between the match and
+                    // this collector running; prefer the track the remount already
+                    // matched over re-resolving the ordinal against a moving list.
+                    ?: viewModel.consumePendingRemountTrack(idx)
+                )?.toVideoTrackEntry()
+            SubDiag.log("SCREEN mount idx=$idx found=${selectedTrack != null} label=${selectedTrack?.label} available=${viewModel.uiState.value.subtitleTracks.map { it.index }}")
             if (selectedTrack != null && backend.selectSubtitle(selectedTrack)) {
                 viewModel.onSubtitleSelectionApplied(idx)
             } else {
@@ -1607,13 +1639,20 @@ fun TvPlayerScreen(
         state.showSubtitleMenu,
         state.showSubtitleStyleDialog,
         state.isScrubbing,
+        showQuickSubtitlePicker,
+        state.showNextUp,
     ) {
         // Never auto-hide mid-scrub: hiding the scrubber would tear down the
         // in-flight preview under the user. The timer re-arms once the scrub
         // commits or cancels (isScrubbing flips back to false).
+        //
+        // The quick-subtitle picker and Up Next are focus-owning surfaces that
+        // live inside the controls overlay: hiding it under them destroyed the
+        // focused element and dropped focus to the root Box, so the remote went
+        // dead until the user pressed something to bring the overlay back.
         if (state.showControls && !state.isPaused && !state.hudOpen &&
             !state.showSubtitleMenu && !state.showSubtitleStyleDialog &&
-            !state.isScrubbing
+            !state.isScrubbing && !showQuickSubtitlePicker && !state.showNextUp
         ) {
             delay(CONTROLS_AUTO_HIDE_MS)
             viewModel.setControlsVisible(false)

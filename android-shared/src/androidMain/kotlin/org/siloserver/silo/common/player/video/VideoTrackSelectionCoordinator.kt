@@ -34,12 +34,22 @@ class VideoTrackSelectionCoordinator(
         }
 
         val subtitle = selectedTrack.subtitle
+        org.siloserver.silo.common.player.SubDiag.log("COORD selectSubtitle track=${selectedTrack.index} sidecar=${subtitle != null}")
         if (subtitle != null) {
-            refreshMountedVideoMedia(
-                player = player,
-                playerFactory = playerFactory,
-                spec = mediaSpec.copy(subtitles = listOf(subtitle)),
-            )
+            // Sidecar configurations are baked into the MediaItem, and the mount
+            // already carries every sidecar of the spec. Re-preparing the stream
+            // for a track Media3 is already exposing costs a visible stall on
+            // every subtitle change, so only rebuild when it is truly absent
+            // (a freshly downloaded/AI track that no mount has merged yet).
+            val alreadyMounted = subtitleManager.isSubtitleMounted(player, subtitle)
+            org.siloserver.silo.common.player.SubDiag.log("COORD sidecar mounted=$alreadyMounted")
+            if (!alreadyMounted) {
+                refreshMountedVideoMedia(
+                    player = player,
+                    playerFactory = playerFactory,
+                    spec = mediaSpec.copy(subtitles = listOf(subtitle)),
+                )
+            }
             return subtitleManager.selectSubtitle(player, listOf(subtitle), 0)
         }
 

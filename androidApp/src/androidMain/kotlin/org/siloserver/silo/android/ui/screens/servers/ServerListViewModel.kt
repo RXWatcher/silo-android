@@ -25,6 +25,8 @@ data class ServerListUiState(
     val activeId: String? = null,
     val pendingSwitchToId: String? = null,
     val switchedTo: ServerSwitchDestination? = null,
+    /** One-shot: the last server was removed, so there is nothing to sign into. */
+    val needsServerSetup: Boolean = false,
 )
 
 /**
@@ -103,7 +105,44 @@ class ServerListViewModel(
 
     fun onRemove(serverId: String) {
         viewModelScope.launch {
+            val wasActive = serverRegistry.activeServerId.value == serverId
             serverRegistry.remove(serverId)
+
+            // Removing a *non-active* server is a passive list edit — the shell
+            // behind us is unaffected, so leave navigation exactly as before.
+            if (!wasActive) return@launch
+
+            // Removing the ACTIVE server is a session change. The registry has
+            // just promoted the next-MRU server and wiped the removed server's
+            // tokens, but the Home shell behind this list is still bound to the
+            // removed one — so it silently starts showing the promoted account's
+            // library, and any progress or favourite write lands on THAT
+            // account. Re-resolve like onSelect so the navigator tears it down.
+            val promotedId = serverRegistry.activeServerId.value
+            if (promotedId == null) {
+                _uiState.update { it.copy(needsServerSetup = true) }
+                return@launch
+            }
+
+            tokenManager.switchActiveServer(promotedId)
+
+            // Land on the deepest screen the promoted server's stored
+            // credentials can reach.
+            val accessToken = tokenManager.getAccessToken()
+            val activeEntry = serverRegistry.activeEntry.value
+            val profileId = activeEntry?.profileId ?: tokenManager.getProfileId()
+            val destination = when {
+                accessToken.isNullOrBlank() -> ServerSwitchDestination.Login
+                profileId.isNullOrBlank() -> ServerSwitchDestination.ProfileSelection
+                else -> ServerSwitchDestination.Home
+            }
+
+            _uiState.update { it.copy(switchedTo = destination) }
         }
+    }
+
+    /** Consumes the [ServerListUiState.needsServerSetup] one-shot. */
+    fun onServerSetupHandled() {
+        _uiState.update { it.copy(needsServerSetup = false) }
     }
 }

@@ -66,9 +66,21 @@ fun StartupSplashVideo(
                     RawResourceDataSource.buildRawResourceUri(R.raw.startup_splash),
                 ),
             )
-            prepare()
             playWhenReady = false
         }
+    }
+
+    // prepare() initialises decoders and synchronously flushes player events.
+    // Calling it inside remember {} runs it during composition — and this
+    // composable is measured inside BoxWithConstraints, so it lands in the
+    // measure pass, before the window can draw or take focus. On slower
+    // devices that is long enough for the system to declare the activity
+    // unresponsive and force-finish it, so the first launch looks like the app
+    // exits and the user has to press again. Preparing from an effect lets the
+    // first frame come up first; the min/max visibility caps below already
+    // tolerate a splash that has not started yet.
+    LaunchedEffect(player) {
+        player.prepare()
     }
 
     LaunchedEffect(playbackFinished, minVisibleMillis) {

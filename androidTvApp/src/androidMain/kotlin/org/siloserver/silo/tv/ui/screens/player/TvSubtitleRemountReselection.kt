@@ -1,14 +1,40 @@
 package org.siloserver.silo.tv.ui.screens.player
 
+import org.siloserver.silo.common.player.SubDiag
 import org.siloserver.silo.common.player.MountedSubtitleTrack
 import org.siloserver.silo.common.player.downloadedSubtitleArtifactTrackId
 import org.siloserver.silo.common.player.resolveMountedSubtitle
+import org.siloserver.silo.common.player.trackIdDenotes
 import org.siloserver.silo.common.player.subtitleArtifactTrackId
 import org.siloserver.silo.model.playback.SubtitleIdentity
+
+/**
+ * Who asked for a subtitle mount, ordered by authority.
+ *
+ * TV runs two mount pipelines at once: the subtitle transaction, and the legacy
+ * restore/auto machinery that reacts to track changes. Both drive a single
+ * remount latch and a single request channel, so without an explicit ordering
+ * the last writer wins — and because a transaction's own replan republishes the
+ * track list, the legacy pipeline reliably fires *after* the transaction and
+ * overwrites the selection the user just made.
+ *
+ * Higher ordinal wins.
+ */
+internal enum class TvSubtitleMountPriority {
+    /** Automatic language/forced heuristics; may never override a real choice. */
+    Auto,
+
+    /** Persisted preference, detail-page pick, transport remount restore. */
+    Restore,
+
+    /** An explicit in-flight user selection. Outranks everything. */
+    UserTransaction,
+}
 
 internal data class TvSubtitleRemountOwner(
     val identity: SubtitleIdentity,
     val generation: Long,
+    val priority: TvSubtitleMountPriority = TvSubtitleMountPriority.UserTransaction,
 )
 
 internal class TvSubtitleSnapshotSettlementTracker {
@@ -55,6 +81,22 @@ internal class SubtitleRemountReselection(
     private var pendingOwner: TvSubtitleRemountOwner? = null
     private val meaningfulSnapshotKeys = linkedSetOf<String>()
 
+    /**
+     * The owner whose match has been emitted but not yet acknowledged.
+     *
+     * consume() used to clear() the instant it matched, leaving the latch
+     * unowned while the request travelled to the screen — and a lower-authority
+     * arm landing in that window silently took over the mount. Authority has to
+     * survive until the mount is acknowledged, so a resolved owner keeps
+     * defending its claim.
+     *
+     * Released by [acknowledgeResolved] on mount success/failure, and by
+     * [releaseResolved] when the acknowledgement can no longer arrive (backend
+     * swap, mount deadline) — without which a dropped acknowledgement would
+     * wedge subtitle mounting for the rest of the session.
+     */
+    private var resolvedOwner: TvSubtitleRemountOwner? = null
+
     val hasPendingOwner: Boolean
         get() = pendingOwner != null
 
@@ -68,9 +110,50 @@ internal class SubtitleRemountReselection(
         is SubtitleIdentity.ServerBurnIn -> false
     }
 
-    fun arm(identity: SubtitleIdentity, generation: Long) {
+    /** Priority defending the mount: a pending owner, or one awaiting its ack. */
+    val pendingPriority: TvSubtitleMountPriority?
+        get() = pendingOwner?.priority ?: resolvedOwner?.priority
+
+    /** Clears the resolved claim once its mount has been acknowledged. */
+    fun acknowledgeResolved(generation: Long) {
+        if (resolvedOwner?.generation == generation) resolvedOwner = null
+    }
+
+    /**
+     * Drops the resolved claim when its acknowledgement can no longer arrive.
+     *
+     * The acknowledgement travels over a replay-0 shared flow collected inside
+     * a backend-scoped effect, so a backend swap — an auto-advance or version
+     * switch — tears the collector down and the emission is lost. Without this
+     * release the claim would defend a mount that can never be confirmed.
+     */
+    fun releaseResolved() {
+        resolvedOwner = null
+    }
+
+    fun arm(
+        identity: SubtitleIdentity,
+        generation: Long,
+        priority: TvSubtitleMountPriority = TvSubtitleMountPriority.UserTransaction,
+    ) {
+        // A lower-authority source must not evict a mount the user asked for.
+        // That collision is what turned an applied subtitle back off: a rollback
+        // armed the pre-transaction identity (typically Off) over the selection
+        // that had just been applied.
+        // Equal authority always replaces — a user's newest pick must win over
+        // their previous one, and a replan legitimately re-arms the identity it
+        // is rebasing. Only STRICTLY lower authority is refused, which is what
+        // stops a rollback-armed Off (Restore) from evicting a selection the
+        // user is applying (UserTransaction).
+        val holder = pendingOwner ?: resolvedOwner
+        val blocked = holder != null && holder.priority > priority
+        if (blocked) {
+            SubDiag.log("REMOUNT arm IGNORED $identity prio=$priority held=${holder?.priority}")
+            return
+        }
+        SubDiag.log("REMOUNT arm $identity gen=$generation prio=$priority")
         pendingOwner = if (requiresRemount(identity)) {
-            TvSubtitleRemountOwner(identity, generation)
+            TvSubtitleRemountOwner(identity, generation, priority)
         } else {
             null
         }
@@ -84,24 +167,49 @@ internal class SubtitleRemountReselection(
     ): TvSubtitleRemountEvent? {
         val owner = pendingOwner ?: return null
         if (owner.identity == SubtitleIdentity.Off) {
+            // Disabling the text renderer needs no track to exist, so this
+            // deliberately resolves without inspecting the snapshot. A stale
+            // Off owner reaching here at all is an OWNERSHIP failure, fixed by
+            // arming rollback-derived identities below user authority — not by
+            // adding evidence checks here, which would break a legitimate Off
+            // applied while the stream is still publishing.
             clear()
+            resolvedOwner = owner
             return TvSubtitleRemountEvent.Select(owner, trackIndex = -1)
         }
 
         val mounted = subtitleTracks.map(PlayerTrackEntry::toMountedTvSubtitleTrack)
         val exactTrackId = owner.identity.exactTvMountTrackId()
         val matchIndex = if (exactTrackId != null) {
-            mounted.filter { it.trackId == exactTrackId }.singleOrNull()?.index
+            // Every candidate here denotes the SAME authored artifact id, so
+            // multiple hits are the one sidecar merged more than once (Media3
+            // prefixes each with its MergingMediaSource child index, e.g.
+            // "1:silo-subtitle:3" and "2:silo-subtitle:3"). That is not the
+            // ambiguity this guard exists for — it cannot select the wrong
+            // language — so refusing on it left the mount unresolved until the
+            // deadline blew and the transaction rolled back to Off. Ambiguity
+            // between genuinely different tracks is still caught by the
+            // metadata path below and by hasAmbiguousTvLabel.
+            mounted.filter { trackIdDenotes(it.trackId, exactTrackId) }
+                .minByOrNull { it.index }
+                ?.index
         } else {
             resolveMountedSubtitle(identity = owner.identity, tracks = mounted)?.track?.index
         }
+        SubDiag.log("REMOUNT consume id=${owner.identity} exact=$exactTrackId mounted=${mounted.map { it.trackId }} settled=$settled match=$matchIndex")
         if (matchIndex != null) {
             clear()
+            resolvedOwner = owner
             return TvSubtitleRemountEvent.Select(owner, matchIndex)
         }
 
         val meaningfulKey = snapshotKey?.takeIf { subtitleTracks.isNotEmpty() }
         if (meaningfulKey != null) meaningfulSnapshotKeys += meaningfulKey
+        // An empty track list is not evidence that the wanted track is missing:
+        // a replanned stream publishes its tracks a moment after the player
+        // reports READY. Concluding Missing here clears the pending owner, so
+        // the real tracks arrive with nobody left to match them.
+        if (subtitleTracks.isEmpty()) return null
         if (!settled && meaningfulSnapshotKeys.size < maxMeaningfulSnapshots) return null
 
         clear()

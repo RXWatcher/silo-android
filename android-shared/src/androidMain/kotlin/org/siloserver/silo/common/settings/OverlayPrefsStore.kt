@@ -241,15 +241,30 @@ class DefaultOverlayPrefsStore(
                 is ApiResult.Error -> {
                     if (writeGeneration != generation) return
                     _lastError.value = result.message
-                    refresh()
+                    rollbackToServerState(generation)
                 }
                 is ApiResult.NetworkError -> {
                     if (writeGeneration != generation) return
                     _lastError.value = result.exception.message
-                    refresh()
+                    rollbackToServerState(generation)
                 }
             }
         }
+    }
+
+    /**
+     * Roll back to server state after a failed PUT. [refresh] writes `_prefs`
+     * from the server, so if the user edited prefs while that PUT was in
+     * flight the queued snapshot — which this drain has not tried to persist
+     * yet — would be clobbered by older server state. Re-apply it after the
+     * refresh so the newest edit stays on screen until its own PUT resolves.
+     */
+    private suspend fun rollbackToServerState(generation: Int) {
+        refresh()
+        if (writeGeneration != generation) return
+        val queued = writeMutex.withLock { pendingSnapshot } ?: return
+        _prefs.value = queued
+        hasUserOverride = true
     }
 
     /**

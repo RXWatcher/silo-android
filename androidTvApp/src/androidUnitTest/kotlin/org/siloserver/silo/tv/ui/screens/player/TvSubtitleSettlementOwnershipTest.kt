@@ -804,7 +804,7 @@ class TvSubtitleSettlementOwnershipTest {
         assertBefore(
             exitBody,
             "subtitleTransactions.invalidateAndAwaitSettlement()",
-            "sessionLifecycle.stop()",
+            "sessionLifecycle.stop(",
         )
         assertBefore(
             clearBody,
@@ -819,9 +819,12 @@ class TvSubtitleSettlementOwnershipTest {
         assertBefore(
             clearBody,
             "subtitleTransactions.requestDurableFinalPersistence()",
-            "sessionLifecycle.stop()",
+            "sessionLifecycle.stop(",
         )
-        assertTrue(clearBody.contains("sessionLifecycle.stop()"))
+        // stop(expectedSessionId = …) is still stop(): teardown is deferred
+        // behind settlement work, so it must name the session it is ending or it
+        // lands on whatever the next screen has since adopted.
+        assertTrue(clearBody.contains("sessionLifecycle.stop("))
         assertFalse(clearBody.contains("sessionLifecycle.stopAsync()"))
         val adoptionBody = source
             .substringAfter("private suspend fun adoptSubtitlePlayback(")

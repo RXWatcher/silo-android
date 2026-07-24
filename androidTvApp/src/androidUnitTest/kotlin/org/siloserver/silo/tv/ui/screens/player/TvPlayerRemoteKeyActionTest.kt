@@ -63,9 +63,10 @@ class TvPlayerRemoteKeyActionTest {
 
     @Test
     fun downMovesFocusToTransportAndMenuAndSettingsOpenHudFromIdleOverlay() {
-        // Down is a two-step reveal: clean playback -> transport row, then a
-        // second Down with the overlay up -> full HUD. Menu/Settings still open
-        // the HUD directly, so it is never stranded behind the transport.
+        // Down reveals the transport row from clean playback, and belongs to the
+        // overlay once it is up — the scrubber hands focus down to the transport
+        // row itself. Menu/Settings open the HUD directly, as does the Tune
+        // button in that row, so the HUD is never stranded.
         assertEquals(
             TvPlayerRemoteKeyAction.FocusTransport,
             tvPlayerRemoteKeyAction(
@@ -74,14 +75,23 @@ class TvPlayerRemoteKeyActionTest {
                 repeatCount = 0,
             ),
         )
-        assertEquals(
-            TvPlayerRemoteKeyAction.OpenHud,
+        assertNull(
             tvPlayerRemoteKeyAction(
                 keyCode = KeyEvent.KEYCODE_DPAD_DOWN,
                 action = KeyEvent.ACTION_DOWN,
                 repeatCount = 0,
                 dpadHorizontalSeek = false,
+                overlayOwnsFocus = true,
             ),
+            "the root handler must not consume Down while the overlay owns focus",
+        )
+        assertNull(
+            tvPlayerIdleOverlayRemoteKeyAction(
+                keyCode = KeyEvent.KEYCODE_DPAD_DOWN,
+                action = KeyEvent.ACTION_DOWN,
+                repeatCount = 0,
+            ),
+            "TvPlayerScrubber.onMoveDownToTransport is dead code if this consumes",
         )
         listOf(KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS).forEach { keyCode ->
             assertEquals(

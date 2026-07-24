@@ -950,6 +950,11 @@ fun TvPlayerScreen(
                 // With the transport overlay or Up Next on screen, Left/Right
                 // belong to Compose focus navigation, not seeking.
                 dpadHorizontalSeek = !playerState.showControls && !playerState.showNextUp,
+                // Same for Down once the overlay is up: the scrubber runs its own
+                // guarded hand-off to the transport row, which traps Down while a
+                // scrub is in flight. Answering it here would re-focus the
+                // transport and drop the scrub the user was still adjusting.
+                overlayOwnsFocus = playerState.showControls,
             )
             // Apple parity (TVPlayerControls.rearmAutoHideOnFocusMove): any key
             // activity while the overlay is up re-arms the 5s auto-hide so the

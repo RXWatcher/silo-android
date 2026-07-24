@@ -22,6 +22,10 @@ internal fun tvPlayerRemoteKeyAction(
     // overlay, HUD, Up Next) is on screen. When one is, Left/Right must fall
     // through so Compose focus navigation keeps moving the selection.
     dpadHorizontalSeek: Boolean = true,
+    // True once the transport overlay owns focus, which makes Down the
+    // overlay's own business rather than the root handler's — see the Down
+    // branch below.
+    overlayOwnsFocus: Boolean = false,
 ): TvPlayerRemoteKeyAction? = when (keyCode) {
     KeyEvent.KEYCODE_MEDIA_PLAY,
     KeyEvent.KEYCODE_MEDIA_PAUSE,
@@ -35,13 +39,21 @@ internal fun tvPlayerRemoteKeyAction(
     KeyEvent.KEYCODE_DPAD_DOWN ->
         when {
             action != KeyEvent.ACTION_DOWN -> null
-            // Down is a two-step reveal: from clean playback it brings up the
-            // transport row (skip back / play-pause / skip forward / subtitles),
-            // which is what Down is for on a video screen. Pressing Down again
-            // with the overlay up escalates to the full HUD. Menu/Settings still
-            // jumps straight to the HUD.
-            dpadHorizontalSeek -> TvPlayerRemoteKeyAction.FocusTransport
-            else -> TvPlayerRemoteKeyAction.OpenHud
+            // Once the overlay is up it owns Down, so the root handler must let
+            // it through: the scrubber hands focus down to the transport row
+            // (silo-apple TVPlayerScrubber .down -> onMoveToTransport), and the
+            // transport row has nothing below it (TVPlayerTransportCluster
+            // answers .up only, `default: break`). Mapping Down to the HUD here
+            // consumed the event in the root preview handler, which sits above
+            // the scrubber in the tree, and left that hand-off dead.
+            //
+            // The HUD keeps its two tvOS entry points: the Tune button in the
+            // transport row, and Menu/Settings below.
+            overlayOwnsFocus -> null
+            // From clean playback Down reveals the transport row — skip back /
+            // play-pause / skip forward / subtitles / options / close — which is
+            // what Down is for on a video screen.
+            else -> TvPlayerRemoteKeyAction.FocusTransport
         }
 
     KeyEvent.KEYCODE_DPAD_LEFT ->
@@ -68,6 +80,7 @@ internal fun tvPlayerRemoteKeyAction(
 // The idle overlay is a focus-owning surface: the scrubber handles its own
 // Left/Right skips when focused, and the transport cluster needs Left/Right
 // for moving between buttons — so horizontal seek mapping stays off here.
+// Down is likewise the overlay's own (scrubber -> transport hand-off).
 internal fun tvPlayerIdleOverlayRemoteKeyAction(
     keyCode: Int,
     action: Int,
@@ -78,4 +91,5 @@ internal fun tvPlayerIdleOverlayRemoteKeyAction(
         action = action,
         repeatCount = repeatCount,
         dpadHorizontalSeek = false,
+        overlayOwnsFocus = true,
     )

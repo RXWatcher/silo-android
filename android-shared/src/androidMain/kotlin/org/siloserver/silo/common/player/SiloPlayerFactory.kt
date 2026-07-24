@@ -234,9 +234,18 @@ class SiloPlayerFactory(
                 }
             }
         }
+        // libass renders from its own track, which ass-media populates straight
+        // from the ASS payload's own timestamps — OffsetSubtitleParserFactory
+        // never sees those cues, so the renderer clock is the only place the
+        // sidecar source-timeline delta can be applied. Use the combined offset
+        // so a server-reanchored stream shifts ASS the same way it shifts the
+        // Media3 cues built by sidecarSubtitleParserFactory. With the user-only
+        // offset, resuming into a transcode showed dialogue from near the start
+        // of the file under the current scene, then nothing — while SRT on the
+        // same stream was perfect.
         val renderersFactory = libassBridge.wrapRenderers(
             media3RenderersFactory,
-            subtitleOffsetHolder::getUserOffsetUs,
+            subtitleOffsetHolder::getOffsetUs,
         )
 
         val trackSelector = DefaultTrackSelector(context).apply {

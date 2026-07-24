@@ -236,9 +236,15 @@ class SiloPlayerFactory(
                 }
             }
         }
+        // libass renders from its own track, which ass-media populates straight
+        // from the ASS payload's own timestamps — OffsetSubtitleParserFactory
+        // never sees those cues, so the renderer clock is the only place the
+        // sidecar source-timeline delta can be applied. Use the combined offset
+        // so a server-reanchored stream shifts ASS the same way it shifts the
+        // Media3 cues built by sidecarSubtitleParserFactory.
         val renderersFactory = libassBridge.wrapRenderers(
             media3RenderersFactory,
-            subtitleOffsetHolder::getUserOffsetUs,
+            subtitleOffsetHolder::getOffsetUs,
         )
 
         val trackSelector = DefaultTrackSelector(context).apply {

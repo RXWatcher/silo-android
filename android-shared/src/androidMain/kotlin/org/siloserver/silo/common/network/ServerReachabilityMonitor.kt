@@ -5,7 +5,9 @@ import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.network.api.HealthApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,6 +75,8 @@ class ServerReachabilityMonitor(
 
     private suspend fun probeNow(): ServerReachabilityState = probeLock.withLock {
         val wasUnreachable = _state.value.status == ServerReachabilityStatus.Unreachable
+        // checkHealth rethrows CancellationException, so a probe torn down by
+        // backgrounding unwinds here instead of being recorded as an outage.
         val result = healthApi.checkHealth()
         val next = when (result) {
             is ApiResult.Success -> ServerReachabilityState(
@@ -89,6 +93,12 @@ class ServerReachabilityMonitor(
                 lastCheckedAtMs = nowMs(),
                 message = result.exception.message ?: "Server is offline",
             )
+        }
+        if (next.status == ServerReachabilityStatus.Unreachable) {
+            // Cancelling an in-flight request can also surface as a plain socket
+            // exception rather than CancellationException; refuse to latch the
+            // server offline once this probe is no longer wanted.
+            currentCoroutineContext().ensureActive()
         }
         _state.value = next
         if (wasUnreachable && next.status == ServerReachabilityStatus.Reachable) {

@@ -35,12 +35,13 @@ internal fun tvPlayerRemoteKeyAction(
     KeyEvent.KEYCODE_DPAD_DOWN ->
         when {
             action != KeyEvent.ACTION_DOWN -> null
-            // tvOS parity (QA 2026-07-08): while playing with nothing on
-            // screen, D-pad-down opens the hover menu (HUD). When a
-            // focus-owning surface is up (dpadHorizontalSeek == false), Down
-            // keeps moving focus into the transport instead.
-            dpadHorizontalSeek -> TvPlayerRemoteKeyAction.OpenHud
-            else -> TvPlayerRemoteKeyAction.FocusTransport
+            // Down is a two-step reveal: from clean playback it brings up the
+            // transport row (skip back / play-pause / skip forward / subtitles),
+            // which is what Down is for on a video screen. Pressing Down again
+            // with the overlay up escalates to the full HUD. Menu/Settings still
+            // jumps straight to the HUD.
+            dpadHorizontalSeek -> TvPlayerRemoteKeyAction.FocusTransport
+            else -> TvPlayerRemoteKeyAction.OpenHud
         }
 
     KeyEvent.KEYCODE_DPAD_LEFT ->

@@ -523,15 +523,19 @@ class DownloadsViewModel(
             if (status == DownloadStatus.Queued || status == DownloadStatus.Downloading) {
                 downloadEnqueuer.cancel(id)
             }
+            // Drop the in-memory sidecar maps BEFORE the tombstone: enqueueDurableDelete
+            // emits on repository.records and the collector rebuilds sections from
+            // metadataByRecordId — if the entry were still present the deleted row would
+            // survive that emission, and no later emission is guaranteed.
+            metadataByRecordId = metadataByRecordId - id
+            if (fileId != null) scopeByFileId = scopeByFileId - fileId
             repository.enqueueDurableDelete(serverId, profileId, id, fileId)
             if (fileId != null) {
                 withContext(Dispatchers.IO) {
                     storage.delete(serverId, profileId, fileId)
                 }
                 metadataStore.deleteSidecar(serverId, profileId, fileId)
-                scopeByFileId = scopeByFileId - fileId
             }
-            metadataByRecordId = metadataByRecordId - id
 
             // Best-effort server reconcile now. Offline → NetworkError: the durable
             // tombstone replays the DELETE on the next online refresh, so the local
@@ -549,10 +553,17 @@ class DownloadsViewModel(
             }
         }
         val (serverId, profileId) = activeDownloadScope()
-        val bytesUsed = withContext(Dispatchers.IO) { storage.totalBytesUsed(serverId, profileId) }
+        // repository.delete() filters an already-filtered list, so the records
+        // StateFlow conflates it and the collector never re-emits — rebuild the tree
+        // here or the deleted rows stay on screen until the next refresh.
+        val (sections, bytesUsed) = withContext(Dispatchers.IO) {
+            buildSections(repository.records.value.associateBy { it.id }) to
+                storage.totalBytesUsed(serverId, profileId)
+        }
         _uiState.update {
             it.copy(
                 error = firstError,
+                sections = sections,
                 totalBytesUsed = bytesUsed,
             )
         }

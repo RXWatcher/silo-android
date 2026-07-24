@@ -74,8 +74,22 @@ open class SettingsApi(private val client: HttpClient) {
         }
     }
 
-    open suspend fun deleteDeviceSetting(key: String): ApiResult<Unit> = safeApiCall {
-        client.delete("/api/v1/settings/device/$key")
+    /**
+     * [profileId] pins the delete to the profile the override was recorded
+     * for. Queued/retried deletes can be sent long after the user switched
+     * profiles, and without the pin the server would resolve the request
+     * against whatever profile is active at send time — clearing the wrong
+     * profile's override.
+     */
+    open suspend fun deleteDeviceSetting(
+        key: String,
+        profileId: String? = null,
+    ): ApiResult<Unit> = safeApiCall {
+        client.delete("/api/v1/settings/device/$key") {
+            if (!profileId.isNullOrBlank()) {
+                header("X-Profile-Id", profileId)
+            }
+        }
     }
 
     open suspend fun getEffectiveSettings(keys: List<String>): ApiResult<EffectiveSettingsResponse> = safeApiCall {
@@ -99,6 +113,8 @@ open class SettingsApi(private val client: HttpClient) {
         profileId = profileId,
     )
 
-    open suspend fun deleteDeviceSubtitleAppearanceOverride(): ApiResult<Unit> =
-        deleteDeviceSetting(PlaybackSettingsKeys.SubtitleAppearance)
+    open suspend fun deleteDeviceSubtitleAppearanceOverride(
+        profileId: String? = null,
+    ): ApiResult<Unit> =
+        deleteDeviceSetting(PlaybackSettingsKeys.SubtitleAppearance, profileId = profileId)
 }

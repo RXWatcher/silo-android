@@ -419,7 +419,10 @@ private class FakeSettingsApi(
     override suspend fun setDeviceSetting(key: String, value: String, profileId: String?) =
         ApiResult.Success(Unit)
 
-    override suspend fun deleteDeviceSetting(key: String) = ApiResult.Success(Unit)
+    override suspend fun deleteDeviceSetting(
+        key: String,
+        profileId: String?,
+    ) = ApiResult.Success(Unit)
 
     override suspend fun getEffectiveSubtitleAppearance(): ApiResult<EffectiveSubtitleAppearance> =
         ApiResult.Success(

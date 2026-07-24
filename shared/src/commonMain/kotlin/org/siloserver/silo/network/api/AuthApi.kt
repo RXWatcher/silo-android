@@ -7,6 +7,7 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import org.siloserver.silo.model.auth.*
 import org.siloserver.silo.network.ApiErrorBody
+import kotlinx.coroutines.ensureActive
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.network.skipSiloAuth
 
@@ -108,6 +109,19 @@ internal suspend fun safeStatusCall(
                 ApiResult.Error(response.status.value, error.error, error.message)
             }
         }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        // Only OUR cancellation may propagate. Folding a cancelled caller into
+        // NetworkError makes its loop resume as though the server had merely
+        // hiccuped — which is how a cancelled outage-recovery probe publishes a
+        // terminal Failed state over a session that is playing fine, and how a
+        // backgrounded reachability probe reports the server down.
+        //
+        // A CancellationException raised *downstream* while this coroutine is
+        // still active (a transport aborting a request, a locally cancelled
+        // stop) is an ordinary request failure and callers rely on handling it
+        // as one, so it must not be rethrown.
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        ApiResult.NetworkError(e)
     } catch (e: Exception) {
         ApiResult.NetworkError(e)
     }
@@ -141,6 +155,19 @@ internal suspend inline fun <reified T> safeApiCall(
             }
             ApiResult.Error(response.status.value, error.error, error.message)
         }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        // Only OUR cancellation may propagate. Folding a cancelled caller into
+        // NetworkError makes its loop resume as though the server had merely
+        // hiccuped — which is how a cancelled outage-recovery probe publishes a
+        // terminal Failed state over a session that is playing fine, and how a
+        // backgrounded reachability probe reports the server down.
+        //
+        // A CancellationException raised *downstream* while this coroutine is
+        // still active (a transport aborting a request, a locally cancelled
+        // stop) is an ordinary request failure and callers rely on handling it
+        // as one, so it must not be rethrown.
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        ApiResult.NetworkError(e)
     } catch (e: Exception) {
         ApiResult.NetworkError(e)
     }

@@ -189,11 +189,26 @@ class AudiobookPlayerViewModel(
      *  suppressed until the newly-loaded stream settles near this value. */
     private var pendingTrackLoadLocalStart: Double? = null
 
+    /** Offsets for mapping a DOWNLOADED part's PART-LOCAL position back into
+     *  whole-book space, so offline listening still persists a whole-book
+     *  resume point. */
+    private data class OfflinePartMapping(
+        val startOffsetSeconds: Double,
+        val partDurationSeconds: Double,
+        val wholeBookSeconds: Double,
+    )
+
     /** Set when the loaded stream is ONE PART of a multi-part book played
-     *  offline: playback then runs entirely in PART-LOCAL space (no engine to
-     *  cross parts), so the durable whole-book sink must be skipped — writing a
-     *  part-local position against the book's total would corrupt resume /
-     *  Continue Listening everywhere. */
+     *  offline AND the whole-book timeline is known: playback then runs entirely
+     *  in PART-LOCAL space (no engine to cross parts), so every durable
+     *  whole-book write must be mapped back through this part's offset. */
+    private var offlinePartMapping: OfflinePartMapping? = null
+
+    /** Set when the loaded stream is ONE PART of a multi-part book played
+     *  offline and the whole-book timeline is NOT known (no cached detail): the
+     *  part-local position cannot be mapped, so the durable whole-book sink must
+     *  be skipped — writing a part-local position against the book's total would
+     *  corrupt resume / Continue Listening everywhere. */
     private var suppressWholeBookPersistence = false
 
     init {
@@ -350,7 +365,13 @@ class AudiobookPlayerViewModel(
                             // when the global position falls within it, otherwise
                             // start at 0 — a global position must never be seeded
                             // as a stream seek into a single part's file.
-                            suppressWholeBookPersistence = true
+                            // The reverse mapping keeps durable resume working:
+                            // part-local time is written back as whole-book time.
+                            offlinePartMapping = OfflinePartMapping(
+                                startOffsetSeconds = offlinePart.startOffsetSeconds,
+                                partDurationSeconds = offlinePart.durationSeconds,
+                                wholeBookSeconds = builtTimeline.totalSeconds,
+                            )
                             val globalResume = requestStartPosition ?: 0.0
                             val localResume =
                                 if (builtTimeline.trackIndexAt(globalResume) == offlinePart.index) {
@@ -767,7 +788,11 @@ class AudiobookPlayerViewModel(
         // (unless the user explicitly chose to play from the beginning).
         val resume = if (!startFromBeginning) loadResumePositionSnapshot() else null
         if (cachedTimeline != null && offlinePart != null) {
-            suppressWholeBookPersistence = true
+            offlinePartMapping = OfflinePartMapping(
+                startOffsetSeconds = offlinePart.startOffsetSeconds,
+                partDurationSeconds = offlinePart.durationSeconds,
+                wholeBookSeconds = cachedTimeline.totalSeconds,
+            )
             val globalResume = resume ?: 0.0
             val localResume =
                 if (cachedTimeline.trackIndexAt(globalResume) == offlinePart.index) {
@@ -1103,26 +1128,53 @@ class AudiobookPlayerViewModel(
         val state = _uiState.value
         if (state.durationSeconds <= 0) return  // metadata not loaded yet
         viewModelScope.launch {
-            if (state.positionSeconds > 0 && !suppressWholeBookPersistence) {
-                // SINK 2 — whole-book durable resume. Records the WHOLE-BOOK
-                // (global) position against the WHOLE-BOOK total via a durable
-                // local projection + a content-level outbox op drained through
-                // syncProgress (furthest-position-wins). This is what powers
-                // resume + Continue Listening, and is what the multi-part fix
-                // protects: positionSeconds is now global, so a part-local
-                // position is never persisted here as the book's position
-                // (offline single-part playback runs part-local and skips this
-                // sink entirely via suppressWholeBookPersistence).
-                // fileId is the currently-playing part.
-                userItemStatePort.recordPosition(
-                    contentId = contentId,
-                    fileId = state.selectedFileId ?: requestedFileId ?: 0,
-                    positionSeconds = state.positionSeconds,
-                    durationSeconds = state.durationSeconds,
-                )
-            }
+            persistWholeBookPosition(state)
             reportSessionProgress(state)
         }
+    }
+
+    /**
+     * SINK 2 — whole-book durable resume. Records the WHOLE-BOOK (global)
+     * position against the WHOLE-BOOK total via a durable local projection + a
+     * content-level outbox op drained through syncProgress (furthest-position-
+     * wins). This is what powers resume + Continue Listening.
+     *
+     * Online (and single-file) playback already tracks whole-book time. A
+     * DOWNLOADED part of a multi-part book runs entirely in PART-LOCAL space, so
+     * its position is mapped back through the part's start offset here — without
+     * that mapping downloaded multi-part books persisted nothing at all and
+     * always restarted from the beginning. fileId is the currently-playing part.
+     */
+    private suspend fun persistWholeBookPosition(state: AudiobookPlayerUiState) {
+        val (position, duration) = wholeBookProgress(state) ?: return
+        if (position <= 0.0) return
+        userItemStatePort.recordPosition(
+            contentId = contentId,
+            fileId = state.selectedFileId ?: requestedFileId ?: 0,
+            positionSeconds = position,
+            durationSeconds = duration,
+        )
+    }
+
+    /**
+     * The whole-book (position, total) pair to persist for [state], or null when
+     * the whole-book position is unknown and must therefore not be written at
+     * all (offline part of a book we have no timeline for).
+     */
+    private fun wholeBookProgress(state: AudiobookPlayerUiState): Pair<Double, Double>? {
+        val mapping = offlinePartMapping
+        if (mapping != null) {
+            val local = state.positionSeconds
+                .coerceIn(0.0, mapping.partDurationSeconds.coerceAtLeast(0.0))
+            // Guard on the PART-LOCAL time: a part with a non-zero start offset
+            // would otherwise record "start of part N" for a book that was
+            // opened but never played, and furthest-wins would jump the user's
+            // Continue Listening forward.
+            if (local <= 0.0) return null
+            return (mapping.startOffsetSeconds + local) to mapping.wholeBookSeconds
+        }
+        if (suppressWholeBookPersistence) return null
+        return state.positionSeconds to state.durationSeconds
     }
 
     /** Resume-on-open. Returns the furthest of the on-device local snapshot
@@ -1178,39 +1230,34 @@ class AudiobookPlayerViewModel(
                 isPaused = true,
             )
         }
-        if (sessionId == null) return
-        if (stoppingSessionId == sessionId) return
-        stoppingSessionId = sessionId
+        // Downloaded playback has no server session, but the final whole-book
+        // write below still has to happen — hence no early return on a null
+        // sessionId, only on a stop already in flight for the same session.
+        if (sessionId != null && stoppingSessionId == sessionId) return
+        if (sessionId != null) stoppingSessionId = sessionId
         // Capture the part-local session position now, before state is cleared.
         val sessionLocal = sessionLocalPosition(state)
         viewModelScope.launch {
             try {
                 withContext(NonCancellable + Dispatchers.IO) {
-                    if (state.positionSeconds > 0 && !suppressWholeBookPersistence) {
-                        // SINK 2: whole-book global position + whole-book total.
-                        // Skipped on offline part-local playback, where
-                        // positionSeconds is a PART position that must never be
-                        // written against the book.
-                        userItemStatePort.recordPosition(
-                            contentId = contentId,
-                            fileId = state.selectedFileId ?: requestedFileId ?: 0,
-                            positionSeconds = state.positionSeconds,
-                            durationSeconds = state.durationSeconds,
+                    // SINK 2: whole-book global position + whole-book total
+                    // (mapped from part-local time on the downloaded path).
+                    persistWholeBookPosition(state)
+                    // SINK 1: part-local position to the retiring session.
+                    if (sessionId != null) {
+                        reportAndStopSession(
+                            sessionId = sessionId,
+                            positionSeconds = sessionLocal,
+                            isPaused = true,
                         )
                     }
-                    // SINK 1: part-local position to the retiring session.
-                    reportAndStopSession(
-                        sessionId = sessionId,
-                        positionSeconds = sessionLocal,
-                        isPaused = true,
-                    )
                     // Inside NonCancellable so a teardown-cancelled viewModelScope
                     // can't skip the prompt drain (covers downloaded/offline-while-
                     // online where no connectivity change triggers it).
                     outboxSyncScheduler.requestSync()
                 }
             } finally {
-                if (stoppingSessionId == sessionId) {
+                if (sessionId != null && stoppingSessionId == sessionId) {
                     stoppingSessionId = null
                 }
             }

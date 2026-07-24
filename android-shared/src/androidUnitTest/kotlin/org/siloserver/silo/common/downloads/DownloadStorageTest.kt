@@ -267,8 +267,12 @@ class DownloadStorageTest {
 
     @Test
     fun `media store relative path includes the file id directory`() {
+        // Singular "Download" — MediaStore's collection root, per
+        // Environment.DIRECTORY_DOWNLOADS. This assertion previously encoded the
+        // plural spelling, which MediaProvider rejects outright, so ebook
+        // downloads failed permanently on API 29+ while the test stayed green.
         assertEquals(
-            "Downloads/Silo/srv1/profA/42/",
+            "Download/Silo/srv1/profA/42/",
             mediaStoreRelativePath(PublicDownloadCollection.Downloads, "srv1", "profA", 42),
         )
     }

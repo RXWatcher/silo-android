@@ -145,9 +145,20 @@ class TvSiloCastReceiver(
     fun stop() {
         DiagnosticsCastLogger.event("TV cast receiver stopped")
         advertiser.stop()
-        val identityGeneration = identityManager.activeIdentity?.generationId
+        // Only reclaim the temporary identity when nothing is still using it:
+        // backgrounding the activity stops the receiver while a phone-launched
+        // player keeps streaming on that identity, and ending it here would
+        // revoke the credentials out from under live playback. The player's
+        // unregister Closeable schedules the end instead — scheduleIdentityEnd
+        // runs on identityCleanupScope, so it survives the cancel below.
+        val identityGeneration = identityManager.activeIdentity
+            ?.takeIf { activePlayer == null }
+            ?.generationId
         pendingPlayerIdentityGeneration = null
-        identityEndJob = null
+        // identityEndJob is deliberately NOT cleared here: it outlives this
+        // scope now, and dropping the handle would orphan a job that a later
+        // registerPlayer/handoff could no longer cancel.
+
         // Close the session directly (not via closePreviousController, which
         // launches the goodbye on `scope` — the scope we cancel a line later,
         // which would kill the goodbye before it writes). A direct close()
@@ -572,8 +583,11 @@ class TvSiloCastReceiver(
         delayMs: Long = IDENTITY_END_GRACE_MS,
     ) {
         identityEndJob?.cancel()
-        val owner = scope ?: return
-        identityEndJob = owner.launch {
+        // Owned by identityCleanupScope, not the receiver scope: the player
+        // holding this identity can outlive stop() (which cancels the receiver
+        // scope), and the temporary identity would then leak server-side
+        // because nothing would be left to run the end.
+        identityEndJob = identityCleanupScope.launch {
             delay(delayMs)
             if (identityManager.activeIdentity?.generationId != generationId) return@launch
             identityManager.end()

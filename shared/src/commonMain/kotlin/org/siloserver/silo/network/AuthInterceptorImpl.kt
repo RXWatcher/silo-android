@@ -6,6 +6,8 @@ import io.ktor.client.plugins.api.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.http.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.siloserver.silo.model.auth.RefreshRequest
@@ -45,6 +47,14 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
     val diagnosticsObserver = pluginConfig.diagnosticsObserver
 
     val refreshMutex = Mutex()
+
+    // Temporary credential generations (remote-playback overlays) whose refresh
+    // the server has definitively rejected. Such an overlay is deliberately left
+    // INSTALLED — clearing it would make every later token read fall through to
+    // the saved owner's account, so the guest session would silently continue as
+    // the owner. Flagging the generation here is what stops the plugin from
+    // refreshing dead credentials again on every subsequent 401.
+    val deadCredentialGenerations = MutableStateFlow<Set<String>>(emptySet())
 
     onRequest { request, _ ->
         val skipAuth = request.attributes.getOrNull(SkipSiloAuthAttributeKey) == true
@@ -144,6 +154,12 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             if (originalCall.response.status != HttpStatusCode.Unauthorized) {
                 return@on originalCall
             }
+            val pinnedGeneration = pinnedScope.credentialGenerationId
+            if (pinnedGeneration != null && pinnedGeneration in deadCredentialGenerations.value) {
+                // Already-rejected temporary credentials: surface the 401 instead of
+                // re-refreshing them for every pinned op (progress ticks, teardown).
+                return@on originalCall
+            }
             diagnosticsObserver.safeAuthRefresh("required")
             val refreshed = refreshMutex.withLock {
                 // Another path may have refreshed this scope while we waited.
@@ -179,6 +195,11 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                         after != null && after != sentAuth
                     } else {
                         diagnosticsObserver.safeAuthRefresh("failed")
+                        if (pinnedGeneration != null &&
+                            refreshResponse.status.shouldInvalidateSessionAfterRefreshFailure()
+                        ) {
+                            deadCredentialGenerations.update { it + pinnedGeneration }
+                        }
                         // Don't invalidate the active session for a background scope.
                         // Re-check in case a concurrent path refreshed it in flight.
                         val after = tokenManager.getAccessTokenForScope(pinnedScope)?.let { "Bearer $it" }
@@ -219,6 +240,18 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
             return@on originalCall
         }
 
+        // Identity of the temporary overlay (remote playback) this request ran
+        // under, if any. Null means the request ran on a saved account.
+        val temporaryGeneration = tokenManager.temporaryGenerationId()
+        if (temporaryGeneration != null &&
+            temporaryGeneration in deadCredentialGenerations.value
+        ) {
+            // The server already rejected these credentials. Refreshing again would
+            // storm it once per request for the rest of the handoff; the overlay stays
+            // installed so the guest cannot fall back onto the owner's account.
+            return@on originalCall
+        }
+
         // Capture the server id as well so we can detect a mid-refresh server
         // switch — without this, a 401-refresh kicked off against server A
         // could land after the user has switched to server B and write A's
@@ -245,6 +278,15 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                 // Another coroutine already refreshed while we were waiting —
                 // just retry the original request with the new token.
                 return@withLock true
+            }
+
+            if (temporaryGeneration != null &&
+                temporaryGeneration in deadCredentialGenerations.value
+            ) {
+                // A 401 that won the race already proved these temporary credentials
+                // are dead; the token is unchanged, so without this every waiter would
+                // repeat the same doomed refresh.
+                return@withLock false
             }
 
             val refreshToken = tokenManager.getRefreshToken()
@@ -299,13 +341,32 @@ val SiloAuthPlugin = createClientPlugin("SiloAuthPlugin", ::SiloAuthConfig) {
                     // Gateway/proxy/server failures should keep the session so
                     // a temporary outage does not sign the user out.
                     if (refreshResponse.status.shouldInvalidateSessionAfterRefreshFailure()) {
-                        // The [TokenManager.sessionExpired] event emitted by
-                        // this call is what the root NavHost observer uses to
-                        // route the user back to the login screen; without it,
-                        // the UI would stay on Home and keep rendering
-                        // "Failed to load..." for every subsequent API call
-                        // that now has no credentials.
-                        tokenManager.invalidateSession()
+                        val generationNow = tokenManager.temporaryGenerationId()
+                        when {
+                            // The identity changed while the refresh was in flight
+                            // (overlay began or ended): the rejection belongs to a
+                            // credential set that is no longer installed, so it must
+                            // not tear down whatever is installed now.
+                            generationNow != temporaryGeneration -> Unit
+
+                            // Remote playback: the rejected credentials are a
+                            // temporary overlay. invalidateSession() would drop that
+                            // overlay, and every later read would fall through to the
+                            // saved OWNER's account — the guest would keep browsing
+                            // and writing history as the owner. Flag the generation
+                            // dead and leave the overlay installed instead; the cast
+                            // teardown path is what removes it.
+                            temporaryGeneration != null ->
+                                deadCredentialGenerations.update { it + temporaryGeneration }
+
+                            // The [TokenManager.sessionExpired] event emitted by
+                            // this call is what the root NavHost observer uses to
+                            // route the user back to the login screen; without it,
+                            // the UI would stay on Home and keep rendering
+                            // "Failed to load..." for every subsequent API call
+                            // that now has no credentials.
+                            else -> tokenManager.invalidateSession()
+                        }
                     }
                     false
                 }
@@ -360,6 +421,14 @@ private fun HttpRequestBuilder.applyProfileHeaders(
         }
     }
 }
+
+/**
+ * Generation id of the temporary credential overlay currently installed (remote
+ * playback), or null when the active identity is a saved account. Managers that
+ * don't model overlays report null, which keeps the saved-account behaviour.
+ */
+private suspend fun TokenManager.temporaryGenerationId(): String? =
+    snapshotCurrentScope()?.credentialGenerationId
 
 private fun HttpStatusCode.shouldInvalidateSessionAfterRefreshFailure(): Boolean =
     this == HttpStatusCode.BadRequest ||

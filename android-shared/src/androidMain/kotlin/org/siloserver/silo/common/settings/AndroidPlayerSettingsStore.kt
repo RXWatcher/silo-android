@@ -342,12 +342,25 @@ class AndroidPlayerSettingsStore(
     // ---- Server-sync surface ------------------------------------------
 
     override suspend fun refreshFromServer() {
-        val repo = settingsRepository ?: return
+        tryRefreshFromServer()
+    }
+
+    /**
+     * [refreshFromServer] with the outcome surfaced. Returns false when no
+     * profile is active, settings sync is unwired, or the server fetch
+     * failed — in every one of those cases the local values are unchanged,
+     * so a caller can tell the user instead of showing a silent no-op.
+     */
+    suspend fun tryRefreshFromServer(): Boolean {
+        val repo = settingsRepository ?: return false
+        var applied = false
         withScope { scope, store ->
             val result = repo.getEffectiveSettings(PlaybackSettingsKeys.DeviceSettings)
             if (result !is ApiResult.Success) return@withScope
             applyEffectiveLocally(scope, store, result.data)
+            applied = true
         }
+        return applied
     }
 
     override suspend fun setSubtitleDeviceOverrideEnabled(enabled: Boolean) {
@@ -395,6 +408,17 @@ class AndroidPlayerSettingsStore(
     }
 
     override suspend fun resetAllDeviceSettings() {
+        tryResetAllDeviceSettings()
+    }
+
+    /**
+     * [resetAllDeviceSettings] with the outcome surfaced. Returns false when
+     * the follow-up refresh did not land: the deletes were sent but the local
+     * values still show the old overrides, which to the user looks like the
+     * reset did nothing.
+     */
+    suspend fun tryResetAllDeviceSettings(): Boolean {
+        var refreshed = false
         withScope { scope, store ->
             for (key in PlaybackSettingsKeys.DeviceSettings) {
                 serverSettingsFlusher.enqueueDelete(scope.profileId, key)
@@ -403,8 +427,9 @@ class AndroidPlayerSettingsStore(
                 it[booleanPreferencesKey(scope.keyPrefix + PlaybackSettingsKeys.SubtitleUsesDeviceOverride)] = false
             }
             serverSettingsFlusher.flushNow()
-            refreshFromServer()
+            refreshed = tryRefreshFromServer()
         }
+        return refreshed
     }
 
     override suspend fun flushPendingDeviceSettings() {

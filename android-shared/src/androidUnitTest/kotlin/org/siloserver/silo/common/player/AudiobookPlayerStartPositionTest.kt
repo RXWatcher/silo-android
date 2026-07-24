@@ -38,6 +38,34 @@ class AudiobookPlayerStartPositionTest {
     }
 
     @Test
+    fun downloadedMultiPartPersistsPositionInWholeBookSpace() {
+        assertTrue(
+            source.contains("offlinePartMapping = OfflinePartMapping("),
+            "downloaded part must capture the offsets that map it back to whole-book time",
+        )
+
+        val mappingBody = source
+            .substringAfter("private fun wholeBookProgress(")
+            .substringBefore("fun consumeResumePosition")
+        assertTrue(
+            mappingBody.contains("mapping.startOffsetSeconds + local"),
+            "downloaded part-local position must be mapped into whole-book space",
+        )
+
+        val stopBody = source
+            .substringAfter("fun stopPlaybackSession()")
+            .substringBefore("private suspend fun reportSessionProgress")
+        assertTrue(
+            stopBody.contains("persistWholeBookPosition(state)"),
+            "stop must persist the whole-book position even with no server session",
+        )
+        assertFalse(
+            stopBody.contains("if (sessionId == null) return"),
+            "a downloaded book has no session id, so stop must not bail out before persisting",
+        )
+    }
+
+    @Test
     fun stopPlaybackSessionClearsPlayableStateEvenWithoutRemoteSession() {
         val stopBody = source
             .substringAfter("fun stopPlaybackSession()")

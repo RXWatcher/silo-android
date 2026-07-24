@@ -91,13 +91,17 @@ class CrashMarkerRenderer {
             .toList()
         val redactionOverflow = prioritizedRedactionValues.size > MAX_EXACT_REDACTION_VALUES
         val exactRedactionValues = prioritizedRedactionValues.take(MAX_EXACT_REDACTION_VALUES)
-        val logs = runtime.logBuffer?.snapshot(runtime.logGeneration)
-            ?: LogSnapshot(
-                lines = runtime.logLines,
-                droppedCount = runtime.logDroppedCount,
-                tornCount = runtime.logTornCount,
-                generation = runtime.logGeneration,
-            )
+        // The ring's generation is an identity gate, not a freshness gate. A rotation after the
+        // last publish moves the live contents out of this marker's reach, but the lines captured
+        // at publish time are still ours - emit those rather than shipping a crash with no logs.
+        val logs = runtime.logBuffer?.let { ring ->
+            ring.snapshot(runtime.logGeneration).takeIf { it.generation == runtime.logGeneration }
+        } ?: LogSnapshot(
+            lines = runtime.logLines,
+            droppedCount = runtime.logDroppedCount,
+            tornCount = runtime.logTornCount,
+            generation = runtime.logGeneration,
+        )
         val marker = JvmCrashMarkerRecord(
             occurredAtEpochMs = occurredAtEpochMs.coerceAtLeast(0),
             threadName = if (redactionOverflow) {

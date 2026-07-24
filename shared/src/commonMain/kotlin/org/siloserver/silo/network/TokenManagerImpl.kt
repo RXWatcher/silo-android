@@ -179,6 +179,26 @@ class TokenManagerImpl(
 
     override suspend fun hasTemporaryScope(): Boolean = mutex.withLock { temporaryScope != null }
 
+    /**
+     * Only the temporary overlay has an identity this single-server manager can
+     * pin — the saved account has no server id here, so that case stays
+     * unsupported (null) exactly as the interface default was. Reporting the
+     * overlay's generation is what lets [SiloAuthPlugin] tell a rejected remote
+     * playback identity apart from a rejected saved session.
+     */
+    override suspend fun snapshotCurrentScope(): AuthScopeSnapshot? = mutex.withLock {
+        temporaryScope?.let { scope ->
+            AuthScopeSnapshot(
+                serverId = scope.serverId,
+                profileId = scope.profileId,
+                serverUrl = scope.serverUrl,
+                profileToken = scope.profileToken,
+                credentialGenerationId = scope.generationId,
+                identityGeneration = identityTransitions.generation.value,
+            )
+        }
+    }
+
     private fun clearTokensLocked() {
         if (temporaryScope != null) {
             temporaryScope = null

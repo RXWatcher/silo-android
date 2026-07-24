@@ -84,9 +84,11 @@ class FileDiagnosticsCaptureController(
                 logBytes = frozen.files.readBoundedLogBytes(),
                 droppedLines = frozen.droppedCount,
                 debugLogging = true,
-            )
+            ).also {
+                // Only discard the frozen evidence once it is safely persisted as a pending report.
+                frozen.files.firstOrNull()?.parentFile?.deleteRecursively()
+            }
         } finally {
-            frozen.files.firstOrNull()?.parentFile?.deleteRecursively()
             logBuffer.rotateGeneration()
         }
     }
@@ -173,7 +175,7 @@ class FileDiagnosticsCaptureController(
         logBytes: ByteArray?,
         droppedLines: Long,
         debugLogging: Boolean,
-    ): PendingReport? = runCatching {
+    ): PendingReport {
         val snapshot = deviceSnapshots.capture(DiagnosticsDeviceProvenance.PRE_FAILURE)
         deviceSnapshotCache.update(snapshot)
         val artifacts = linkedMapOf(
@@ -221,8 +223,10 @@ class FileDiagnosticsCaptureController(
                 captureSessionId,
             ).joinToString("\u0000").encodeToByteArray(),
         )
-        reports.save(PendingReportCapture(binding, manifest, artifacts, fingerprint, capturedAtEpochMs))
-    }.getOrNull()
+        return reports.save(
+            PendingReportCapture(binding, manifest, artifacts, fingerprint, capturedAtEpochMs),
+        )
+    }
 
     private class FanOutDiagnosticsLogSink(
         private vararg val sinks: DiagnosticsLogSink,

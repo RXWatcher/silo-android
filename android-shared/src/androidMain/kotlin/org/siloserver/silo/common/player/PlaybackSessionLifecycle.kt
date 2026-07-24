@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -241,7 +243,40 @@ class PlaybackSessionLifecycle(
      * snapshot to PersonalData so position survives a server-side reset, and
      * stops the active session.
      */
-    suspend fun stop() {
+    /**
+     * True while [sessionId] is still the session this lifecycle presents.
+     *
+     * A recovery that resumes after cancellation, or after a different session
+     * has been adopted, would otherwise republish stale state — a pre-outage
+     * Active over a newer session, or a terminal Failed over content that is
+     * playing fine.
+     */
+    private fun ownsRecoveredSession(sessionId: String): Boolean =
+        when (val current = _state.value) {
+            is SessionState.Active -> current.session.sessionId == sessionId
+            else -> lastStartParams != null
+        }
+
+    /**
+     * Stops the session the caller believes is playing.
+     *
+     * This lifecycle is a process-scoped singleton and teardown is often
+     * deferred, so a dying screen's stop can land after the next screen has
+     * adopted its own session. Naming the session makes the stop a no-op once
+     * ownership has moved on.
+     */
+    suspend fun stop(expectedSessionId: String? = null) {
+        if (expectedSessionId != null) {
+            val activeSessionId = (_state.value as? SessionState.Active)?.session?.sessionId
+            if (activeSessionId != null && activeSessionId != expectedSessionId) {
+                DiagnosticsPlaybackLogger.sessionEvent("session stop skipped, ownership moved")
+                return
+            }
+        }
+        stopInternal()
+    }
+
+    private suspend fun stopInternal() {
         DiagnosticsPlaybackLogger.sessionEvent("session stop requested")
         val current = _state.value
         cancelRecoveryJobs()
@@ -384,6 +419,11 @@ class PlaybackSessionLifecycle(
         )
 
         val diagnosticsRecording = this.diagnosticsRecording
+        // Ownership token for this recovery run. The health probe cannot be
+        // aborted mid-flight, so the loop can resume after cancellation and
+        // after a different session has been adopted; every publication below
+        // is gated on this still being the session we set out to recover.
+        val recoveredSessionId = currentSession.sessionId
         outageJob = scope.launch {
             // Track elapsed via accumulating delay sums. We can't rely on
             // System.currentTimeMillis() here because tests run with a virtual
@@ -395,8 +435,16 @@ class PlaybackSessionLifecycle(
                 val step = delayMs.coerceAtMost(OUTAGE_TIMEOUT_MS - elapsed)
                 delay(step)
                 elapsed += step
-                if (!isActive || elapsed >= OUTAGE_TIMEOUT_MS) break
+                if (elapsed >= OUTAGE_TIMEOUT_MS) break
+                // Leave via return, not break: falling out of the loop reaches
+                // the terminal Failed publication below, which a cancelled
+                // recovery must never perform.
+                if (!isActive) return@launch
                 val probe = healthApi.checkHealth()
+                // A probe that completed after we were cancelled publishes
+                // nothing. safeApiCall now rethrows caller cancellation, but a
+                // transport-level abort still returns NetworkError.
+                currentCoroutineContext().ensureActive()
                 if (probe is ApiResult.Success) {
                     // Only a decoded health payload is authoritative. Reverse
                     // proxies/tunnels can still produce HTTP errors, or even
@@ -404,6 +452,7 @@ class PlaybackSessionLifecycle(
                     Log.i(TAG, "Health probe succeeded; resuming playback session")
                     DiagnosticsPlaybackLogger.sessionEvent("session reconnected")
                     diagnosticsRecording.record(currentSession.sessionId)
+                    if (!ownsRecoveredSession(recoveredSessionId)) return@launch
                     _state.value = SessionState.Active(currentSession)
                     _notice.value = null
                     return@launch
@@ -412,6 +461,8 @@ class PlaybackSessionLifecycle(
                 delayMs = (delayMs * 2).coerceAtMost(OUTAGE_MAX_DELAY_MS)
             }
             // Timed out before the server came back.
+            currentCoroutineContext().ensureActive()
+            if (!ownsRecoveredSession(recoveredSessionId)) return@launch
             Log.w(TAG, "Outage recovery exhausted for playback session")
             DiagnosticsPlaybackLogger.sessionEvent("session reconnect failed")
             _state.value = SessionState.Failed(OUTAGE_TIMEOUT_MESSAGE)

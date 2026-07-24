@@ -534,9 +534,14 @@ class PlaybackSessionManagerStagedReplanTest {
         )
         val stale = harness.manager.commitStagedVideoReplan(first)
 
+        harness.awaitStopped("s1")
+        harness.awaitStopped("s2")
         assertEquals(409, assertIs<ApiResult.Error>(stale).code)
         assertEquals("s3", harness.manager.activeSessionIdForTest())
-        assertEquals(listOf("s1", "s2"), harness.stoppedSessions)
+        assertEquals(
+            mapOf("s1" to 1, "s2" to 1),
+            harness.stoppedSessions.groupingBy { it }.eachCount(),
+        )
     }
 
     @Test
@@ -980,6 +985,7 @@ class PlaybackSessionManagerStagedReplanTest {
         assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
             harness.manager.commitStagedVideoReplan(replacement),
         )
+        harness.awaitStopped("s1")
 
         harness.manager.stopSession("s3")
 
@@ -1010,6 +1016,7 @@ class PlaybackSessionManagerStagedReplanTest {
         assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
             harness.manager.commitStagedVideoReplan(replacement),
         )
+        harness.awaitStopped("s1")
         val stagedFromS2 = harness.stageSidecar()
 
         harness.manager.stopSession("s1")
@@ -1020,6 +1027,7 @@ class PlaybackSessionManagerStagedReplanTest {
         assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
             harness.manager.commitStagedVideoReplan(stagedFromS2),
         )
+        harness.awaitStopped("s2")
         assertEquals("s3", harness.manager.activeSessionIdForTest())
         assertEquals(
             mapOf("s1" to 2, "s2" to 1),
@@ -1047,6 +1055,7 @@ class PlaybackSessionManagerStagedReplanTest {
         assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
             harness.manager.commitStagedVideoReplan(replacement),
         )
+        harness.awaitStopped("s1")
         val stagedFromS2 = harness.stageSidecar()
 
         harness.manager.stopSession("s1")
@@ -1100,6 +1109,8 @@ class PlaybackSessionManagerStagedReplanTest {
 
         assertIs<ApiResult.Success<VideoSessionStartV3>>(first.await())
         assertIs<ApiResult.Success<VideoSessionStartV3>>(second.await())
+        harness.awaitStopped("s1")
+        harness.awaitStopped("s2")
         assertEquals("s3", harness.manager.activeSessionIdForTest())
         assertEquals(
             mapOf("s1" to 1, "s2" to 1),

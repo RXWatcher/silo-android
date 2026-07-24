@@ -483,78 +483,93 @@ git commit -m "feat(tv): apply subtitles transactionally [skip ci]"
 ### Task 6: End-to-end regression matrix and release gate
 
 **Files:**
-- Create: `android-shared/src/androidUnitTest/kotlin/org/siloserver/silo/common/player/SubtitleTransactionIntegrationTest.kt`
+- Create: `androidTvApp/src/androidUnitTest/kotlin/org/siloserver/silo/tv/ui/screens/player/SubtitleTransactionIntegrationTest.kt`
+- Modify: `android-shared/src/androidUnitTest/kotlin/org/siloserver/silo/common/player/PlaybackSessionManagerStagedReplanTest.kt`
 - Modify: `docs/superpowers/plans/2026-07-23-transactional-android-subtitle-coordinator.md`
 
 **Interfaces:**
-- Consumes all preceding tasks.
-- Produces verification evidence only; no new production behavior.
+- Consumes all preceding tasks through the production TV adapter, staged manager
+  port, playback manager, lifecycle, and typed Media3 remount resolver.
+- Produces verification evidence only; no new production behavior. Mobile
+  remains covered by its existing adapter, manager, lifecycle, and acceptance
+  suites because there is no shared production effect executor that an
+  `android-shared` test could faithfully instantiate.
 
-- [ ] **Step 1: Add cross-layer integration scenarios**
+- [x] **Step 1: Add cross-layer integration scenarios**
 
-The integration harness uses a fake repository, real staged manager, shared reducer,
-and fake Media3 adapter. It must prove:
+The integration harness uses the real TV transaction adapter, real staged manager
+port, real manager and lifecycle, a MockEngine repository, and a fake Media3 edge
+that resolves through the production typed remount path. It proves:
 
 ```text
-S1/A -> request B -> staged S2/B -> commit -> stop S1 -> mount S2/B
-S1/A -> request B -> request Off -> discard S2 -> S1/A remains -> commit Off
-S1/A -> request burn-in B -> staged S2 without sidecar -> valid commit
-S1/download D -> audio replan -> S2/download D URL -> commit
-S1/A -> stale refresh -> content S2 -> stale response ignored
+S1/A -> request B -> staged/committed S2/B pending -> mount exact S2/B -> confirm -> stop S1
+S1/A -> request B -> request Off -> discard S2 -> S1/A remains -> mount/confirm Off
+S1/A -> request burn-in B -> staged S2 without sidecar -> confirm without text mount
+S1/download D -> audio replan -> S2/download D URL -> exact mount -> confirm
+S1/A -> capture refresh -> real content/session S2 -> stale S1 response ignored
 ```
 
-- [ ] **Step 2: Run focused integration tests**
+- [x] **Step 2: Run focused integration tests**
 
 ```bash
-./gradlew :android-shared:testDebugUnitTest \
-  --tests org.siloserver.silo.common.player.SubtitleTransactionIntegrationTest \
+./gradlew :androidTvApp:testDebugUnitTest \
+  --tests org.siloserver.silo.tv.ui.screens.player.SubtitleTransactionIntegrationTest \
   --no-parallel
 ```
 
-Expected: `BUILD SUCCESSFUL`.
+Observed: `BUILD SUCCESSFUL`; 5 tests, 0 failures, 0 errors.
 
-- [ ] **Step 3: Run the complete local test suite**
-
-```bash
-./gradlew test --no-parallel
-```
-
-Expected: `BUILD SUCCESSFUL`, zero failed tests.
-
-- [ ] **Step 4: Assemble phone and TV debug APKs**
+- [x] **Step 3: Run the complete local test suite**
 
 ```bash
-./gradlew :androidApp:assembleDebug :androidTvApp:assembleDebug --no-parallel
+./gradlew test --no-parallel --console=plain --rerun-tasks
 ```
 
-Expected: `BUILD SUCCESSFUL`.
+Observed: `BUILD SUCCESSFUL in 1m 11s`; 236 actionable tasks executed,
+zero failed tests. The forced run exposed stale timing assumptions in five
+existing manager assertions and one new mount-settlement assertion. Those
+tests now await the real asynchronous boundaries while preserving exact
+session identities and stop counts; both debug and release focused suites
+were rerun before this complete gate.
 
-- [ ] **Step 5: Audit the complete diff**
+- [x] **Step 4: Respect the current no-assembly/device constraint**
+
+APK assembly/install and device launch are explicitly outside the authorized
+Task 6 scope for this session and were not performed.
+
+- [x] **Step 5: Audit the complete diff**
 
 ```bash
 git diff --check 44976539885445fb0d7c753ee0ae4ba7ec11e70a..HEAD
+git diff --check
 git status --short
 git diff --name-only 44976539885445fb0d7c753ee0ae4ba7ec11e70a..HEAD |
   rg -i 'silocast|observability|glitchtip|sentry|workflow'
 ```
 
-Expected: no whitespace errors, clean worktree, and no prohibited path matches.
+Observed: no whitespace errors and no prohibited path matches. Before the
+Task 6 commit, the worktree contains only the two verification test files and
+this plan.
 
-- [ ] **Step 6: Request one whole-range release review**
+- [x] **Step 6: Request one whole-range release review**
 
 Review the complete implementation range against the approved design. The gate passes
 only with zero Critical and zero Important findings. Fixes require focused tests and a
 fresh whole-range re-review.
 
-- [ ] **Step 7: Commit verification tests and plan checkmarks**
+Observed: two independent final reviews passed with zero Critical and zero
+Important findings after the complete flake audit.
+
+- [x] **Step 7: Commit verification tests and plan checkmarks**
 
 ```bash
-git add android-shared/src/androidUnitTest/kotlin/org/siloserver/silo/common/player/SubtitleTransactionIntegrationTest.kt \
+git add android-shared/src/androidUnitTest/kotlin/org/siloserver/silo/common/player/PlaybackSessionManagerStagedReplanTest.kt \
+        androidTvApp/src/androidUnitTest/kotlin/org/siloserver/silo/tv/ui/screens/player/SubtitleTransactionIntegrationTest.kt \
         docs/superpowers/plans/2026-07-23-transactional-android-subtitle-coordinator.md
 git commit -m "test(subtitles): verify transactional playback flow [skip ci]"
 ```
 
-- [ ] **Step 8: Stop before device actions**
+- [x] **Step 8: Stop before device actions**
 
 Report the local release-gate result. Do not install or launch on Shield or Google
 Streamer until the user explicitly approves device validation.

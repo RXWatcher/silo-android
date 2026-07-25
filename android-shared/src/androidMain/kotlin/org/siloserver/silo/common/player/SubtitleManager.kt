@@ -616,7 +616,27 @@ private class SubtitleVideoRectSync(playerView: PlayerView) :
      */
     override fun onCues(cueGroup: CueGroup) {
         val playerView = playerViewRef.get() ?: return
+        logCueTiming(cueGroup)
         forwardNeutralizedCues(playerView, cueGroup)
+    }
+
+    /**
+     * Alignment probe: the cue's own presentation time against the position the
+     * player is actually at when it lands. Both are on the player timeline, so a
+     * non-zero, drifting or seek-dependent gap between this pair and the cue's
+     * time in the source file is what separates a mistimed subtitle file from a
+     * timeline delta the client got wrong. Text is truncated — enough to match a
+     * cue against the source, not enough to dump the script into logcat.
+     */
+    private fun logCueTiming(cueGroup: CueGroup) {
+        if (!SubDiag.enabled) return
+        val text = cueGroup.cues.firstOrNull()?.text?.toString()?.replace('\n', ' ')?.take(40)
+            ?: return
+        val positionMs = observedPlayer?.currentPosition ?: return
+        SubDiag.log(
+            "CUE pos=${positionMs}ms cue=${cueGroup.presentationTimeUs / 1_000}ms " +
+                "delta=${positionMs - cueGroup.presentationTimeUs / 1_000}ms text=$text",
+        )
     }
 
     private fun forwardNeutralizedCues(playerView: PlayerView, cueGroup: CueGroup) {

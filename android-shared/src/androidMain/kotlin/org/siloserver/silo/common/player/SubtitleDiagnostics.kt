@@ -25,7 +25,7 @@ object SubDiag {
      * Read once. `isLoggable` walks the property table on every call, and these
      * fire inside mount and track-selection paths that run per frame-group.
      */
-    private val enabled: Boolean by lazy {
+    val enabled: Boolean by lazy {
         runCatching { Log.isLoggable(TAG, Log.DEBUG) }.getOrDefault(false)
     }
 

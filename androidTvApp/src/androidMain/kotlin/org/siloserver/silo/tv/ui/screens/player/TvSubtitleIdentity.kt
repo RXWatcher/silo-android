@@ -46,7 +46,20 @@ internal fun tvSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdentity 
 
     val embedded = subtitle.url.isBlank() &&
         (source == "embedded" || (source == null && catalogSource == "embedded"))
-    if (embedded) return SubtitleIdentity.Embedded(subtitle.index, media)
+    if (embedded) {
+        // A bitmap track (PGS/VobSub/DVB) can never become a Media3 text
+        // sidecar, so burning it into the video is the ONLY way the server can
+        // present it. Classifying it as Embedded made the staged transaction
+        // demand a sidecar, and the server's (correct) BURN_IN plan was then
+        // rejected as "unexpectedly burned in the mounted subtitle" — the pick
+        // silently reverted to Off. The bitmap test has to come before the
+        // embedded/external split, not only on the external branch.
+        return if (isBitmapSubtitleCodecOrMime(media.codecFamily)) {
+            SubtitleIdentity.ServerBurnIn(subtitle.index, media)
+        } else {
+            SubtitleIdentity.Embedded(subtitle.index, media)
+        }
+    }
 
     val external = source == "external" ||
         catalogSource == "external" ||

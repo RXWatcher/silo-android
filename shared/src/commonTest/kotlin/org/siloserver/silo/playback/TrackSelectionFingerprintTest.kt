@@ -64,6 +64,22 @@ class TrackSelectionFingerprintTest {
         assertEquals(1, resolveAudioTrackOrdinal(tracks, saved))
     }
 
+    // An embedded bitmap track is burn-in only. Persisting it as Embedded made
+    // the restore demand a sidecar the server cannot produce, and the round trip
+    // then failed to match its own catalog row.
+    @Test
+    fun embeddedBitmapSubtitlePersistsAndResolvesAsBurnIn() {
+        val tracks = listOf(
+            SubtitleTrack(index = 0, codec = "srt", language = "eng", title = "English"),
+            SubtitleTrack(index = 2, codec = "hdmv_pgs_subtitle", language = "eng", title = "English (SDH)"),
+        )
+
+        val encoded = encodeCatalogSubtitlePreference(tracks, selectedOrdinal = 1)
+
+        assertIs<SubtitleIdentity.ServerBurnIn>(decodeSubtitleIdentityPreference(encoded!!))
+        assertEquals(1, resolveCatalogSubtitlePreferenceOrdinal(tracks, encoded))
+    }
+
     @Test
     fun resolvesSubtitleOffAndTrackFingerprints() {
         val tracks = listOf(

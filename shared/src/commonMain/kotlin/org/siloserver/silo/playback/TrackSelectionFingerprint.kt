@@ -67,12 +67,15 @@ fun encodeCatalogSubtitlePreference(
         ?: return null
     val media = track.catalogMediaIdentity()
     val identity = when {
+        // Bitmap tracks are burn-in only, embedded or not: persisting an
+        // embedded PGS row as Embedded made the restore demand a sidecar the
+        // server can never produce.
+        track.codec.isCatalogBitmapSubtitle() ->
+            SubtitleIdentity.ServerBurnIn(serverIndex, media)
         !track.external -> SubtitleIdentity.Embedded(
             serverIndex = serverIndex,
             media = media,
         )
-        track.codec.isCatalogBitmapSubtitle() ->
-            SubtitleIdentity.ServerBurnIn(serverIndex, media)
         else -> SubtitleIdentity.ServerSidecar(serverIndex, media)
     }
     return encodeSubtitleIdentityPreference(identity)
@@ -317,9 +320,10 @@ private fun SubtitleTrack.matchesTypedCatalogIdentity(
     val kindMatches = when (identity) {
         is SubtitleIdentity.ServerSidecar ->
             external && !codec.isCatalogBitmapSubtitle()
-        is SubtitleIdentity.ServerBurnIn ->
-            external && codec.isCatalogBitmapSubtitle()
-        is SubtitleIdentity.Embedded -> !external
+        // Burn-in covers every bitmap row, embedded ones included; Embedded
+        // therefore covers the text ones only, so the two stay disjoint.
+        is SubtitleIdentity.ServerBurnIn -> codec.isCatalogBitmapSubtitle()
+        is SubtitleIdentity.Embedded -> !external && !codec.isCatalogBitmapSubtitle()
         SubtitleIdentity.Off,
         is SubtitleIdentity.Downloaded,
         is SubtitleIdentity.LocalMedia3,

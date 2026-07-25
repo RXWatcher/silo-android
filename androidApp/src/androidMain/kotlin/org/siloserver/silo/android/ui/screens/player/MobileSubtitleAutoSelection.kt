@@ -53,10 +53,17 @@ internal fun mobileSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdent
     val embedded = (source == "embedded" && subtitle.url.isBlank()) ||
         (source == null && catalogSource == "embedded" && subtitle.url.isBlank())
     if (embedded) {
-        return SubtitleIdentity.Embedded(
-            serverIndex = subtitle.index,
-            media = media,
-        )
+        // Bitmap tracks (PGS/VobSub/DVB) can only be burned in — see the same
+        // guard in tvSubtitleIdentity. Treating them as Embedded made the
+        // staged transaction reject the server's BURN_IN plan and revert to Off.
+        return if (isBitmapSubtitleCodecOrMime(media.codecFamily)) {
+            SubtitleIdentity.ServerBurnIn(subtitle.index, media)
+        } else {
+            SubtitleIdentity.Embedded(
+                serverIndex = subtitle.index,
+                media = media,
+            )
+        }
     }
 
     val external = source == "external" ||

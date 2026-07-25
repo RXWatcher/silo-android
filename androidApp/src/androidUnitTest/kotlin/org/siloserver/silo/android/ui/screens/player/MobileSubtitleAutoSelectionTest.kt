@@ -5,6 +5,7 @@ import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import org.siloserver.silo.model.playback.SubtitleIdentity
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 
 class MobileSubtitleAutoSelectionTest {
 
@@ -122,13 +123,16 @@ class MobileSubtitleAutoSelectionTest {
 
     @Test
     fun embeddedSelectionRetainsCombinedServerIndexAndTypedMetadata() {
+        // Sample codec is deliberately text: a bitmap one is burn-in, covered by
+        // embeddedBitmapSelectionIsBurnIn below. What this test pins is that the
+        // server index and typed metadata survive the classification.
         val identity = mobileSubtitleIdentity(
             subtitle(
                 index = 7,
                 label = "English Forced",
                 language = "en",
                 forced = true,
-                codec = "hdmv_pgs_subtitle",
+                codec = "subrip",
             ).copy(source = "embedded", url = ""),
         )
 
@@ -139,8 +143,28 @@ class MobileSubtitleAutoSelectionTest {
             ),
             identity,
         )
-        assertEquals("pgs", (identity as SubtitleIdentity.Embedded).media.codecFamily)
+        assertEquals("subrip", (identity as SubtitleIdentity.Embedded).media.codecFamily)
         assertEquals(true, identity.media.forced)
+    }
+
+    // A bitmap track cannot become a Media3 text sidecar, so burn-in is the only
+    // way the server can present it. Classifying it as Embedded made the staged
+    // transaction reject the server's BURN_IN plan ("The candidate unexpectedly
+    // burned in the mounted subtitle") and silently revert the pick to Off.
+    @Test
+    fun embeddedBitmapSelectionIsBurnIn() {
+        val identity = mobileSubtitleIdentity(
+            subtitle(
+                index = 8,
+                label = "English (SDH)",
+                language = "en",
+                codec = "hdmv_pgs_subtitle",
+            ).copy(source = "embedded", url = ""),
+        )
+
+        assertIs<SubtitleIdentity.ServerBurnIn>(identity)
+        assertEquals(8, identity.serverIndex)
+        assertEquals("pgs", identity.media?.codecFamily)
     }
 
     @Test

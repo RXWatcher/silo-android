@@ -2,6 +2,7 @@ package org.siloserver.silo.tv.ui.screens.player
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import org.siloserver.silo.model.catalog.AudioTrack
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import org.siloserver.silo.model.playback.SubtitleIdentity
@@ -145,6 +146,40 @@ class TvPlayerSubtitleIntegrationPolicyTest {
             ),
         )
     }
+
+    // An embedded PGS row must be burn-in, not Embedded: the server cannot make
+    // a text sidecar out of a bitmap track, so classifying it as Embedded made
+    // the staged transaction reject the server's BURN_IN plan and revert to Off
+    // — "selecting the English PGS track does nothing" (2026-07-25).
+    @Test
+    fun `embedded bitmap subtitle is a burn-in identity`() {
+        val identity = tvSubtitleIdentity(embeddedRow(index = 8, codec = "hdmv_pgs_subtitle"))
+
+        assertIs<SubtitleIdentity.ServerBurnIn>(identity)
+        assertEquals(8, identity.serverIndex)
+    }
+
+    @Test
+    fun `embedded text subtitle stays an embedded identity`() {
+        val identity = tvSubtitleIdentity(embeddedRow(index = 3, codec = "subrip"))
+
+        assertIs<SubtitleIdentity.Embedded>(identity)
+        assertEquals(3, identity.serverIndex)
+    }
+
+    private fun embeddedRow(
+        index: Int,
+        codec: String,
+    ) = PlayerSubtitleInfo(
+        index = index,
+        language = "en",
+        codec = codec,
+        label = "English (SDH)",
+        source = "embedded",
+        catalogSource = "embedded",
+        forced = false,
+        url = "",
+    )
 
     private fun downloadedRow(
         index: Int,

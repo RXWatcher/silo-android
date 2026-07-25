@@ -62,6 +62,19 @@ class SubtitleManager(
                 " src=" + subtitles.map { it.source } +
                 " urlBlank=" + subtitles.map { it.url.isBlank() },
         )
+        // Full server inventory. `forced` is the field the TV auto-selector keys
+        // on (it becomes SELECTION_FLAG_FORCED below, then Format.selectionFlags,
+        // then PlayerTrackEntry.isForced) — so a null/false here is the whole
+        // difference between a forced track being auto-selected and subtitles
+        // being switched off.
+        subtitles.forEach { s ->
+            SubDiag.log(
+                "INV idx=${s.index} lang=${s.language} codec=${s.codec} src=${s.source} " +
+                    "forced=${s.forced} default=${s.isDefault} label=${s.label} " +
+                    "catalogLabel=${s.catalogLabel} catalogSrc=${s.catalogSource} " +
+                    "downloadId=${s.downloadId} url=${s.url.takeLast(60)}",
+            )
+        }
         return subtitles.mapNotNull { subtitle ->
             // V3 embedded-bitmap rows intentionally carry a blank URL: they
             // are selection metadata for a track already in the primary
@@ -86,13 +99,18 @@ class SubtitleManager(
             if (stableTrackId != null) {
                 builder.setId(stableTrackId)
             }
+            val selectionFlags = if (subtitle.forced == true) C.SELECTION_FLAG_FORCED else 0
+            SubDiag.log(
+                "MOUNT idx=${subtitle.index} id=$stableTrackId mime=$mimeType " +
+                    "lang=${subtitle.language} forced=${subtitle.forced} " +
+                    "selectionFlags=$selectionFlags " +
+                    "label=${subtitle.label ?: subtitle.language ?: "Track ${subtitle.index}"}",
+            )
             builder
                 .setMimeType(mimeType)
                 .setLanguage(subtitle.language)
                 .setLabel(subtitle.label ?: subtitle.language ?: "Track ${subtitle.index}")
-                .setSelectionFlags(
-                    if (subtitle.forced == true) C.SELECTION_FLAG_FORCED else 0
-                )
+                .setSelectionFlags(selectionFlags)
                 .build()
         }
     }

@@ -496,7 +496,7 @@ class TvPlayerControlsUsabilityTest {
     }
 
     @Test
-    fun subtitlePickerReportsRealDpadFocusByStableIdAndStaysOpenWhileApplying() {
+    fun subtitlePickerReportsRealDpadFocusByStableIdAndDismissesOnPick() {
         val pickerBlock = hudSource
             .substringAfter("internal fun HudPickerDialog(")
             .substringBefore("private fun HudPickerOptionRow(")
@@ -507,7 +507,10 @@ class TvPlayerControlsUsabilityTest {
         assertTrue(pickerBlock.contains("key(option.id)"))
         assertTrue(hudSource.contains("presentation.onFocused(option.id)"))
         assertTrue(hudSource.contains(".onFocusChanged"))
-        assertTrue(subtitlePane.contains("closeOnSelect = false"))
+        // Jim, 2026-07-25: the picker now dismisses on pick. The transaction
+        // still reports progress and failure through the HUD, so holding the
+        // list open only obscured what the selection did.
+        assertTrue(subtitlePane.contains("closeOnSelect = true"))
         assertTrue(subtitlePane.contains("onFocused = presentation.onFocused"))
         assertTrue(screenSource.contains("onFocused = { stableId -> subtitleFocusedStableId = stableId }"))
         assertTrue(

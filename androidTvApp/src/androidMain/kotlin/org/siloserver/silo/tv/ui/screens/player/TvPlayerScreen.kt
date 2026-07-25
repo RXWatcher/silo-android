@@ -2490,7 +2490,9 @@ private fun TvQuickSubtitlePicker(
                 focusedId = focusedRow?.stableId
                     ?: checkedRow?.stableId
                     ?: presentation.rows.firstOrNull()?.stableId.orEmpty(),
-                closeOnSelect = false,
+                // Dismiss on pick: the transaction reports progress in the HUD, so
+                // holding the list open just hides what the selection did.
+                closeOnSelect = true,
                 onFocused = presentation.onFocused,
                 onSelect = { stableId ->
                     presentation.rows
@@ -2908,6 +2910,17 @@ internal fun extractTrackEntries(tracks: Tracks, type: Int): List<PlayerTrackEnt
             ),
         )
         groupIndex++
+    }
+    // Media3's own view, after mounting and track selection. Compare against the
+    // MOUNT lines: a forced sidecar that arrives here with forced=false never
+    // had SELECTION_FLAG_FORCED, and the auto-selector cannot see it.
+    if (type == C.TRACK_TYPE_TEXT) {
+        SubDiag.log(
+            "TRACKS text=" + result.joinToString(prefix = "[", postfix = "]") {
+                "#${it.index}/${it.language}/forced=${it.isForced}/" +
+                    "sel=${it.isSelected}/${it.codecOrMime}/${it.label}"
+            },
+        )
     }
     return result
 }

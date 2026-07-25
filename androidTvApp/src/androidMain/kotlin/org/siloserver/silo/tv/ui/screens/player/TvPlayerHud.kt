@@ -1273,7 +1273,9 @@ private fun HudSubtitlesPane(
                                 focusedId = focusedRow?.stableId
                                     ?: checkedRow?.stableId
                                     ?: presentation.rows.firstOrNull()?.stableId.orEmpty(),
-                                closeOnSelect = false,
+                                // Dismiss on pick: the transaction reports progress in the HUD, so
+                                // holding the list open just hides what the selection did.
+                                closeOnSelect = true,
                                 onFocused = presentation.onFocused,
                                 onSelect = { stableId ->
                                     presentation.rows

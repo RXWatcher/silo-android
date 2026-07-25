@@ -217,7 +217,15 @@ open class PlaybackSessionManager(
                 audioTrackIndex = audioTrackIndex,
                 subtitleTrackId = subtitleTrackIndex?.takeIf { it >= 0 }
                     ?.let { stableTrackId(fileId, "subtitle", it) },
-                subtitleTrackIndex = subtitleTrackIndex,
+                // -1 is the client's "subtitles off" marker, but the server
+                // validates subtitle_track_index as 0..10_000 and rejects the
+                // whole start with 400 "subtitle_track_index is invalid"
+                // (validateTrackPairV3). Omitting the field is how V3 expresses
+                // off: ResolveSubtitlePolicyV3 defaults the index to -1 when it
+                // is absent and maps index < 0 to SubtitleOffV3, so the plan is
+                // identical without tripping the validator. The replan path and
+                // the track id above already filter negatives the same way.
+                subtitleTrackIndex = subtitleTrackIndex?.takeIf { it >= 0 },
                 outputRouteGeneration = clientPlaybackContext.output.outputRouteGeneration,
                 metered = network.metered,
                 bandwidthEstimateKbps = network.bandwidthEstimateKbps,

@@ -28,6 +28,8 @@ import kotlinx.coroutines.yield
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.int
 import org.siloserver.silo.model.playback.ClientCodecCapabilities
 import org.siloserver.silo.model.playback.ClientPlaybackContext
 import org.siloserver.silo.model.playback.PLAYBACK_PLAN_V3_FEATURE
@@ -408,6 +410,34 @@ class PlaybackSessionManagerStagedReplanTest {
         assertEquals("s1", harness.manager.activeSessionIdForTest())
         // Idempotent: nothing pending is still success.
         assertTrue(harness.manager.rollbackCurrentPendingVideoPublication())
+    }
+
+    @Test
+    fun `subtitles off omits the track index instead of sending -1`() = runTest {
+        // -1 is the client's "off" marker, but the server validates
+        // subtitle_track_index as 0..10_000 and rejects the whole start with
+        // 400 "subtitle_track_index is invalid". Omitting it is how V3 says off:
+        // ResolveSubtitlePolicyV3 defaults an absent index to -1 and maps < 0 to
+        // SubtitleOffV3, so the plan is unchanged. Sending -1 made every title
+        // whose remembered subtitle selection was Off fail to start.
+        val harness = Harness(replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) })
+        harness.start(subtitleTrackIndex = -1)
+
+        val body = harness.startBodies.single()
+        assertFalse(
+            body.containsKey("subtitle_track_index"),
+            "a negative index must be omitted, not sent: \$body",
+        )
+        assertFalse(body.containsKey("subtitle_track_id"), "no track id for off either")
+    }
+
+    @Test
+    fun `a real subtitle index is still sent on start`() = runTest {
+        val harness = Harness(replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) })
+        harness.start(subtitleTrackIndex = 3)
+
+        val body = harness.startBodies.single()
+        assertEquals(3, body.getValue("subtitle_track_index").jsonPrimitive.int)
     }
 
     @Test
@@ -1483,6 +1513,7 @@ class PlaybackSessionManagerStagedReplanTest {
         val stoppedSessions: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val stopAttempts: MutableList<String> = Collections.synchronizedList(mutableListOf())
         val replanBodies: MutableList<JsonObject> = Collections.synchronizedList(mutableListOf())
+        val startBodies: MutableList<JsonObject> = Collections.synchronizedList(mutableListOf())
         val replanBaseSessions: MutableList<String> =
             Collections.synchronizedList(mutableListOf())
         private val stoppedEvents = Channel<String>(Channel.UNLIMITED)
@@ -1494,6 +1525,9 @@ class PlaybackSessionManagerStagedReplanTest {
                 val path = request.url.encodedPath
                 val response = when {
                     path == "/api/v1/playback/start" -> {
+                        startBodies += SiloJson.parseToJsonElement(
+                            request.body.toByteArray().decodeToString(),
+                        ).jsonObject
                         val index = startIndex.getAndIncrement()
                         startResponseOverride?.invoke(index) ?: startResponses[index]
                     }
@@ -1539,6 +1573,7 @@ class PlaybackSessionManagerStagedReplanTest {
         suspend fun start(
             fileId: Int = 42,
             deferPublication: Boolean = false,
+            subtitleTrackIndex: Int? = null,
         ) {
             assertIs<ApiResult.Success<VideoSessionStartV3>>(
                 manager.startVideoSessionV3(
@@ -1555,7 +1590,7 @@ class PlaybackSessionManagerStagedReplanTest {
                         output = PlaybackOutputContext(outputRouteGeneration = 7),
                     ),
                     audioTrackIndex = 0,
-                    subtitleTrackIndex = null,
+                    subtitleTrackIndex = subtitleTrackIndex,
                     qualityPreference = "original",
                     startPosition = 0.0,
                     subtitleFidelityPreference = SubtitleFidelityPreference.PRESERVE,

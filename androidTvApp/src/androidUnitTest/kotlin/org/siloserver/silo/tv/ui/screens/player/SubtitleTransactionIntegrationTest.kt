@@ -385,8 +385,13 @@ class SubtitleTransactionIntegrationTest {
                         ).jsonObject
                         startBodies += body
                         when (startIndex.getAndIncrement()) {
+                            // Mirrors ResolveSubtitlePolicyV3: the field is
+                            // optional, and an absent index means the same as a
+                            // negative one — subtitles off. The client omits it
+                            // rather than sending -1, which the server's
+                            // validateTrackPairV3 rejects outright.
                             0 -> if (
-                                body.getValue("subtitle_track_index").jsonPrimitive.int == -1
+                                (body["subtitle_track_index"]?.jsonPrimitive?.int ?: -1) < 0
                             ) {
                                 response(basePlan("s1", FILE_ID, audioIndex = 0))
                             } else {
@@ -859,7 +864,16 @@ class SubtitleTransactionIntegrationTest {
 
         fun assertStart(body: JsonObject, audioIndex: Int, subtitleIndex: Int) {
             assertEquals(audioIndex, body.getValue("audio_track_index").jsonPrimitive.int)
-            assertEquals(subtitleIndex, body.getValue("subtitle_track_index").jsonPrimitive.int)
+            if (subtitleIndex < 0) {
+                // Off is expressed by omission — the server validates
+                // subtitle_track_index as 0..10_000 and 400s on a negative one.
+                assertFalse(
+                    body.containsKey("subtitle_track_index"),
+                    "subtitles off must omit the index, not send $subtitleIndex",
+                )
+            } else {
+                assertEquals(subtitleIndex, body.getValue("subtitle_track_index").jsonPrimitive.int)
+            }
             assertEquals(
                 OUTPUT_GENERATION,
                 body.getValue("output_route_generation").jsonPrimitive.content.toLong(),

@@ -192,6 +192,44 @@ class TvPlaybackFreshLoadOwnershipTest {
     }
 
     @Test
+    fun `fresh restore does not publish the server rows twice`() = runTest {
+        // The hydrate lambda in TvPlayerViewModel calls mergeDownloadedSubtitles
+        // with the server rows as `existing`, so it returns the FULL set, not
+        // just the downloaded ones. Concatenating the retained rows onto that
+        // duplicated every server row: 21 rows became 42, the sidecar builder
+        // mounted each twice, and the picker listed every track twice.
+        val registry = TvPlayerLoadOwnerRegistry()
+        val owner = registry.begin("movie", 11, "original")
+        val serverRows = listOf(
+            sidecarRow(index = 0, label = "English"),
+            sidecarRow(index = 1, label = "Forced"),
+            sidecarRow(index = 2, label = "SDH"),
+        )
+
+        val result = resolveOwnedTvFreshSubtitleRestore(
+            owner = owner,
+            registry = registry,
+            preference = null,
+            catalogTracks = emptyList(),
+            initialRows = serverRows,
+            sessionId = "session-1",
+            serverUrl = "https://silo.test",
+            hydrateDownloadedRows = {
+                // Exactly what the production lambda returns: existing + downloaded.
+                ApiResult.Success(serverRows + downloadedRow(index = 3, downloadId = 91))
+            },
+        )
+
+        val rows = requireNotNull(result).rows
+        assertEquals(
+            listOf(0, 1, 2, 3),
+            rows.map { it.index },
+            "every row must appear once, keyed by its combined index",
+        )
+        assertEquals(91, rows.single { it.index == 3 }.downloadId)
+    }
+
+    @Test
     fun `T19 hydration failure does not replace the committed server subtitle`() = runTest {
         val registry = TvPlayerLoadOwnerRegistry()
         val owner = registry.begin("movie", 11, "original")

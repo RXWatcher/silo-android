@@ -159,7 +159,16 @@ internal suspend fun resolveOwnedTvFreshSubtitleRestore(
                     row
                 }
             }
-            val rows = retained + downloaded
+            // `hydrateDownloadedRows` does NOT return only the downloaded rows:
+            // its caller runs mergeDownloadedSubtitles(existing = server rows,
+            // downloaded = …) so that downloaded artifacts are numbered after
+            // the server's index space, and therefore hands back the FULL set.
+            // Concatenating `retained` onto that published every server row
+            // twice — 21 rows became 42 — so the sidecar builder mounted each
+            // one twice and the picker showed duplicate "Server subtitle"
+            // entries. Key by index (the identity the picker and replans use)
+            // and prefer the hydrated copy, which carries the rebased URLs.
+            val rows = (downloaded + retained).distinctBy(PlayerSubtitleInfo::index)
             TvFreshSubtitleRestoreResult(
                 rows = rows,
                 resolution = resolveTvFreshSubtitlePreference(

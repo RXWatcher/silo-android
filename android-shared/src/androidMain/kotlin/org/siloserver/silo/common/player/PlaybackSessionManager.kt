@@ -70,6 +70,15 @@ open class PlaybackSessionManager(
     private val playbackRepository: PlaybackRepository,
     private val tokenManager: TokenManager,
     private val networkEvidenceProvider: PlaybackNetworkEvidenceProvider = PlaybackNetworkEvidenceProvider.None,
+    /**
+     * How long a content reset waits for a deferred publication before rolling
+     * it back itself. Injectable because it is a wall-clock safety net, and
+     * `runTest` advances virtual time whenever the scheduler idles — a fixed
+     * value would fire inside tests that are legitimately waiting for a
+     * settlement, making them order-dependent. Tests asserting the wait pass
+     * [NEVER_SELF_HEAL]; the test that asserts self-healing passes a real value.
+     */
+    private val pendingPublicationSettleTimeoutMs: Long = PENDING_PUBLICATION_SETTLE_TIMEOUT_MS,
 ) {
     private data class ActiveVideoAttempt(
         val fileId: Int,
@@ -407,7 +416,7 @@ open class PlaybackSessionManager(
                 // then wedged every future start — an unrecoverable spinner —
                 // because the lifecycle-side recovery hatch reports success when
                 // its own pending is absent and never consults this one.
-                val settled = withTimeoutOrNull(PENDING_PUBLICATION_SETTLE_TIMEOUT_MS) {
+                val settled = withTimeoutOrNull(pendingPublicationSettleTimeoutMs) {
                     pending.settled.await()
                 }
                 if (settled == null) {
@@ -1994,7 +2003,10 @@ open class PlaybackSessionManager(
          * wait a legitimate subtitle commit can take, so this only fires for a
          * publication whose owner is gone.
          */
-        private const val PENDING_PUBLICATION_SETTLE_TIMEOUT_MS = 45_000L
+        internal const val PENDING_PUBLICATION_SETTLE_TIMEOUT_MS = 45_000L
+
+        /** Wait forever — the pre-existing contract, for tests that assert it. */
+        internal const val NEVER_SELF_HEAL = Long.MAX_VALUE
 
         /**
          * Replan classifications that mean a user-initiated track/quality/route

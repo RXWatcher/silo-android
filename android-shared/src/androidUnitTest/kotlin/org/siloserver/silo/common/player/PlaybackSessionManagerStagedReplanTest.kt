@@ -370,6 +370,8 @@ class PlaybackSessionManagerStagedReplanTest {
         val harness = Harness(
             startResponses = listOf(response(basePlan()), response(basePlan(sessionId = "s9"))),
             replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+            pendingPublicationSettleTimeoutMs =
+                PlaybackSessionManager.PENDING_PUBLICATION_SETTLE_TIMEOUT_MS,
         )
         harness.start()
         val replacement = harness.stageSidecar()
@@ -1474,6 +1476,7 @@ class PlaybackSessionManagerStagedReplanTest {
     private class Harness(
         startResponses: List<PlaybackDecisionResponseV3> = listOf(response(basePlan())),
         private val startResponseOverride: (suspend (Int) -> PlaybackDecisionResponseV3)? = null,
+        pendingPublicationSettleTimeoutMs: Long = PlaybackSessionManager.NEVER_SELF_HEAL,
         private val replanResponse: suspend (Int, JsonObject) -> PlaybackDecisionResponseV3,
         private val stopBehavior: suspend (String) -> Unit = {},
     ) {
@@ -1527,6 +1530,10 @@ class PlaybackSessionManagerStagedReplanTest {
         val manager = PlaybackSessionManager(
             playbackRepository = PlaybackRepository(PlaybackApi(client)),
             tokenManager = StagedReplanNoOpTokenManager,
+            // runTest advances virtual time whenever the scheduler idles, so a
+            // real timeout here would fire inside every test that legitimately
+            // waits for a settlement. Tests that want the self-heal ask for it.
+            pendingPublicationSettleTimeoutMs = pendingPublicationSettleTimeoutMs,
         )
 
         suspend fun start(

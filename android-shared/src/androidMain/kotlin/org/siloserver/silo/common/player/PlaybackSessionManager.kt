@@ -78,7 +78,7 @@ open class PlaybackSessionManager(
      * settlement, making them order-dependent. Tests asserting the wait pass
      * [NEVER_SELF_HEAL]; the test that asserts self-healing passes a real value.
      */
-    private val pendingPublicationSettleTimeoutMs: Long = PENDING_PUBLICATION_SETTLE_TIMEOUT_MS,
+    private val pendingPublicationSettleTimeoutMs: Long? = PENDING_PUBLICATION_SETTLE_TIMEOUT_MS,
 ) {
     private data class ActiveVideoAttempt(
         val fileId: Int,
@@ -416,8 +416,12 @@ open class PlaybackSessionManager(
                 // then wedged every future start — an unrecoverable spinner —
                 // because the lifecycle-side recovery hatch reports success when
                 // its own pending is absent and never consults this one.
-                val settled = withTimeoutOrNull(pendingPublicationSettleTimeoutMs) {
+                val settled = if (pendingPublicationSettleTimeoutMs == null) {
                     pending.settled.await()
+                } else {
+                    withTimeoutOrNull(pendingPublicationSettleTimeoutMs) {
+                        pending.settled.await()
+                    }
                 }
                 if (settled == null) {
                     Log.w(
@@ -2005,8 +2009,14 @@ open class PlaybackSessionManager(
          */
         internal const val PENDING_PUBLICATION_SETTLE_TIMEOUT_MS = 45_000L
 
-        /** Wait forever — the pre-existing contract, for tests that assert it. */
-        internal const val NEVER_SELF_HEAL = Long.MAX_VALUE
+        /**
+         * Pass `null` as the timeout to wait forever.
+         *
+         * NOT `Long.MAX_VALUE`: `runTest`'s virtual scheduler fires such a
+         * timeout immediately, which silently turned the self-heal on inside
+         * every test that meant to assert the wait.
+         */
+        internal val NEVER_SELF_HEAL: Long? = null
 
         /**
          * Replan classifications that mean a user-initiated track/quality/route

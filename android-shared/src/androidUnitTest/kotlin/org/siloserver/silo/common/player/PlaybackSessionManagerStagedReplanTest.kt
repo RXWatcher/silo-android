@@ -1476,7 +1476,7 @@ class PlaybackSessionManagerStagedReplanTest {
     private class Harness(
         startResponses: List<PlaybackDecisionResponseV3> = listOf(response(basePlan())),
         private val startResponseOverride: (suspend (Int) -> PlaybackDecisionResponseV3)? = null,
-        pendingPublicationSettleTimeoutMs: Long = PlaybackSessionManager.NEVER_SELF_HEAL,
+        pendingPublicationSettleTimeoutMs: Long? = PlaybackSessionManager.NEVER_SELF_HEAL,
         private val replanResponse: suspend (Int, JsonObject) -> PlaybackDecisionResponseV3,
         private val stopBehavior: suspend (String) -> Unit = {},
     ) {

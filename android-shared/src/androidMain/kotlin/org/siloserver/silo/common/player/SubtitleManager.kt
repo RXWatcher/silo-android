@@ -104,12 +104,25 @@ class SubtitleManager(
                 "MOUNT idx=${subtitle.index} id=$stableTrackId mime=$mimeType " +
                     "lang=${subtitle.language} forced=${subtitle.forced} " +
                     "selectionFlags=$selectionFlags " +
-                    "label=${subtitle.label ?: subtitle.language ?: "Track ${subtitle.index}"}",
+                    "label=${subtitle.catalogLabel ?: subtitle.label ?: subtitle.language}",
             )
             builder
                 .setMimeType(mimeType)
                 .setLanguage(subtitle.language)
-                .setLabel(subtitle.label ?: subtitle.language ?: "Track ${subtitle.index}")
+                // Prefer the CATALOG label. Once the server materialises a row
+                // it labels the artifact generically ("Server subtitle"), which
+                // loses everything the name carried — and the mounted track's
+                // hearing-impaired flag is derived from that label, so an
+                // "English (SDH)" pick could never match the sidecar the server
+                // had just produced for it: match=null, mount deadline, revert
+                // to Off. Keeping the catalog name fixes the match and is what
+                // any UI reading the mounted track should display.
+                .setLabel(
+                    subtitle.catalogLabel
+                        ?: subtitle.label
+                        ?: subtitle.language
+                        ?: "Track ${subtitle.index}",
+                )
                 .setSelectionFlags(selectionFlags)
                 .build()
         }

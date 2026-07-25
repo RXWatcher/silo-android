@@ -26,9 +26,16 @@ internal fun subtitleChoiceLabel(row: PlayerSubtitleInfo, position: Int): String
         if (format != null) add(format)
         if (row.forced == true) add("Forced")
         if (row.isDefault == true) add("Default")
+        // Where the track came from. Say "Embedded" explicitly rather than
+        // leaving it as the unlabelled default: a picker showing "English —
+        // SRT" next to "English — SRT · External" reads as two mystery rows.
+        // catalogSource is preferred over source because a materialised row's
+        // source flips to `server_artifact` mid-playback, and the origin the
+        // user picked by should not change under them.
         when (row.catalogSource ?: row.source) {
             "external" -> add("External")
             "downloaded" -> add("Downloaded")
+            "embedded" -> add("Embedded")
         }
     }
     return if (detail.isEmpty()) base else "$base — ${detail.joinToString(" · ")}"

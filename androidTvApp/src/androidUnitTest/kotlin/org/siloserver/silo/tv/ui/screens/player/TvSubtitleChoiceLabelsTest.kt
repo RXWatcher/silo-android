@@ -37,7 +37,7 @@ class TvSubtitleChoiceLabelsTest {
     @Test
     fun embeddedCodecJunkTitleCollapses() {
         assertEquals(
-            "Danish — SRT · Default",
+            "Danish — SRT · Default · Embedded",
             subtitleChoiceLabel(
                 row(
                     language = "da",
@@ -58,7 +58,7 @@ class TvSubtitleChoiceLabelsTest {
     @Test
     fun languageRedundantTitleCollapses() {
         assertEquals(
-            "English — SRT",
+            "English — SRT · Embedded",
             subtitleChoiceLabel(row(language = "en", codec = "subrip", label = "English", source = "embedded"), 0),
         )
     }
@@ -72,6 +72,39 @@ class TvSubtitleChoiceLabelsTest {
                 0,
             ),
         )
+    }
+
+    // "which one is the external file and which is the embedded PGS" has to be
+    // answerable from the row itself, so every known origin is named.
+    @Test
+    fun everyOriginIsNamedNotJustExternal() {
+        assertEquals(
+            "English — SRT · External",
+            subtitleChoiceLabel(row(language = "en", codec = "srt", source = "external"), 0),
+        )
+        assertEquals(
+            "English — PGS · Embedded",
+            subtitleChoiceLabel(row(language = "en", codec = "hdmv_pgs_subtitle", source = "embedded"), 0),
+        )
+        assertEquals(
+            "English — SRT · Downloaded",
+            subtitleChoiceLabel(row(language = "en", codec = "srt", source = "downloaded"), 0),
+        )
+    }
+
+    // A row's source flips to `server_artifact` once the server materialises
+    // it. The origin the user picked by must not change under them, so the
+    // label keeps following catalogSource.
+    @Test
+    fun materialisedRowKeepsItsCatalogOrigin() {
+        val materialised = PlayerSubtitleInfo(
+            index = 8, language = "en", codec = "hdmv_pgs_subtitle",
+            label = "Server subtitle", catalogLabel = "English (SDH)",
+            source = "server_artifact", catalogSource = "embedded",
+            url = "/stream/s1/subtitles/8.sup",
+        )
+
+        assertEquals("English — English (SDH) · PGS · Embedded", subtitleChoiceLabel(materialised, 0))
     }
 
     @Test

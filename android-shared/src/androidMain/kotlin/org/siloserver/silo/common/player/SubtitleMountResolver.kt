@@ -214,7 +214,20 @@ private fun MountedSubtitleTrack.matchesTypedMetadata(identity: SubtitleMediaIde
         }
     }
     if (identity.forced != null && forced != identity.forced) return false
-    if (identity.hearingImpaired != null && hearingImpaired != identity.hearingImpaired) return false
+    // A server artifact's hearing-impaired flag is only ever inferred from its
+    // label, and the server labels artifacts generically. When the mount carries
+    // no positive SDH signal it is unknown, not "not SDH" — treating it as the
+    // latter meant an SDH pick never matched the sidecar the server had just
+    // produced for it. The reserved artifact id already pins WHICH row this is,
+    // so nothing is loosened for genuinely distinct local tracks.
+    val hearingImpairedIsInferred = hasReservedArtifactId() && hearingImpaired != true
+    if (
+        identity.hearingImpaired != null &&
+        !hearingImpairedIsInferred &&
+        hearingImpaired != identity.hearingImpaired
+    ) {
+        return false
+    }
     return true
 }
 

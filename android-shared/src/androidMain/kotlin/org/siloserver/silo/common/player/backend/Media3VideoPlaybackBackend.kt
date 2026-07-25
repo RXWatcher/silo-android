@@ -96,7 +96,9 @@ class Media3VideoPlaybackBackend(
     }
 
     override fun release() {
-        player.release()
+        // Through the factory so the libass handler and its embedded fonts go
+        // with the player, instead of surviving until the next playback.
+        playerFactory.releasePlayer(player)
     }
 
     /** Null when a sidecar is requested before any video media has been mounted. */

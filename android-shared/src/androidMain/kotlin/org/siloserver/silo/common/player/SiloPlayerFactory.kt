@@ -344,6 +344,19 @@ class SiloPlayerFactory(
         return builder.build().also(libassBridge::initialize)
     }
 
+    /**
+     * Releases [player] along with the libass state built for it.
+     *
+     * The bridge is a process singleton that only recycles its handler when a
+     * *different* player initializes, so releasing a player directly leaves the
+     * handler — and every embedded font it accumulated — reachable until the
+     * next playback starts. Route teardown through here instead.
+     */
+    fun releasePlayer(player: Player) {
+        (player as? ExoPlayer)?.let(libassBridge::releasePlayer)
+        player.release()
+    }
+
     private fun playbackBufferDeviceProfile(): PlaybackBufferDeviceProfile {
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         return PlaybackBufferDeviceProfile(

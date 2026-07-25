@@ -276,6 +276,30 @@ public final class LibassBridge {
         player.addListener(frameSizeSyncListener);
     }
 
+    /**
+     * Releases everything this bridge holds for {@code player}.
+     *
+     * {@link #initialize(ExoPlayer)} only recycles when a *different* player
+     * arrives, so without this the last player ever used stays referenced for
+     * the process lifetime — along with its handler and every embedded font
+     * that handler accumulated (5-30 MB for a typeset release). Leaving the
+     * player back to browsing is exactly when that memory should go, and is
+     * where users park longest.
+     *
+     * Safe to call with a player this bridge never adopted, or twice.
+     */
+    public void releasePlayer(ExoPlayer player) {
+        if (!renderingSupported || initializedPlayer == null || initializedPlayer != player) return;
+        initializedPlayer.removeListener(handler);
+        initializedPlayer.removeListener(frameSizeSyncListener);
+        initializedPlayer = null;
+        retireOverlay();
+        // A fresh handler rather than null: attachTo and the parser factory
+        // dereference it without null checks, and the next playback would
+        // otherwise have to special-case a torn-down bridge.
+        newHandler();
+    }
+
     /** Adds one libass overlay beneath Media3's normal text cue layer. */
     public void attachTo(SubtitleView host) {
         if (!renderingSupported) return;

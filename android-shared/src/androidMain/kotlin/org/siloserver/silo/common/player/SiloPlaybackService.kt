@@ -237,7 +237,8 @@ class SiloPlaybackService : MediaSessionService() {
         subtitleSyncJob?.cancel()
         scope.cancel()
         mediaSession?.run {
-            player.release()
+            // Via the factory so the libass handler goes with the player.
+            playerFactory.releasePlayer(player)
             release()
         }
         mediaSession = null

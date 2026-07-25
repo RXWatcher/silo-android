@@ -47,6 +47,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import org.siloserver.silo.common.player.audio.PassthroughSuppressionRegistry
 
@@ -398,7 +399,31 @@ open class PlaybackSessionManager(
             val pending = pendingVideoPublication
             if (pending != null) {
                 videoAttemptMutex.unlock()
-                pending.settled.await()
+                // Bounded, because settlement is owned by a *different* object.
+                // The manager's pending publication is created inside
+                // startVideoSessionV3, while the lifecycle's counterpart is
+                // installed by the caller afterwards; a cancellation between the
+                // two leaves this one with nobody to settle it. Waiting forever
+                // then wedged every future start — an unrecoverable spinner —
+                // because the lifecycle-side recovery hatch reports success when
+                // its own pending is absent and never consults this one.
+                val settled = withTimeoutOrNull(PENDING_PUBLICATION_SETTLE_TIMEOUT_MS) {
+                    pending.settled.await()
+                }
+                if (settled == null) {
+                    Log.w(
+                        TAG,
+                        "pending publication ${pending.replacement.sessionId} never settled; rolling it back",
+                    )
+                    rollbackUnpublishedVideoSession(pending.replacement.sessionId)
+                    // Guarantees progress even if the rollback found nothing to
+                    // do: an unsettled deferred publication must not outlive the
+                    // start that is waiting on it.
+                    pending.settled.complete(Unit)
+                    videoAttemptMutex.withLock {
+                        if (pendingVideoPublication === pending) pendingVideoPublication = null
+                    }
+                }
                 continue
             }
             try {
@@ -906,6 +931,44 @@ open class PlaybackSessionManager(
             )
         }
         return true
+    }
+
+    /**
+     * Rolls back whatever deferred publication this manager still holds.
+     *
+     * The lifecycle's `rollbackCurrentPendingPublication` can only settle a
+     * publication the *lifecycle* knows about, and reports success when it has
+     * none — but the manager's is created first, so a cancellation between the
+     * two leaves this side pending with no owner. Callers about to start fresh
+     * content should clear both.
+     *
+     * Returns true when nothing is pending or the rollback succeeded.
+     */
+    suspend fun rollbackCurrentPendingVideoPublication(): Boolean {
+        val pendingSessionId = videoAttemptMutex.withLock {
+            pendingVideoPublication?.replacement?.sessionId
+        } ?: return true
+        return rollbackUnpublishedVideoSession(pendingSessionId)
+    }
+
+    /**
+     * Drops manager ownership of [sessionId] and stops it.
+     *
+     * For a non-deferred commit there is no publication to roll back: ownership
+     * has already moved to the new attempt and the predecessor's session is
+     * being cleaned up, so a caller that must abandon the result cannot revert
+     * to anything. Stopping the session while leaving it installed as the active
+     * attempt left every later replan and progress report aimed at a session the
+     * server had already torn down.
+     */
+    suspend fun abandonActiveVideoSession(sessionId: String): Boolean {
+        val disowned = videoAttemptMutex.withLock {
+            val active = activeVideoAttempt.get()
+            if (active?.sessionId != sessionId) false
+            else activeVideoAttempt.compareAndSet(active, null)
+        }
+        stopSession(sessionId)
+        return disowned
     }
 
     suspend fun rollbackUnpublishedVideoSession(sessionId: String): Boolean {
@@ -1924,6 +1987,14 @@ open class PlaybackSessionManager(
     companion object {
         private const val TAG = "PlaybackSessionMgr"
         private const val COMMITTED_SESSION_CLEANUP_ATTEMPTS = 2
+
+        /**
+         * How long a content reset waits for a deferred publication to settle
+         * before rolling it back itself. Comfortably above the 30s local-mount
+         * wait a legitimate subtitle commit can take, so this only fires for a
+         * publication whose owner is gone.
+         */
+        private const val PENDING_PUBLICATION_SETTLE_TIMEOUT_MS = 45_000L
 
         /**
          * Replan classifications that mean a user-initiated track/quality/route

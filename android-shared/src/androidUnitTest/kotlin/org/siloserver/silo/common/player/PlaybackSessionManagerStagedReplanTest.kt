@@ -362,6 +362,53 @@ class PlaybackSessionManagerStagedReplanTest {
     }
 
     @Test
+    fun `a start still completes when a deferred publication is never settled`() = runTest {
+        // The manager's pending publication is created before the caller installs
+        // the lifecycle-side counterpart, so a cancellation between the two leaves
+        // this one with no owner. beginContentReset used to await it forever,
+        // wedging every future start behind a spinner that nothing could clear.
+        val harness = Harness(
+            startResponses = listOf(response(basePlan()), response(basePlan(sessionId = "s9"))),
+            replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },
+        )
+        harness.start()
+        val replacement = harness.stageSidecar()
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(
+                staged = replacement,
+                deferPublication = true,
+            ),
+        )
+        // Deliberately no confirm and no rollback: the owner is gone.
+
+        harness.start(fileId = 43)
+
+        assertEquals("s9", harness.manager.activeSessionIdForTest())
+        assertTrue(
+            "s2" in harness.stoppedSessions,
+            "the abandoned publication should be rolled back, not left running",
+        )
+    }
+
+    @Test
+    fun `rollbackCurrentPendingVideoPublication clears a publication the caller cannot name`() = runTest {
+        val harness = Harness(replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) })
+        harness.start()
+        val replacement = harness.stageSidecar()
+        assertIs<ApiResult.Success<VideoSessionStartV3.Ready>>(
+            harness.manager.commitStagedVideoReplan(
+                staged = replacement,
+                deferPublication = true,
+            ),
+        )
+
+        assertTrue(harness.manager.rollbackCurrentPendingVideoPublication())
+        assertEquals("s1", harness.manager.activeSessionIdForTest())
+        // Idempotent: nothing pending is still success.
+        assertTrue(harness.manager.rollbackCurrentPendingVideoPublication())
+    }
+
+    @Test
     fun `deferred staged commit confirmation retains replacement and stops base once`() = runTest {
         val harness = Harness(
             replanResponse = { _, _ -> response(sidecarPlan(sessionId = "s2")) },

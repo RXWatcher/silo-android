@@ -190,7 +190,13 @@ class TvVideoPlaybackStarter(
             val priorPublicationSettled =
                 sessionLifecycle.rollbackCurrentPendingPublication { sessionId ->
                     playbackSessionManager.rollbackUnpublishedVideoSession(sessionId)
-                }
+                } &&
+                    // The lifecycle reports success when IT has no pending
+                    // publication, but the manager's is created first — a
+                    // cancellation between the two leaves the manager holding one
+                    // that nothing will ever settle, and the next content reset
+                    // would block on it.
+                    playbackSessionManager.rollbackCurrentPendingVideoPublication()
             if (!priorPublicationSettled) {
                 return failure(
                     request.contentId,

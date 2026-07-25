@@ -147,16 +147,27 @@ class TvPlayerSubtitleIntegrationPolicyTest {
         )
     }
 
-    // An embedded PGS row must be burn-in, not Embedded: the server cannot make
-    // a text sidecar out of a bitmap track, so classifying it as Embedded made
-    // the staged transaction reject the server's BURN_IN plan and revert to Off
-    // — "selecting the English PGS track does nothing" (2026-07-25).
+    // Embedded PGS is client-mounted: the server raw-serves it as a `.sup`
+    // sidecar, so it materialises like extracted text rather than demanding a
+    // burn-in.
     @Test
-    fun `embedded bitmap subtitle is a burn-in identity`() {
+    fun `embedded PGS stays a client-mounted identity`() {
         val identity = tvSubtitleIdentity(embeddedRow(index = 8, codec = "hdmv_pgs_subtitle"))
 
-        assertIs<SubtitleIdentity.ServerBurnIn>(identity)
+        assertIs<SubtitleIdentity.Embedded>(identity)
         assertEquals(8, identity.serverIndex)
+    }
+
+    // VobSub and DVB have no sidecar route, so the server always burns them in.
+    // Demanding a sidecar for those made a pick silently revert to Off.
+    @Test
+    fun `embedded bitmap without a sidecar route is a burn-in identity`() {
+        for (codec in listOf("dvd_subtitle", "dvb_subtitle", "vobsub")) {
+            val identity = tvSubtitleIdentity(embeddedRow(index = 5, codec = codec))
+
+            assertIs<SubtitleIdentity.ServerBurnIn>(identity)
+            assertEquals(5, identity.serverIndex, codec)
+        }
     }
 
     @Test

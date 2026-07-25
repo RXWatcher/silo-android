@@ -737,8 +737,11 @@ class SubtitleTransactionIntegrationTest {
         // the timeout the moment virtual time jumped. That makes the budget
         // WALL-CLOCK, and a 5s one failed under full-suite parallel load while
         // passing every time in isolation. This is a deadlock backstop, not an
-        // assertion about speed, so it should be far larger than any real wait.
-        const val EVENT_TIMEOUT_MS = 60_000L
+        // assertion about speed, so it should be far larger than any real wait
+        // — but still comfortably under runTest's own 60s ceiling, or the test
+        // dies with an opaque "did not run to completion" instead of naming the
+        // wait that starved.
+        const val EVENT_TIMEOUT_MS = 30_000L
 
         const val CONTENT_ID = "content-1"
         const val FILE_ID = 42

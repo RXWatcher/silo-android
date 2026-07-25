@@ -152,7 +152,7 @@ class MobileSubtitleAutoSelectionTest {
     // transaction reject the server's BURN_IN plan ("The candidate unexpectedly
     // burned in the mounted subtitle") and silently revert the pick to Off.
     @Test
-    fun embeddedBitmapSelectionIsBurnIn() {
+    fun embeddedPgsSelectionIsClientMounted() {
         val identity = mobileSubtitleIdentity(
             subtitle(
                 index = 8,
@@ -162,9 +162,20 @@ class MobileSubtitleAutoSelectionTest {
             ).copy(source = "embedded", url = ""),
         )
 
-        assertIs<SubtitleIdentity.ServerBurnIn>(identity)
+        assertIs<SubtitleIdentity.Embedded>(identity)
         assertEquals(8, identity.serverIndex)
-        assertEquals("pgs", identity.media?.codecFamily)
+        assertEquals("pgs", identity.media.codecFamily)
+    }
+
+    @Test
+    fun embeddedBitmapWithoutSidecarRouteIsBurnIn() {
+        val identity = mobileSubtitleIdentity(
+            subtitle(index = 6, label = "French", language = "fr", codec = "dvd_subtitle")
+                .copy(source = "embedded", url = ""),
+        )
+
+        assertIs<SubtitleIdentity.ServerBurnIn>(identity)
+        assertEquals(6, identity.serverIndex)
     }
 
     @Test

@@ -32,14 +32,17 @@ class PlaybackCapabilityDetectorSourceTest {
     }
 
     @Test
-    fun detectorAdvertisesEmbeddedButNotSidecarBitmapSubtitles() {
+    fun detectorAdvertisesBitmapSubtitleRendering() {
         assertTrue(
             source.contains("embeddedBitmap = true"),
             "Media3 direct playback supports embedded PGS, VobSub, and DVB subtitle parsers.",
         )
+        // Was false while Silo mounted no raw bitmap sidecars. SubtitleManager
+        // now mounts the server's `.sup` extract, and advertising it is what
+        // makes ResolveSubtitlePolicyV3 pick `render` over a burn-in transcode.
         assertTrue(
-            source.contains("sidecarBitmap = false"),
-            "Raw bitmap sidecars are not mounted into Silo MediaItems.",
+            source.contains("sidecarBitmap = true"),
+            "Raw bitmap sidecars are mounted into Silo MediaItems.",
         )
     }
 }

@@ -68,10 +68,25 @@ class TrackSelectionFingerprintTest {
     // the restore demand a sidecar the server cannot produce, and the round trip
     // then failed to match its own catalog row.
     @Test
-    fun embeddedBitmapSubtitlePersistsAndResolvesAsBurnIn() {
+    fun embeddedPgsPersistsAndResolvesAsClientMounted() {
         val tracks = listOf(
             SubtitleTrack(index = 0, codec = "srt", language = "eng", title = "English"),
             SubtitleTrack(index = 2, codec = "hdmv_pgs_subtitle", language = "eng", title = "English (SDH)"),
+        )
+
+        val encoded = encodeCatalogSubtitlePreference(tracks, selectedOrdinal = 1)
+
+        assertIs<SubtitleIdentity.Embedded>(decodeSubtitleIdentityPreference(encoded!!))
+        assertEquals(1, resolveCatalogSubtitlePreferenceOrdinal(tracks, encoded))
+    }
+
+    // VobSub/DVB have no sidecar route: burn-in, and the restore must not demand
+    // a sidecar the server cannot produce.
+    @Test
+    fun embeddedVobsubPersistsAndResolvesAsBurnIn() {
+        val tracks = listOf(
+            SubtitleTrack(index = 0, codec = "srt", language = "eng", title = "English"),
+            SubtitleTrack(index = 3, codec = "dvd_subtitle", language = "eng", title = "English"),
         )
 
         val encoded = encodeCatalogSubtitlePreference(tracks, selectedOrdinal = 1)

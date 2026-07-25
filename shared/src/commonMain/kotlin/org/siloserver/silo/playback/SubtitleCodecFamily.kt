@@ -42,3 +42,14 @@ fun isTextSubtitleCodecFamily(family: String?): Boolean = when (canonicalSubtitl
     else -> false
 }
 
+/**
+ * Whether the server can hand this bitmap family to the client as a sidecar
+ * instead of burning it into the picture.
+ *
+ * Mirrors `ResolveSubtitlePolicyV3`: the stream handler raw-serves exactly one
+ * bitmap shape — an embedded PGS track as `.sup`. VobSub and DVB have no
+ * sidecar route and always burn in, so a pick on those is a burn-in identity
+ * from the start rather than a client-mounted one.
+ */
+fun isClientMountableBitmapCodecFamily(family: String?): Boolean =
+    canonicalSubtitleCodecFamily(family) == "pgs"

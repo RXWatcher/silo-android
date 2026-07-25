@@ -86,7 +86,7 @@ class SubtitleManager(
             }
             val absoluteUrl = resolveSubtitleUrl(serverUrl, subtitle.url)
             val mimeType = subtitleMimeType(subtitle.codec, absoluteUrl)
-            if (!isMedia3TextSidecarMimeType(mimeType)) {
+            if (!isMountableSidecarMimeType(mimeType)) {
                 return@mapNotNull null
             }
 
@@ -384,12 +384,22 @@ class SubtitleManager(
         }
     }
 
-    private fun isMedia3TextSidecarMimeType(mimeType: String): Boolean =
+    /**
+     * Sidecar formats Media3 can parse for us. Bitmap families are included:
+     * the server raw-serves an embedded PGS track as `.sup`, and Media3's
+     * DefaultSubtitleParserFactory decodes PGS, VobSub and DVB. Mounting those
+     * is what lets a bitmap subtitle render client-side instead of forcing the
+     * server to burn it into the picture, which costs a full transcode.
+     */
+    private fun isMountableSidecarMimeType(mimeType: String): Boolean =
         when (mimeType) {
             MimeTypes.TEXT_VTT,
             MimeTypes.TEXT_SSA,
             MimeTypes.APPLICATION_SUBRIP,
             MimeTypes.APPLICATION_TTML,
+            MimeTypes.APPLICATION_PGS,
+            MimeTypes.APPLICATION_VOBSUB,
+            MimeTypes.APPLICATION_DVBSUBS,
             -> true
             else -> false
         }
@@ -630,12 +640,22 @@ private class SubtitleVideoRectSync(playerView: PlayerView) :
      */
     private fun logCueTiming(cueGroup: CueGroup) {
         if (!SubDiag.enabled) return
-        val text = cueGroup.cues.firstOrNull()?.text?.toString()?.replace('\n', ' ')?.take(40)
-            ?: return
         val positionMs = observedPlayer?.currentPosition ?: return
+        val first = cueGroup.cues.firstOrNull()
+        // Bitmap cues (PGS/VobSub/DVB) carry no text, so describe them by shape
+        // instead — otherwise the trace goes silent exactly when a bitmap
+        // subtitle is the thing under investigation.
+        val what = when {
+            first == null -> "empty"
+            first.text != null -> "text=" + first.text.toString().replace('\n', ' ').take(40)
+            first.bitmap != null ->
+                "bitmap=${first.bitmap?.width}x${first.bitmap?.height} " +
+                    "pos=${first.position},${first.line} size=${first.size}"
+            else -> "unknown"
+        }
         SubDiag.log(
             "CUE pos=${positionMs}ms cue=${cueGroup.presentationTimeUs / 1_000}ms " +
-                "delta=${positionMs - cueGroup.presentationTimeUs / 1_000}ms text=$text",
+                "delta=${positionMs - cueGroup.presentationTimeUs / 1_000}ms n=${cueGroup.cues.size} $what",
         )
     }
 

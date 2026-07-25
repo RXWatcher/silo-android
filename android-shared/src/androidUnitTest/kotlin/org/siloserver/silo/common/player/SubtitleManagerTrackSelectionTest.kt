@@ -512,7 +512,7 @@ class SubtitleManagerTrackSelectionTest {
     }
 
     @Test
-    fun bitmapSubtitleUrlsAreNotMountedAsMedia3TextSidecars() {
+    fun bitmapSubtitleUrlsAreMountedAsMedia3Sidecars() {
         val configurations = SubtitleManager().buildSubtitleConfigurations(
             subtitles = listOf(
                 PlayerSubtitleInfo(
@@ -537,9 +537,14 @@ class SubtitleManagerTrackSelectionTest {
             serverUrl = "https://silo.example",
         )
 
-        assertEquals(1, configurations.size)
-        assertEquals("English", configurations.single().label)
-        assertEquals(MimeTypes.TEXT_VTT, configurations.single().mimeType)
+        // The `.sup` extract is mounted alongside the text sidecar: Media3
+        // parses PGS, so a bitmap track can render client-side instead of
+        // forcing the server to burn it into the picture.
+        assertEquals(2, configurations.size)
+        assertEquals("English", configurations[0].label)
+        assertEquals(MimeTypes.TEXT_VTT, configurations[0].mimeType)
+        assertEquals("English (PGS)", configurations[1].label)
+        assertEquals(MimeTypes.APPLICATION_PGS, configurations[1].mimeType)
     }
 
     @Test

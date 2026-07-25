@@ -412,6 +412,7 @@ class SiloPlayerFactory(
      * selected media source factory wires them through a merging source.
      */
     fun buildMediaItem(
+        contentId: String? = null,
         streamUrl: String,
         playMethod: PlayMethod,
         delivery: PlaybackDelivery? = null,
@@ -446,6 +447,7 @@ class SiloPlayerFactory(
 
         val builder = MediaItem.Builder()
             .setUri(absoluteUrl)
+            .apply { contentId?.takeIf(String::isNotBlank)?.let(::setMediaId) }
             .setSubtitleConfigurations(subtitleConfigurations)
             .setTag(
                 SiloMediaTransformTag(
@@ -600,7 +602,12 @@ class SiloPlayerFactory(
                 .setRoleFlags(configuration.roleFlags)
                 .setLabel(configuration.label)
                 .build()
-            if (!subtitleParserFactory.supportsFormat(baseFormat)) {
+            val parsed = subtitleParserFactory.supportsFormat(baseFormat)
+            SubDiag.log(
+                "SIDECAR mime=${configuration.mimeType} id=${configuration.id} " +
+                    "parsedDuringExtraction=$parsed",
+            )
+            if (!parsed) {
                 return SingleSampleMediaSource.Factory(dataSourceFactory)
                     .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
                     .createMediaSource(configuration, C.TIME_UNSET)

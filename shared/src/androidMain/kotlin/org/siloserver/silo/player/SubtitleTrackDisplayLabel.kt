@@ -201,6 +201,10 @@ private fun subtitleFormatLabel(codecOrMime: String?): String? {
         clean == "ttml" || clean.contains("ttml") -> "TTML"
         clean == "pgs" || clean.contains("pgs") || clean.contains("hdmv") -> "PGS"
         clean == "sub" || clean.contains("dvd") || clean.contains("dvbsubs") -> "DVD"
+        // Captions carried inside the video stream. Media3 discovers these and
+        // they are not in the server's catalog, so they arrive with no label and
+        // no language and used to fall through to the "Subtitle N" placeholder.
+        clean.contains("cea-608") || clean.contains("cea-708") -> "Closed Captions"
         else -> null
     }
 }

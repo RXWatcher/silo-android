@@ -112,4 +112,19 @@ class SubtitleTrackDisplayLabelTest {
 
         assertEquals("English", label)
     }
+
+    // Captions carried inside the video stream arrive from Media3 with no label
+    // and no language, so they used to render as the placeholder "Subtitle 2".
+    @Test
+    fun inStreamClosedCaptionsAreNamedRatherThanNumbered() {
+        val label = formatSubtitleTrackDisplayLabel(
+            rawLabel = null,
+            language = null,
+            codecOrMime = "application/cea-608",
+            isForced = false,
+            index = 1,
+        )
+
+        assertEquals("Closed Captions", label)
+    }
 }

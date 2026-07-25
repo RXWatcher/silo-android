@@ -42,6 +42,7 @@ import org.siloserver.silo.common.BuildConfig
 import org.siloserver.silo.common.player.audio.DelayAudioProcessor
 import org.siloserver.silo.common.player.audio.PassthroughSuppressingAudioSink
 import org.siloserver.silo.common.player.subtitle.OffsetSubtitleParserFactory
+import org.siloserver.silo.common.player.subtitle.PgsSupExtractor
 import org.siloserver.silo.common.player.subtitle.SubtitleOffsetHolder
 import org.siloserver.silo.common.player.video.SiloMediaCodecVideoRenderer
 import org.siloserver.silo.common.player.video.PlaybackRuntimeCorrectionState
@@ -617,13 +618,21 @@ class SiloPlayerFactory(
                     subtitleParserFactory.getCueReplacementBehavior(baseFormat),
                 )
                 .build()
-            val extractorsFactory = ExtractorsFactory {
-                arrayOf(
-                    SubtitleExtractor(
-                        subtitleParserFactory.create(outputFormat),
-                        outputFormat,
-                    ),
-                )
+            // A `.sup` is a raw PGS elementary stream: SubtitleExtractor would
+            // hand the whole file to the parser as a single untimed sample and
+            // produce nothing. PgsSupExtractor frames it into display sets and
+            // recovers each one's PTS. Text sidecars keep the standard path.
+            val extractorsFactory = if (configuration.mimeType == MimeTypes.APPLICATION_PGS) {
+                ExtractorsFactory { arrayOf(PgsSupExtractor(subtitleParserFactory)) }
+            } else {
+                ExtractorsFactory {
+                    arrayOf(
+                        SubtitleExtractor(
+                            subtitleParserFactory.create(outputFormat),
+                            outputFormat,
+                        ),
+                    )
+                }
             }
             return ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
                 .setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)

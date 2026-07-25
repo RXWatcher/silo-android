@@ -1148,7 +1148,14 @@ internal class PlaybackSessionManagerMobileSubtitleStagedReplanPort(
     }
 
     override suspend fun abandonCommitted(playback: MobileSubtitleCommittedPlayback) {
-        manager.stopSession(playback.sessionId)
+        // Mobile commits without deferred publication, so by the time we get
+        // here ownership has already moved to this session and the predecessor
+        // is being cleaned up — there is nothing to revert to, unlike the TV
+        // adapter's joint rollback. Stopping it while leaving it installed as
+        // the active attempt pointed every later replan and progress report at
+        // a session the server had already torn down; disown it as well so the
+        // lifecycle's session-missing recovery is what runs instead.
+        manager.abandonActiveVideoSession(playback.sessionId)
     }
 }
 

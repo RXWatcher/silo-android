@@ -6,27 +6,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.runTest
 import org.siloserver.silo.model.server.ServerEntry
-import kotlin.test.Ignore
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class EncryptedTokenManagerScopeGenerationTest {
 
-    // DEFERRED — the security branch and main model scope identity differently and
-    // the two have not been reconciled yet.
-    //
-    // This asserts the branch's generation-aware scope matching: a stale snapshot
-    // for the same server must not read credentials issued by a later login. Main
-    // instead models temporary (remote-playback) overlays, and its own
-    // EncryptedTokenManagerScopeIsolationTest asserts that a persistent scope keeps
-    // reading persistent tokens. Porting the branch's token-read rewrite verbatim
-    // breaks that; keeping main's breaks this. Both properties are wanted, so the
-    // read path needs a deliberate merge rather than a cherry-pick.
-    //
-    // The additive half of that commit IS in place: invalidateSessionForScope, and
-    // the interceptor now refreshes and invalidates against the request's own scope.
-    @Ignore("Scope-generation vs temporary-overlay identity models not yet reconciled")
     @Test
     fun staleSameServerScopeCannotReadOrRestoreReloggedCredentials() = runTest {
         val registry = FakeServerRegistry()

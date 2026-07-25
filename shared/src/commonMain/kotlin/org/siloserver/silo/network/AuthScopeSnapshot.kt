@@ -33,6 +33,22 @@ data class AuthScopeSnapshot(
     val profileToken: String?,
     val credentialGenerationId: String? = null,
     val identityGeneration: Long = 0L,
+    /**
+     * Bumped every time this server's PERSISTENT credentials are written or
+     * cleared — i.e. by sign-in and sign-out, but deliberately NOT by a
+     * remote-playback overlay beginning or ending.
+     *
+     * Persistent scopes are keyed by serverId alone, so without this a snapshot
+     * captured before a sign-out would still read — and overwrite — whatever the
+     * next login stored for that same server. [identityGeneration] cannot serve:
+     * it moves for overlays too, and an overlay must leave a pinned persistent
+     * scope working.
+     *
+     * `0L` means "not stamped from a live snapshot"; hand-built scopes keep the
+     * pre-existing behaviour rather than failing closed on a value they never
+     * recorded.
+     */
+    val credentialEpoch: Long = 0L,
 )
 
 /** Attribute carrying the [AuthScopeSnapshot] that [SiloAuthPlugin] honors. */

@@ -671,7 +671,7 @@ class SubtitleTransactionIntegrationTest {
         suspend fun awaitStopped(sessionId: String) {
             if (sessionId in stoppedSessions) return
             withContext(Dispatchers.Default) {
-                withTimeout(5_000) {
+                withTimeout(EVENT_TIMEOUT_MS) {
                     while (stoppedEvents.receive() != sessionId) {
                         // Drain unrelated cleanup completions.
                     }
@@ -682,7 +682,7 @@ class SubtitleTransactionIntegrationTest {
         suspend fun awaitReplans(count: Int) {
             while (replanBodies.size < count) {
                 withContext(Dispatchers.Default) {
-                    withTimeout(5_000) { replanEvents.receive() }
+                    withTimeout(EVENT_TIMEOUT_MS) { replanEvents.receive() }
                 }
             }
         }
@@ -690,7 +690,7 @@ class SubtitleTransactionIntegrationTest {
         suspend fun awaitAdopted(sessionId: String) {
             if (lifecycle.activeSessionId() == sessionId) return
             withContext(Dispatchers.Default) {
-                withTimeout(5_000) {
+                withTimeout(EVENT_TIMEOUT_MS) {
                     while (adoptedEvents.receive() != sessionId) {
                         // Drain unrelated adoption completions.
                     }
@@ -701,7 +701,7 @@ class SubtitleTransactionIntegrationTest {
         suspend fun awaitPersistence(count: Int) {
             while (persistence.size < count) {
                 withContext(Dispatchers.Default) {
-                    withTimeout(5_000) { persistenceEvents.receive() }
+                    withTimeout(EVENT_TIMEOUT_MS) { persistenceEvents.receive() }
                 }
             }
         }
@@ -716,7 +716,7 @@ class SubtitleTransactionIntegrationTest {
 
         suspend fun assertNoOrphans() {
             withContext(Dispatchers.Default) {
-                withTimeout(5_000) {
+                withTimeout(EVENT_TIMEOUT_MS) {
                     while (manager.orphanedSessionIdsForTest().isNotEmpty()) {
                         kotlinx.coroutines.yield()
                     }
@@ -732,6 +732,14 @@ class SubtitleTransactionIntegrationTest {
     }
 
     private companion object {
+        // These awaits hop to Dispatchers.Default on purpose: the adapter's work
+        // runs on real dispatchers, so waiting on the test scheduler would fire
+        // the timeout the moment virtual time jumped. That makes the budget
+        // WALL-CLOCK, and a 5s one failed under full-suite parallel load while
+        // passing every time in isolation. This is a deadlock backstop, not an
+        // assertion about speed, so it should be far larger than any real wait.
+        const val EVENT_TIMEOUT_MS = 60_000L
+
         const val CONTENT_ID = "content-1"
         const val FILE_ID = 42
         const val PROFILE_ID = "profile-1"

@@ -164,9 +164,15 @@ private class AuthRequestRecorder(
     }
 }
 
+// Wall-clock, not virtual: this hops to Dispatchers.Default because the work
+// it waits on runs on real dispatchers. It is a deadlock backstop, not an
+// assertion about speed, so keep it far above any real wait — a short budget
+// here fails under full-suite parallel load while passing in isolation.
+private const val EVENT_TIMEOUT_MS = 60_000L
+
 private suspend fun AuthRequestRecorder.awaitFirstRequestStarted() {
     withContext(Dispatchers.Default) {
-        withTimeout(1_000) { firstRequestStarted.await() }
+        withTimeout(EVENT_TIMEOUT_MS) { firstRequestStarted.await() }
     }
 }
 

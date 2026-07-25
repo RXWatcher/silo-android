@@ -116,6 +116,6 @@ class MediaStorePublicDownloadStoreCollisionTest {
     }
 
     companion object {
-        private const val ENCODED_QUESTION_PATH = "Downloads/Silo/~Pw/prof/42/"
+        private const val ENCODED_QUESTION_PATH = "Download/Silo/~Pw/prof/42/"
     }
 }

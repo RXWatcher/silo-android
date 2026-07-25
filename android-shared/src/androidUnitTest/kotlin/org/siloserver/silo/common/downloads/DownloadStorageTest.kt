@@ -485,7 +485,7 @@ class DownloadStorageTest {
 
         assertFalse(path.contains("../server"))
         assertFalse(path.contains("profile/name"))
-        assertTrue(path.startsWith("Downloads/Silo/"))
+        assertTrue(path.startsWith("Download/Silo/"))
         assertTrue(path.endsWith("/42/"))
     }
 
@@ -498,7 +498,7 @@ class DownloadStorageTest {
             serverId = "_",
             profileId = "profile_name",
         )
-        assertEquals("Downloads/Silo/\\_/profile\\_name/%", pattern)
+        assertEquals("Download/Silo/\\_/profile\\_name/%", pattern)
     }
 
     @Test
@@ -511,7 +511,7 @@ class DownloadStorageTest {
 
         assertFalse(pattern.contains("server%"))
         assertFalse(pattern.contains("profile\\name"))
-        assertNotEquals("Downloads/Silo/server\\%/profile\\\\name/%", pattern)
+        assertNotEquals("Download/Silo/server\\%/profile\\\\name/%", pattern)
     }
 
     private fun DownloadTarget.writeTargetBytes(bytes: ByteArray) {

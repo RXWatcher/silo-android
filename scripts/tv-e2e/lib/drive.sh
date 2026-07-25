@@ -88,3 +88,68 @@ assert_focus() {
   local d; d="$(focus_desc)"
   if echo "$d" | grep -qi "$1"; then pass "focus=$d"; else fail "focus was '$d', wanted /$1/"; fi
 }
+
+# --- HUD ("Info and options") ----------------------------------------------
+# HUD tabs are exposed as TEXT, not content-desc (unlike the transport row and
+# unlike picker rows, which expose neither). Order: Info Video Audio Subtitles
+# Chapters Route Stats.
+ui_text_dump() {
+  adbx shell uiautomator dump /sdcard/e2e-t.xml >/dev/null 2>&1
+  adbx shell cat /sdcard/e2e-t.xml 2>/dev/null | tr '<' '\n<' | grep -oE 'text="[^"]*"' | sed 's/text="//;s/"$//'
+}
+
+screen_has_text() { ui_text_dump | grep -qiF "$1"; }
+
+assert_screen_text() {
+  if screen_has_text "$1"; then pass "screen shows '$1'"; else fail "screen missing '$1'"; fi
+}
+
+open_hud() {
+  open_player_overlay
+  nav_to_desc RIGHT "info and options" 6 || return 1
+  center 3
+}
+
+# Move to a HUD tab. Order is as the app renders it — verified on screen, not
+# assumed: Info Stats Video Audio Subtitles Chapters. Tabs activate on focus.
+hud_tab() {
+  case "$1" in
+    Info) n=0;; Stats) n=1;; Video) n=2;; Audio) n=3;;
+    Subtitles) n=4;; Chapters) n=5;;
+    *) return 1;;
+  esac
+  [ "$n" -gt 0 ] && dpad RIGHT "$n" 0.5
+  sleep 1
+  # Never act on a pane we did not land on.
+  screen_has_text "$1" || return 1
+  return 0
+}
+
+# Step down the pane's LEFT column only. Pressing RIGHT here lands in the
+# secondary column (timers), where a blind CENTER once armed a sleep timer
+# mid-run and polluted every scenario after it.
+hud_row() {
+  local want="$1" max="${2:-8}"
+  dpad DOWN 1 0.8
+  for _ in $(seq 1 "$max"); do
+    if screen_has_text "$want"; then return 0; fi
+    dpad DOWN 1 0.5
+  done
+  return 1
+}
+
+# Leave the player and come back to a known state, so one scenario's side
+# effects cannot leak into the next.
+reset_to_player() {
+  back 2; back 2
+  adbx shell am force-stop "$PKG" >/dev/null 2>&1
+  adbx shell am start -n "$ACTIVITY" >/dev/null 2>&1
+  sleep 8
+  center 5      # first Continue Watching tile
+  center 18     # resume
+}
+
+# Any-tag logcat assertion, for areas SUBDIAG does not cover (audio, video).
+assert_logcat() {
+  if adbx logcat -d 2>/dev/null | grep -qE "$1"; then pass "log: $2"; else fail "expected log $2 (/$1/)"; fi
+}

@@ -48,6 +48,10 @@ class AndroidServerRegistry(
     private val _activeEntry = MutableStateFlow<ServerEntry?>(null)
     override val activeEntry: StateFlow<ServerEntry?> = _activeEntry.asStateFlow()
 
+    @Volatile
+    override var stateLoadFailed: Boolean = false
+        private set
+
     init {
         // Synchronous load + migration so MainActivity.runBlocking can read state.
         runBlocking {
@@ -185,7 +189,23 @@ class AndroidServerRegistry(
 
     private fun loadStateLocked(): RegistryState? {
         val raw = prefs.getString(KEY_REGISTRY_STATE, null) ?: return null
-        return runCatching { json.decodeFromString<RegistryState>(raw) }.getOrNull()
+        val decoded = runCatching { json.decodeFromString<RegistryState>(raw) }.getOrNull()
+        // A blob that exists but will not decode is NOT the same as no blob.
+        // Both used to collapse to an empty registry, which was survivable while
+        // "no servers" only meant "sign in again" — the rows and downloaded
+        // bytes stayed on disk under an id derived from the URL, so re-adding
+        // the server restored them. It stopped being survivable when
+        // OrphanedServerDataPurger started deleting every server present in the
+        // database but absent from the registry: one unparseable blob would
+        // permanently erase downloads, resume positions and queued outbox ops.
+        if (decoded == null) {
+            android.util.Log.e(
+                "AndroidServerRegistry",
+                "registry state failed to decode; suppressing destructive cleanup",
+            )
+            stateLoadFailed = true
+        }
+        return decoded
     }
 
     private fun applyStateLocked(state: RegistryState) {

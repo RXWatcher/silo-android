@@ -77,6 +77,14 @@ class OrphanedServerDataPurger(
      */
     suspend fun purgeOnce(): Set<String> = runLock.withLock {
         withContext(io) {
+            // Orphan-ness is derived purely from registry absence, so a registry
+            // that failed to load presents every server as an orphan and this
+            // becomes a device wipe. Absence is only evidence of removal when
+            // the registry actually knows what it holds.
+            if (registry.stateLoadFailed) {
+                Log.w(TAG, "registry state unreadable; skipping purge")
+                return@withContext emptySet()
+            }
             val registered = registry.entries.value.map { it.id }.toSet()
             val orphans = purgeDao.knownServerIds().toSet() - registered
             val purged = mutableSetOf<String>()

@@ -134,6 +134,36 @@ class OrphanedServerDataPurgerTest {
     }
 
     @Test
+    fun `an unreadable registry blob purges nothing`() = runTest {
+        // The registry decodes its whole state from one JSON blob and treats a
+        // decode failure as "no servers". Purging on that reading would turn a
+        // corrupt preference — recoverable by signing in again, because ids are
+        // derived from the URL — into permanent deletion of every download,
+        // resume position and queued outbox op on the device.
+        val prefs = context.getSharedPreferences("purge-corrupt", Context.MODE_PRIVATE)
+        prefs.edit().clear().commit()
+        prefs.edit()
+            .putString(AndroidServerRegistry.KEY_REGISTRY_STATE, "{ not valid json")
+            .commit()
+        val registry = AndroidServerRegistry(prefs)
+        assertTrue(registry.entries.value.isEmpty(), "corrupt state presents as an empty registry")
+        assertTrue(registry.stateLoadFailed, "and must be flagged as untrustworthy")
+        seed("server-with-data", mediaFileId = 7, recordId = "rec-precious")
+
+        val cancelled = mutableListOf<String>()
+        val purged = purger(registry, cancelled).purgeOnce()
+
+        assertEquals(emptySet(), purged)
+        assertEquals(emptyList(), cancelled)
+        assertEquals(
+            "rec-precious",
+            db.downloadDao().get("server-with-data", "p1", 7)?.recordId,
+            "downloads must survive a registry that could not be read",
+        )
+        assertEquals(1, db.dirtyOperationDao().dueBatch("server-with-data", "p1", 1L, 10).size)
+    }
+
+    @Test
     fun `a file that is currently playing defers its whole server`() = runTest {
         val registry = registry("purge-active")
         seed("orphan-server", mediaFileId = 42, recordId = "rec-playing")

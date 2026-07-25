@@ -182,6 +182,31 @@ internal fun resolveAutoSubtitleSelection(
     subtitleMode: String?,
     showForced: Boolean,
 ): SubtitleAutoSelection {
+    // Traced as a whole because every branch below can end in Disable, and from
+    // the outside "subtitles switched off" looks identical whichever one did it.
+    SubDiag.log(
+        "AUTOSEL in mode=$subtitleMode preferredLang=$preferredLanguage showForced=$showForced " +
+            "audioSel=" + audioTracks.firstOrNull { it.isSelected }?.language +
+            " subs=" + subtitleTracks.joinToString(prefix = "[", postfix = "]") {
+                "#${it.index}/${it.language}/forced=${it.isForced}/sel=${it.isSelected}"
+            },
+    )
+    return resolveAutoSubtitleSelectionInternal(
+        audioTracks = audioTracks,
+        subtitleTracks = subtitleTracks,
+        preferredLanguage = preferredLanguage,
+        subtitleMode = subtitleMode,
+        showForced = showForced,
+    ).also { SubDiag.log("AUTOSEL out=$it") }
+}
+
+private fun resolveAutoSubtitleSelectionInternal(
+    audioTracks: List<PlayerTrackEntry>,
+    subtitleTracks: List<PlayerTrackEntry>,
+    preferredLanguage: String?,
+    subtitleMode: String?,
+    showForced: Boolean,
+): SubtitleAutoSelection {
     if (subtitleTracks.isEmpty()) return SubtitleAutoSelection.NoChange
 
     val mode = subtitleMode?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: "auto"
@@ -904,6 +929,12 @@ class TvPlayerViewModel(
             _uiState.update { it.copy(error = message) }
         },
         hasMountableTracks = { _uiState.value.subtitleTracks.isNotEmpty() },
+        isLocallyMountable = { identity ->
+            resolveMountedSubtitle(
+                identity = identity,
+                tracks = _uiState.value.subtitleTracks.map { it.toMountedTvSubtitleTrack() },
+            ) != null
+        },
     )
     private val playbackMutationFence by lazy {
         TvPlayerMutationFence(loadOwners, subtitleTransactions::invalidate)

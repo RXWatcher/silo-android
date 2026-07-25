@@ -28,3 +28,17 @@ fun canonicalSubtitleCodecFamily(codecOrMime: String?): String? {
         else -> normalized
     }
 }
+
+/**
+ * Whether [family] is a TEXT subtitle family (as opposed to a bitmap one).
+ *
+ * Matters for mount matching: when the server materialises a catalog subtitle
+ * it serves the artifact as WebVTT whatever the source text format was, so a
+ * catalog identity saying `subrip` has to match a mounted `webvtt` track.
+ * Bitmap families are never converted and must keep matching exactly.
+ */
+fun isTextSubtitleCodecFamily(family: String?): Boolean = when (canonicalSubtitleCodecFamily(family)) {
+    "subrip", "webvtt", "ssa", "ttml", "tx3g" -> true
+    else -> false
+}
+

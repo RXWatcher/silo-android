@@ -256,6 +256,15 @@ internal class TvSubtitleTransactionAdapter(
      * replanned stream reports READY seconds before publishing its tracks.
      */
     private val hasMountableTracks: () -> Boolean = { true },
+    /**
+     * Whether THIS identity can be satisfied by a text track the player already
+     * exposes. Catalog-only rows (embedded tracks on a remuxed or transcoded
+     * route) carry a blank URL and never become Media3 tracks, so committing
+     * them locally could only ever end at the mount deadline and roll back.
+     * Answering false sends the pick down the staged-replan path instead, which
+     * is what asks the server to materialise the artifact.
+     */
+    private val isLocallyMountable: (SubtitleIdentity) -> Boolean = { true },
 ) {
     private data class PendingLocalSelection(
         val generation: Long,
@@ -1014,6 +1023,10 @@ internal class TvSubtitleTransactionAdapter(
         state: SubtitleTransitionState,
     ): Boolean {
         val selectionContext = context ?: return false
+        if (!isLocallyMountable(identity)) {
+            SubDiag.log("commitLocal SKIP not mountable id=$identity")
+            return false
+        }
         val pending = state.pending
         if (
             pending != null &&
@@ -1550,6 +1563,32 @@ internal class TvSubtitleTransactionAdapter(
             }
     }
 
+
+    /**
+     * Re-points a committed Embedded identity at the artifact the server just
+     * materialised for it.
+     *
+     * A catalog-only embedded row is picked as `Embedded(n)`, but committing it
+     * makes the server produce a sidecar, and the row then comes back as a
+     * server artifact. Leaving the committed identity as `Embedded(n)` makes it
+     * match no row afterwards: the picker finds nothing checked and falls back
+     * to marking "Off" while that subtitle is plainly on screen, and a restore
+     * later has to re-derive the same thing. Adopt the row's own identity once
+     * the artifact exists.
+     */
+    private fun SubtitleTransitionState.reconcileMaterialisedIdentity(
+        playback: TvSubtitleCommittedPlayback,
+    ): SubtitleTransitionState {
+        val committedIdentity = committed.identity as? SubtitleIdentity.Embedded ?: return this
+        val row = playback.subtitleTracks
+            .firstOrNull { it.index == committedIdentity.serverIndex && it.url.isNotBlank() }
+            ?: return this
+        val materialised = tvSubtitleIdentity(row)
+        if (materialised == committedIdentity) return this
+        SubDiag.log("RECONCILE committed $committedIdentity -> $materialised")
+        return copy(committed = committed.copy(identity = materialised))
+    }
+
     private fun confirmMountedCommittedSelection(owner: PendingLocalSelection) {
         if (publicationSettlement != null) return
         val settlement = beginPublicationSettlement(
@@ -1566,7 +1605,7 @@ internal class TvSubtitleTransactionAdapter(
                 return@launch
             }
             if (confirmed) {
-                transition = currentOwner.proposedState
+                transition = currentOwner.proposedState.reconcileMaterialisedIdentity(playback)
                 committedOutputRouteGeneration = playback.outputRouteGeneration
                 invalidateLocalMount()
                 failureMessage = null

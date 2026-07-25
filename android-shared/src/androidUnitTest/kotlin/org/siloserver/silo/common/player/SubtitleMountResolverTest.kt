@@ -34,6 +34,55 @@ class SubtitleMountResolverTest {
     }
 
     @Test
+    fun catalogTextIdentityMatchesTheWebvttArtifactTheServerMaterialised() {
+        // A catalog row names its source format; the server serves the artifact
+        // it materialises for that row as WebVTT. Demanding an exact family
+        // match meant a picked embedded SubRip track never resolved to the
+        // sidecar produced for it — the mount deadline fired and the selection
+        // rolled back to Off.
+        val identity = SubtitleIdentity.Embedded(
+            serverIndex = 12,
+            media = SubtitleMediaIdentity(
+                trackId = null,
+                label = "SUBRIP",
+                language = "nl",
+                codecFamily = "subrip",
+            ),
+        )
+
+        val match = resolveMountedSubtitle(
+            identity = identity,
+            tracks = listOf(
+                track(index = 0, trackId = "1:silo-subtitle:12", language = "nl", codec = "text/vtt"),
+            ),
+        )
+
+        assertEquals(0, match?.track?.index)
+    }
+
+    @Test
+    fun bitmapIdentityStillRequiresAnExactCodecFamily() {
+        val identity = SubtitleIdentity.Embedded(
+            serverIndex = 4,
+            media = SubtitleMediaIdentity(
+                trackId = null,
+                label = "English",
+                language = "en",
+                codecFamily = "pgs",
+            ),
+        )
+
+        val match = resolveMountedSubtitle(
+            identity = identity,
+            tracks = listOf(
+                track(index = 0, trackId = "1:silo-subtitle:4", language = "en", codec = "text/vtt"),
+            ),
+        )
+
+        assertNull(match, "a bitmap identity must not match a text artifact")
+    }
+
+    @Test
     fun blankCatalogExternalRowCannotMatchEmbeddedMetadata() {
         val row = PlayerSubtitleInfo(
             index = 4,

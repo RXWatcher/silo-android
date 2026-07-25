@@ -40,6 +40,47 @@ class TvSubtitleTransactionAdapterTest {
     }
 
     @Test
+    fun `an embedded pick the player cannot mount is staged to the server`() = runTest {
+        // Catalog-only embedded rows carry a blank URL, so on a remuxed or
+        // transcoded route they never become Media3 tracks. Committing one
+        // locally could only ever end at the mount deadline and roll back to the
+        // previous subtitle — which is what "switching to Dutch does nothing"
+        // looked like. Route it to the staged replan that materialises the
+        // artifact instead.
+        val embedded = SubtitleIdentity.Embedded(
+            serverIndex = 13,
+            media = media(label = "SUBRIP", language = "nl", codec = "subrip"),
+        )
+        val harness = harness(backgroundScope, isLocallyMountable = { false })
+
+        harness.adapter.select(embedded)
+        runCurrent()
+
+        assertEquals(
+            listOf(13),
+            harness.port.requests.map { it.subtitleTrackIndex },
+            "an unmountable identity must reach the staged replan port",
+        )
+    }
+
+    @Test
+    fun `an embedded pick the player already exposes stays local`() = runTest {
+        val embedded = SubtitleIdentity.Embedded(
+            serverIndex = 13,
+            media = media(trackId = "decoder-subrip-13", label = "SUBRIP", language = "nl"),
+        )
+        val harness = harness(backgroundScope, isLocallyMountable = { true })
+
+        harness.adapter.select(embedded)
+        runCurrent()
+
+        assertTrue(
+            harness.port.requests.isEmpty(),
+            "a locally mountable identity must not ask the server to replan",
+        )
+    }
+
+    @Test
     fun `slow older preference write cannot overwrite newer commit`() = runTest {
         val harness = harness(backgroundScope, sessionId = null)
         harness.persistence.suspendFirst = true
@@ -1929,6 +1970,7 @@ class TvSubtitleTransactionAdapterTest {
         tracks: List<PlayerSubtitleInfo> = emptyList(),
         adoption: AdoptionControl = AdoptionControl(),
         durablePersistenceScope: CoroutineScope = scope,
+        isLocallyMountable: (SubtitleIdentity) -> Boolean = { true },
     ): Harness {
         val port = FakeStagedPort()
         val persistence = RecordingPersistence()
@@ -1949,6 +1991,7 @@ class TvSubtitleTransactionAdapterTest {
                     TvSubtitleAdoptionResult.Adopted
                 }
             },
+            isLocallyMountable = isLocallyMountable,
         )
         adapter.resetContent(
             context(sessionId = sessionId, tracks = tracks),

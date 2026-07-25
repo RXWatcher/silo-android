@@ -5,6 +5,7 @@ import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.SubtitleMediaIdentity
 import org.siloserver.silo.playback.canonicalSubtitleCodecFamily
 import org.siloserver.silo.playback.canonicalSubtitleLanguage
+import org.siloserver.silo.playback.isTextSubtitleCodecFamily
 
 private const val SUBTITLE_ARTIFACT_TRACK_ID_PREFIX = "silo-subtitle:"
 private const val DOWNLOADED_SUBTITLE_ARTIFACT_TRACK_ID_PREFIX =
@@ -200,7 +201,18 @@ private fun MountedSubtitleTrack.matchesTypedMetadata(identity: SubtitleMediaIde
     val targetCodec = normalizedSubtitleCodecFamily(identity.codecFamily)
 
     if (targetLanguage != null && canonicalSubtitleLanguage(language) != targetLanguage) return false
-    if (targetCodec != null && normalizedSubtitleCodecFamily(codec) != targetCodec) return false
+    if (targetCodec != null && normalizedSubtitleCodecFamily(codec) != targetCodec) {
+        // A catalog row names its SOURCE format (subrip, ssa, …) but the server
+        // serves the artifact it materialises for that row as WebVTT. Requiring
+        // an exact family match meant a picked embedded text track could never
+        // resolve to the sidecar the server had just produced for it: the mount
+        // deadline fired and the selection rolled back to Off. Bitmap families
+        // are never converted, so they stay strict.
+        val mountedCodec = normalizedSubtitleCodecFamily(codec)
+        if (!isTextSubtitleCodecFamily(targetCodec) || !isTextSubtitleCodecFamily(mountedCodec)) {
+            return false
+        }
+    }
     if (identity.forced != null && forced != identity.forced) return false
     if (identity.hearingImpaired != null && hearingImpaired != identity.hearingImpaired) return false
     return true

@@ -239,7 +239,7 @@ private fun SubtitleIdentity.exactTvMountTrackId(): String? = when (this) {
     -> null
 }
 
-private fun PlayerTrackEntry.toMountedTvSubtitleTrack(): MountedSubtitleTrack =
+internal fun PlayerTrackEntry.toMountedTvSubtitleTrack(): MountedSubtitleTrack =
     MountedSubtitleTrack(
         index = index,
         trackId = trackId,

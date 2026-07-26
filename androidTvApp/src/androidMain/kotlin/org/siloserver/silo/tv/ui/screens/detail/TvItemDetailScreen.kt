@@ -1,5 +1,6 @@
 package org.siloserver.silo.tv.ui.screens.detail
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -76,6 +77,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Border
@@ -101,6 +103,7 @@ import org.siloserver.silo.model.feature.CLIENT_WATCH_TOGETHER_SURFACE_ENABLED
 import org.siloserver.silo.model.watchtogether.RoomSelectionMode
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.tv.ui.screens.watchtogether.TvJoinCodeDialog
+import org.siloserver.silo.tv.ui.screens.watchtogether.TvSuggestToRoomViewModel
 import org.siloserver.silo.tv.ui.screens.watchtogether.TvWatchTogetherEntryDialog
 import org.siloserver.silo.tv.ui.screens.watchtogether.TvWatchTogetherViewModel
 import org.siloserver.silo.tv.ui.components.TvDialogOption
@@ -738,6 +741,20 @@ private fun HeroActionRow(
     onSeasonClick: (seriesId: String, seasonNumber: Int) -> Unit,
     onWatchTogether: (RoomSnapshot) -> Unit,
 ) {
+    val suggestViewModel: TvSuggestToRoomViewModel = koinViewModel()
+    val activeRoom by suggestViewModel.room.collectAsState()
+    val suggestState by suggestViewModel.uiState.collectAsState()
+    // Suggesting happens from a dialog that closes immediately, so without this
+    // the action is silent and indistinguishable from having missed the button.
+    val suggestContext = LocalContext.current
+    LaunchedEffect(suggestState.notice, suggestState.error) {
+        val message = suggestState.notice ?: suggestState.error
+        if (message != null) {
+            Toast.makeText(suggestContext, message, Toast.LENGTH_SHORT).show()
+            suggestViewModel.consumeNotice()
+            suggestViewModel.clearError()
+        }
+    }
     var moreOpen by remember(detail.contentId) { mutableStateOf(false) }
     var watchTogetherOpen by remember(detail.contentId) { mutableStateOf(false) }
     var joinCodeOpen by remember(detail.contentId) { mutableStateOf(false) }
@@ -781,7 +798,7 @@ private fun HeroActionRow(
     // are excluded: a room's transport syncs a video player, and the lobby's
     // "now playing" has nothing to show for one.
     val hasWatchTogether = CLIENT_WATCH_TOGETHER_SURFACE_ENABLED && !isAudiobookItemType(detail.type)
-    val hasOverflowMenu = hasOverflowNavigation || hasWatchTogether
+    val hasOverflowMenu = hasOverflowNavigation || hasWatchTogether || activeRoom != null
 
     // Version set + selection state driving the selector row / Play file id.
     // Series/season use the next-up episode's versions + the next-up selection;
@@ -973,6 +990,25 @@ private fun HeroActionRow(
 
     if (moreOpen && hasOverflowMenu) {
         val options = buildList {
+            if (activeRoom != null) {
+                add(
+                    TvDialogOption(
+                        key = "suggest-to-room",
+                        title = "Suggest to Watch Together",
+                        subtitle = "Add to the room you are in",
+                        onClick = {
+                            moreOpen = false
+                            suggestViewModel.suggest(
+                                contentId = playContentId,
+                                contentType = detail.type,
+                                title = detail.title,
+                                subtitle = detail.seriesTitle.takeIf { !it.isNullOrBlank() },
+                                posterUrl = detail.posterUrl,
+                            )
+                        },
+                    ),
+                )
+            }
             if (hasWatchTogether) {
                 add(
                     TvDialogOption(

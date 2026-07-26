@@ -82,7 +82,7 @@ class PlaybackProtocolV3Test {
     @Test
     fun sourceColorRangeRoundTrips() {
         val encoded = SiloJson.encodeToString(
-            plan.copy(source = PlaybackSourceV3(colorRange = "pc")),
+            plan.copy(source = PlaybackSourceDescriptorV3(colorRange = "pc")),
         )
 
         val decoded = SiloJson.decodeFromString<PlaybackPlanV3>(encoded)

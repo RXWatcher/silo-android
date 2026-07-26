@@ -30,6 +30,17 @@ const val CLIENT_DV8_HDR10_PLUS_SANITIZER = "client_dv8_hdr10plus_sanitizer_v1"
 const val CLIENT_POST_RESUME_VIDEO_RECOVERY = "client_post_resume_video_recovery_v1"
 const val CLIENT_SURFACE_RECOVERY = "client_surface_recovery_v1"
 
+/** Features the client advertises on `POST /api/v1/playback/start`. */
+val PLAYBACK_START_CLIENT_FEATURES_V3 = listOf(
+    PLAYBACK_PLAN_V3_FEATURE,
+    MEDIA3_ONLY_FEATURE,
+    DETAILED_DECODE_CAPABILITIES_FEATURE,
+    CLIENT_VIDEO_TRANSFORMATIONS_FEATURE,
+    DEVICE_QUIRKS_V3_FEATURE,
+    SEEK_REANCHOR_V3_FEATURE,
+    DIRECT_STREAM_RESUME_V1_FEATURE,
+)
+
 @Serializable
 enum class PlaybackDecisionOutcome {
     @SerialName("playable") PLAYABLE,
@@ -114,7 +125,6 @@ data class PlaybackPlanV3(
     val timeline: PlaybackTimelineV3 = PlaybackTimelineV3(),
     @SerialName("selected_tracks") val selectedTracks: SelectedPlaybackTracksV3 = SelectedPlaybackTracksV3(),
     @SerialName("effective_recipe") val effectiveRecipe: PlaybackEffectiveRecipeV3 = PlaybackEffectiveRecipeV3(),
-    val source: PlaybackSourceV3 = PlaybackSourceV3(),
     val claims: PlaybackValidationClaims = PlaybackValidationClaims(),
     val subtitle: PlaybackSubtitleDecisionV3 = PlaybackSubtitleDecisionV3(),
     val transformations: List<PlaybackTransformationV3> = emptyList(),
@@ -124,10 +134,30 @@ data class PlaybackPlanV3(
     @SerialName("decision_reason") val decisionReason: String,
     @SerialName("requested_media_file_id") val requestedMediaFileId: Int? = null,
     @SerialName("effective_media_file_id") val effectiveMediaFileId: Int? = null,
+    val source: PlaybackSourceDescriptorV3 = PlaybackSourceDescriptorV3(),
 )
 
+/**
+ * Facts about the media file the plan resolved to, as opposed to the transport
+ * carrying it. Defaulted throughout so a server that predates the descriptor
+ * still decodes.
+ */
 @Serializable
-data class PlaybackSourceV3(
+data class PlaybackSourceDescriptorV3(
+    @SerialName("media_file_id") val mediaFileId: Int? = null,
+    /**
+     * Full runtime of the source, or null when the server does not know it.
+     *
+     * Null must survive as null: `SiloJson` sets `coerceInputValues`, so a
+     * non-nullable `Double` here would silently become 0.0 — the very value
+     * this field exists to stop the player inventing.
+     *
+     * This is the whole file, never `total - sourceStartSeconds`, and it is
+     * never adjusted by `timelineOffsetSeconds`. Do not substitute the
+     * engine's reported duration for it: on an HLS copy remux the engine
+     * reports the window produced so far, not the runtime.
+     */
+    @SerialName("duration_seconds") val durationSeconds: Double? = null,
     @SerialName("color_range") val colorRange: String? = null,
     /**
      * Black bars BAKED INTO the picture, as a fraction of the frame height.
@@ -237,15 +267,7 @@ data class PlaybackTerminalV3(
 @Serializable
 data class PlaybackStartRequestV3(
     @SerialName("protocol_version") val protocolVersion: Int = PLAYBACK_PROTOCOL_V3,
-    @SerialName("client_features") val clientFeatures: List<String> = listOf(
-        PLAYBACK_PLAN_V3_FEATURE,
-        MEDIA3_ONLY_FEATURE,
-        DETAILED_DECODE_CAPABILITIES_FEATURE,
-        CLIENT_VIDEO_TRANSFORMATIONS_FEATURE,
-        DEVICE_QUIRKS_V3_FEATURE,
-        SEEK_REANCHOR_V3_FEATURE,
-        DIRECT_STREAM_RESUME_V1_FEATURE,
-    ),
+    @SerialName("client_features") val clientFeatures: List<String> = PLAYBACK_START_CLIENT_FEATURES_V3,
     @SerialName("file_id") val fileId: Int,
     @SerialName("profile_id") val profileId: String,
     @SerialName("playback_attempt_id") val playbackAttemptId: String,

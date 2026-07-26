@@ -157,16 +157,21 @@ fun TvWatchTogetherLobbyScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        // Scrollable: the host block alone (code, QR, two cycler rows, close
-        // button) is taller than a 1080p panel once the suggestion list is under
-        // it, so the lower rows were drawn past the bottom edge and could not be
-        // reached at all. The bottom padding leaves room for a focused row's
-        // scale/glow inside the overscan-safe area.
-        Column(
+        // Two columns. The invite — code and QR — is pinned on the left and never
+        // scrolls: it is the one thing on this screen a host has to read out to
+        // somebody, and in a single scrolling column it left the screen the
+        // moment focus moved down to the controls. Everything focusable lives in
+        // the right column, which scrolls on its own, so the code stays put
+        // however far down the list you go. The right half of this screen was
+        // empty anyway.
+        Row(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(start = 56.dp, end = 56.dp, top = 40.dp, bottom = 96.dp),
+                .padding(start = 56.dp, end = 56.dp, top = 40.dp, bottom = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(48.dp),
+        ) {
+        Column(
+            modifier = Modifier.weight(0.42f),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             // --- Header --------------------------------------------------------
@@ -248,6 +253,22 @@ fun TvWatchTogetherLobbyScreen(
                             )
                         }
                     }
+                }
+            }
+        }
+
+        // Right column: everything focusable, scrolling independently. Bottom
+        // padding leaves room for a focused row's scale/glow inside the
+        // overscan-safe area.
+        Column(
+            modifier = Modifier
+                .weight(0.58f)
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 48.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            if (snapshot != null) {
+                if (canManage) {
                     // Selection mode is fixed at room creation — shown read-only.
                     TvDialogCyclerRow(
                         title = "Selection mode",
@@ -305,6 +326,7 @@ fun TvWatchTogetherLobbyScreen(
                     }
                 }
             }
+        }
         }
     }
 }

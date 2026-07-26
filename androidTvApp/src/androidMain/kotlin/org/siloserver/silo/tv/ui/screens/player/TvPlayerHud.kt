@@ -168,6 +168,7 @@ internal fun TvPlayerHud(
     audioDelayEnabled: Boolean,
     onAudioDelayChanged: (Int) -> Unit,
     subtitleDelayMs: Int,
+    subtitleDelayEnabled: Boolean,
     onSubtitleDelayChanged: (Int) -> Unit,
     subtitleAppearance: SubtitleAppearance,
     onSubtitleAppearanceChanged: (SubtitleAppearance) -> Unit,
@@ -387,6 +388,7 @@ internal fun TvPlayerHud(
                     HudTab.Subtitles -> HudSubtitlesPane(
                         presentation = subtitlePresentation,
                         subtitleDelayMs = subtitleDelayMs,
+                        subtitleDelayEnabled = subtitleDelayEnabled,
                         onSubtitleDelayChanged = onSubtitleDelayChanged,
                         appearance = subtitleAppearance,
                         onAppearanceChanged = onSubtitleAppearanceChanged,
@@ -1214,6 +1216,7 @@ private fun HudAudioPane(
 private fun HudSubtitlesPane(
     presentation: TvSubtitleHudPresentation,
     subtitleDelayMs: Int,
+    subtitleDelayEnabled: Boolean,
     onSubtitleDelayChanged: (Int) -> Unit,
     appearance: SubtitleAppearance,
     onAppearanceChanged: (SubtitleAppearance) -> Unit,
@@ -1289,8 +1292,15 @@ private fun HudSubtitlesPane(
 
                 HudFocusedSettingRow(
                     label = "Delay",
-                    value = delayLabel(subtitleDelayMs),
-                    enabled = enabled,
+                    // Burn-in is baked into the picture by the server and the
+                    // offset is never sent to it, so dragging this did nothing
+                    // at all. Say so instead of pretending to work.
+                    value = if (subtitleDelayEnabled) {
+                        delayLabel(subtitleDelayMs)
+                    } else {
+                        "Unavailable for burned-in subtitles"
+                    },
+                    enabled = enabled && subtitleDelayEnabled,
                     rightFocusRequester = subtitleTextColorFocus,
                     onActivate = {
                         onPresentPicker(

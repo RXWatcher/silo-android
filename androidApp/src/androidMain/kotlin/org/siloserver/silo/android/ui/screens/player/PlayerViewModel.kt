@@ -3364,7 +3364,16 @@ class PlayerViewModel(
      * the new offset at every cue parse.
      */
     fun onSetSubtitleDelay(value: Int) {
-        viewModelScope.launch { playerSettingsStore.setSubtitleSyncMs(value) }
+        // Per item — see the TV twin. A release's bad timing should not follow
+        // the viewer into every other title.
+        val item = _uiState.value.contentId.takeIf { it.isNotBlank() }
+        viewModelScope.launch {
+            if (item != null) {
+                playerSettingsStore.setSubtitleSyncMsFor(item, value)
+            } else {
+                playerSettingsStore.setSubtitleSyncMs(value)
+            }
+        }
     }
 
     // ---- Sleep timer setters ---------------------------------------------------

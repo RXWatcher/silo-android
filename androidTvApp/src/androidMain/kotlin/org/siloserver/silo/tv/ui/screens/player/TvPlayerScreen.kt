@@ -1442,6 +1442,9 @@ fun TvPlayerScreen(
             playMethod = method,
             delivery = delivery,
             serverUrl = state.serverUrl,
+            // Carried onto the MediaItem so the playback service can resolve
+            // per-item preferences (subtitle sync) from the player alone.
+            contentId = contentId,
             container = state.container,
             subtitles = state.subtitleUrls,
             title = state.title.ifBlank { null },
@@ -1497,6 +1500,9 @@ fun TvPlayerScreen(
             playMethod = method,
             delivery = delivery,
             serverUrl = state.serverUrl,
+            // Carried onto the MediaItem so the playback service can resolve
+            // per-item preferences (subtitle sync) from the player alone.
+            contentId = contentId,
             container = state.container,
             subtitles = state.subtitleUrls,
             title = state.title.ifBlank { null },
@@ -1896,6 +1902,11 @@ fun TvPlayerScreen(
                             audioDelayEnabled = state.playbackPlan?.claims?.audio?.passthrough != true,
                             onAudioDelayChanged = viewModel::onAudioDelayChanged,
                             subtitleDelayMs = subtitleDelayMs,
+                            // The server bakes a burned-in subtitle into the
+                            // picture and the client's offset never reaches it,
+                            // so the control cannot move those cues.
+                            subtitleDelayEnabled =
+                                state.committedSubtitleIdentity !is SubtitleIdentity.ServerBurnIn,
                             onSubtitleDelayChanged = viewModel::onSubtitleDelayChanged,
                             subtitleAppearance = subtitleAppearance,
                             onSubtitleAppearanceChanged = viewModel::onSetSubtitleAppearance,

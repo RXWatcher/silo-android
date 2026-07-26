@@ -584,6 +584,8 @@ fun PlayerScreen(
             playMethod = playMethod,
             delivery = delivery,
             serverUrl = serverUrl,
+            // See the TV twin: identifies the item for per-item preferences.
+            contentId = uiState.contentId,
             container = uiState.container,
             subtitles = uiState.subtitleTracks,
             title = uiState.title.ifBlank { null },

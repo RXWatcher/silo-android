@@ -894,6 +894,16 @@ class TvPlayerViewModel(
                 )
                 subtitleSnapshotSettlement.reset()
                 lastAdapterMountIdentity = localMountIdentity
+                // Resolve against the tracks already on the player. A pick that
+                // needs no media rebuild — an in-stream CEA-608 caption track,
+                // say — produces no new track snapshot, so waiting for one only
+                // ever ended at the mount deadline: "Closed Captions" could be
+                // selected but never applied. Rebuild-backed picks are
+                // unaffected; their track is not there yet, so this no-ops and
+                // the snapshot that follows resolves them as before.
+                _uiState.value.subtitleTracks
+                    .takeIf(List<PlayerTrackEntry>::isNotEmpty)
+                    ?.let(::resolveSubtitleRemountReselection)
             } else if (localMountIdentity == null) {
                 lastAdapterMountIdentity = null
             }
@@ -3834,7 +3844,10 @@ class TvPlayerViewModel(
      * mid-playback by dropping already-buffered cues).
      */
     fun onSubtitleDelayChanged(delayMs: Int) {
-        viewModelScope.launch { playerSettingsStore.setSubtitleSyncMs(delayMs) }
+        // Recorded against THIS item. A mistimed subtitle belongs to the
+        // release it ships with, so correcting it must not follow the viewer
+        // into every other title — which the single profile-wide value did.
+        viewModelScope.launch { playerSettingsStore.setSubtitleSyncMsFor(contentId, delayMs) }
     }
 
     // ---- Sleep timer setters ---------------------------------------------------

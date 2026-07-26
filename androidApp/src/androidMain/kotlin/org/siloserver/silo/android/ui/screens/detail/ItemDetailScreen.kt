@@ -56,11 +56,13 @@ import org.siloserver.silo.model.ebook.isInAppReadableEbookVersion
 import org.siloserver.silo.model.ebook.isSupportedEbookVersion
 import org.siloserver.silo.model.download.DownloadQuality
 import org.siloserver.silo.model.download.DownloadRecord
+import org.siloserver.silo.android.ui.screens.watchtogether.SuggestToRoomViewModel
 import org.siloserver.silo.model.feature.CLIENT_WATCH_TOGETHER_SURFACE_ENABLED
 import org.siloserver.silo.common.settings.PlayerSettingsStore
 import org.siloserver.silo.network.ServerRegistry
 import org.siloserver.silo.playback.selectPlaybackVersion
 import org.koin.compose.koinInject
+import org.koin.compose.viewmodel.koinViewModel
 import org.siloserver.silo.metadata.DescriptionTranslationPhase
 import org.siloserver.silo.model.feature.MetadataAiFeatureStore
 import org.siloserver.silo.model.metadata.MetadataAiOnView
@@ -144,6 +146,20 @@ fun ItemDetailScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val suggestViewModel: SuggestToRoomViewModel = koinViewModel()
+    val suggestRoom by suggestViewModel.room.collectAsState()
+    val suggestState by suggestViewModel.uiState.collectAsState()
+    // The menu closes on selection, so without a confirmation the action is
+    // indistinguishable from having missed the item.
+    val suggestContext = LocalContext.current
+    LaunchedEffect(suggestState.notice, suggestState.error) {
+        val message = suggestState.notice ?: suggestState.error
+        if (message != null) {
+            Toast.makeText(suggestContext, message, Toast.LENGTH_SHORT).show()
+            suggestViewModel.consumeNotice()
+            suggestViewModel.clearError()
+        }
+    }
     val context = LocalContext.current
 
     // Refresh progress and resume secondary series enrichment while this route
@@ -695,6 +711,17 @@ fun ItemDetailScreen(
                                         ?: playbackResumePosition(detail.userData),
                                 )
                             },
+                            onSuggestToRoom = suggestRoom?.let {
+                                {
+                                    suggestViewModel.suggest(
+                                        contentId = nextEpisode?.contentId ?: detail.contentId,
+                                        contentType = detail.type,
+                                        title = detail.title,
+                                        subtitle = detail.seriesTitle?.takeIf { t -> t.isNotBlank() },
+                                        posterUrl = detail.posterUrl,
+                                    )
+                                }
+                            },
                             onWatchTogether = if (CLIENT_WATCH_TOGETHER_SURFACE_ENABLED) {
                                 { onWatchTogether(nextEpisode?.contentId ?: detail.contentId, null) }
                             } else {
@@ -885,6 +912,17 @@ fun ItemDetailScreen(
                                     subtitleTrackIndex = explicitSubtitleIndex,
                                     resumePositionSeconds = playbackResumePosition(detail.userData),
                                 )
+                            },
+                            onSuggestToRoom = suggestRoom?.let {
+                                {
+                                    suggestViewModel.suggest(
+                                        contentId = detail.contentId,
+                                        contentType = detail.type,
+                                        title = detail.title,
+                                        subtitle = detail.seriesTitle?.takeIf { t -> t.isNotBlank() },
+                                        posterUrl = detail.posterUrl,
+                                    )
+                                }
                             },
                             onWatchTogether = if (CLIENT_WATCH_TOGETHER_SURFACE_ENABLED) {
                                 { onWatchTogether(detail.contentId, explicitFileId) }

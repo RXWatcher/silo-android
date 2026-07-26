@@ -466,6 +466,9 @@ val androidModule = module {
         )
     }
     viewModel { org.siloserver.silo.android.ui.screens.watchtogether.WatchTogetherEntryViewModel(get()) }
+    viewModel {
+        org.siloserver.silo.android.ui.screens.watchtogether.SuggestToRoomViewModel(get())
+    }
     viewModel { params ->
         org.siloserver.silo.android.ui.screens.watchtogether.WatchTogetherLobbyViewModel(
             roomId = params.get(),

@@ -75,6 +75,8 @@ fun SeriesDetailContent(
     playOnDeviceLabel: String = "Play on device",
     onPlayOnDevice: (() -> Unit)? = null,
     onWatchTogether: (() -> Unit)? = null,
+    /** Non-null only while the viewer is actually in a room. */
+    onSuggestToRoom: (() -> Unit)? = null,
     translation: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -121,7 +123,9 @@ fun SeriesDetailContent(
                     onToggleWatched = onToggleWatched,
                     userRating = userRating,
                     onRateClick = { showRatingSheet = true },
-                    overflow = if (onWatchTogether != null || onPlayOnDevice != null) {
+                    overflow = if (onWatchTogether != null || onPlayOnDevice != null ||
+                        onSuggestToRoom != null
+                    ) {
                         { dismiss ->
                             if (onPlayOnDevice != null) {
                                 DropdownMenuItem(
@@ -132,6 +136,18 @@ fun SeriesDetailContent(
                                     onClick = {
                                         dismiss()
                                         onPlayOnDevice()
+                                    },
+                                )
+                            }
+                            if (onSuggestToRoom != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Suggest to Watch Together") },
+                                    leadingIcon = {
+                                        Icon(Icons.Outlined.Groups, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        dismiss()
+                                        onSuggestToRoom()
                                     },
                                 )
                             }

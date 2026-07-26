@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * A transport command paired with its `execute_at` already parsed to a
@@ -128,7 +129,13 @@ class WatchTogetherRepository(
 
     // Locally-tracked vote set: ids the local user has voted for. Used to
     // re-merge voted_by_me into broadcast suggestion lists (which force false).
-    private val votedIds = mutableSetOf<String>()
+    //
+    // Held in a StateFlow rather than a MutableSet because it is written from
+    // two directions at once — REST completions on an IO dispatcher and the
+    // websocket fold — and an unsynchronised MutableSet has no defined
+    // behaviour under that. `update` is atomic and the value is immutable, so
+    // readers always see a whole set.
+    private val votedIds = MutableStateFlow<Set<String>>(emptySet())
 
     @kotlin.concurrent.Volatile
     private var roomToken: String = ""
@@ -157,70 +164,85 @@ class WatchTogetherRepository(
 
     // ---- REST: host management ------------------------------------------------
 
+    /**
+     * The room every room-scoped call is addressed to.
+     *
+     * These used to fall back to an empty id, which turned "there is no room"
+     * into a request against a malformed path — a 404 or 405 surfaced to the
+     * user as though the server had rejected the action. It is reachable: the
+     * snapshot is cleared on close and on losing the connection, and the UI can
+     * still have an in-flight action at that moment. Failing here says what
+     * actually happened.
+     */
+    private fun activeRoomId(): String? = _roomSnapshot.value?.roomId?.takeIf { it.isNotBlank() }
+
+    private fun <T> noActiveRoom(): ApiResult<T> =
+        ApiResult.Error(code = 409, error = "no_active_room", message = "You are not in a room")
+
     suspend fun setSelection(request: SetSelectionRequest): ApiResult<RoomResponse> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         val r = api.setSelection(roomId, roomToken, request)
         if (r is ApiResult.Success) _roomSnapshot.value = r.data.room
         return r
     }
 
     suspend fun updatePolicy(request: UpdatePolicyRequest): ApiResult<RoomResponse> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         val r = api.updatePolicy(roomId, roomToken, request)
         if (r is ApiResult.Success) _roomSnapshot.value = r.data.room
         return r
     }
 
     suspend fun closeRoom(): ApiResult<Unit> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         return api.closeRoom(roomId, roomToken)
     }
 
     // ---- REST: suggestions ----------------------------------------------------
 
     suspend fun refreshSuggestions(): ApiResult<SuggestionsResponse> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         val r = api.listSuggestions(roomId, roomToken)
         if (r is ApiResult.Success) applySuggestions(r.data.suggestions, fromBroadcast = false)
         return r
     }
 
     suspend fun addSuggestion(request: AddSuggestionRequest): ApiResult<SuggestionsResponse> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         val r = api.addSuggestion(roomId, roomToken, request)
         if (r is ApiResult.Success) applySuggestions(r.data.suggestions, fromBroadcast = false)
         return r
     }
 
     suspend fun deleteSuggestion(suggestionId: String): ApiResult<SuggestionsResponse> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         val r = api.deleteSuggestion(roomId, roomToken, suggestionId)
         if (r is ApiResult.Success) applySuggestions(r.data.suggestions, fromBroadcast = false)
         return r
     }
 
     suspend fun vote(suggestionId: String): ApiResult<SuggestionsResponse> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         val r = api.vote(roomId, roomToken, suggestionId)
         if (r is ApiResult.Success) {
-            votedIds.add(suggestionId)
+            votedIds.update { it + suggestionId }
             applySuggestions(r.data.suggestions, fromBroadcast = false)
         }
         return r
     }
 
     suspend fun unvote(suggestionId: String): ApiResult<SuggestionsResponse> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         val r = api.unvote(roomId, roomToken, suggestionId)
         if (r is ApiResult.Success) {
-            votedIds.remove(suggestionId)
+            votedIds.update { it - suggestionId }
             applySuggestions(r.data.suggestions, fromBroadcast = false)
         }
         return r
     }
 
     suspend fun promoteSuggestion(request: PromoteSuggestionRequest): ApiResult<RoomResponse> {
-        val roomId = _roomSnapshot.value?.roomId ?: ""
+        val roomId = activeRoomId() ?: return noActiveRoom()
         val r = api.promoteSuggestion(roomId, roomToken, request)
         if (r is ApiResult.Success) _roomSnapshot.value = r.data.room
         return r
@@ -233,10 +255,12 @@ class WatchTogetherRepository(
      */
     private fun applySuggestions(list: List<Suggestion>, fromBroadcast: Boolean) {
         if (!fromBroadcast) {
-            list.forEach { if (it.votedByMe) votedIds.add(it.id) }
+            val authoritative = list.filter { it.votedByMe }.map { it.id }
+            if (authoritative.isNotEmpty()) votedIds.update { it + authoritative }
         }
+        val voted = votedIds.value
         _suggestions.value = list.map { s ->
-            if (s.id in votedIds) s.copy(votedByMe = true) else s
+            if (s.id in voted) s.copy(votedByMe = true) else s
         }
     }
 
@@ -354,7 +378,7 @@ class WatchTogetherRepository(
         _roomSnapshot.value = null
         _suggestions.value = emptyList()
         _roomClosedReason.value = null
-        votedIds.clear()
+        votedIds.value = emptySet()
         roomToken = ""
         realtime = null
     }
@@ -366,7 +390,12 @@ class WatchTogetherRepository(
         /**
          * Maximum number of consecutive connection failures (e.g. throws during
          * [connect] collection, factory/handshake errors) before the reconnect
-         * loop gives up. Reset to zero on any healthy server event.
+         * loop gives up.
+         *
+         * Reset only on a connection that ends CLEANLY, not on a healthy event.
+         * A server that emits one good frame per attempt and then drops would
+         * otherwise reset the counter every round and reconnect forever; the
+         * backoff index is the thing healthy traffic resets.
          */
         const val MAX_RECONNECT_ATTEMPTS = 6
     }

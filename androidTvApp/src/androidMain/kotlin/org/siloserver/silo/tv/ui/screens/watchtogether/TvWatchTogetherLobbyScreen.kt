@@ -52,7 +52,11 @@ import org.siloserver.silo.model.watchtogether.RoomPhase
 import org.siloserver.silo.model.watchtogether.RoomSelectionMode
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.model.watchtogether.Suggestion
+import org.siloserver.silo.tv.ui.screens.player.TvDialogActionRow
+import org.siloserver.silo.watchtogether.isVoteRoom
+import org.siloserver.silo.watchtogether.roomVoteWinner
 import org.siloserver.silo.tv.ui.navigation.TvRoute
+import org.siloserver.silo.tv.ui.theme.SiloBlue
 import org.siloserver.silo.tv.ui.screens.auth.QrCodePanel
 import org.siloserver.silo.tv.ui.screens.player.TvDialogCyclerRow
 import org.siloserver.silo.tv.ui.theme.DarkBackground
@@ -117,6 +121,7 @@ fun TvWatchTogetherLobbyScreen(
     val snapshot = room
     val isHostLabel = snapshot?.selfRole == MemberRole.Host
     val canManage = snapshot?.selfCanManageRoom == true
+    val isVoteRoom = snapshot.isVoteRoom()
 
     // Auto-hand-off into the synced player once the room is playing + selected.
     LaunchedEffect(room?.phase, room?.selectedContentId, room?.selectedFileId, room?.memberCount, room?.selfRole) {
@@ -289,6 +294,19 @@ fun TvWatchTogetherLobbyScreen(
                     CloseRoomButton(onClick = viewModel::closeRoom)
                 }
 
+                if (isVoteRoom && canManage) {
+                    val winner = roomVoteWinner(suggestions)
+                    // Disabled until something has a vote: the server refuses a
+                    // start with no votes cast, and a button that only fails is
+                    // worse than one that is visibly not ready yet.
+                    TvDialogActionRow(
+                        title = winner?.let { "Start winner: ${it.title}" }
+                            ?: "Start winner — no votes yet",
+                        enabled = winner != null,
+                        onClick = { winner?.let { viewModel.promote(it.id) } },
+                    )
+                }
+
                 Text(
                     text = "SUGGESTIONS",
                     style = MaterialTheme.typography.labelLarge.copy(letterSpacing = 2.sp),
@@ -310,11 +328,14 @@ fun TvWatchTogetherLobbyScreen(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
+                        val winner = roomVoteWinner(suggestions)
                         suggestions.forEach { s ->
                             key(s.id) {
                                 SuggestionRow(
                                     suggestion = s,
                                     canManage = canManage,
+                                    isWinning = isVoteRoom && winner?.id == s.id,
+                                    isVoteRoom = isVoteRoom,
                                     onVote = {
                                         if (s.votedByMe) viewModel.unvote(s.id) else viewModel.vote(s.id)
                                     },
@@ -360,6 +381,9 @@ private fun nextPolicy(policy: GuestControlPolicy): GuestControlPolicy = when (p
 private fun SuggestionRow(
     suggestion: Suggestion,
     canManage: Boolean,
+    /** True in a vote room for the suggestion currently winning. */
+    isWinning: Boolean,
+    isVoteRoom: Boolean,
     onVote: () -> Unit,
     onPromote: () -> Unit,
     onRemove: () -> Unit,
@@ -459,9 +483,26 @@ private fun SuggestionRow(
                 style = MaterialTheme.typography.titleMedium,
                 color = if (isFocused) FocusedContent else Color.White,
             )
+            if (isWinning) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = "WINNING",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp,
+                    ),
+                    color = if (isFocused) FocusedContent else SiloBlue,
+                )
+            }
             if (canManage) {
                 Spacer(Modifier.width(8.dp))
-                RowAction(text = "Pick", onClick = onPromote)
+                // No per-row "Pick" in a vote room: the server refuses to
+                // promote anything but the winner, so offering it on every row
+                // would be an action that fails four times out of five. The
+                // host starts the winner from the button above the list.
+                if (!isVoteRoom) {
+                    RowAction(text = "Pick", onClick = onPromote)
+                }
                 RowAction(text = "Remove", onClick = onRemove)
             }
         }

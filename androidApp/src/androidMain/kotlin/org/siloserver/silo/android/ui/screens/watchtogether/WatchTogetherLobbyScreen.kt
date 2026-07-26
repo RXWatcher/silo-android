@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.HowToVote
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,6 +38,8 @@ import androidx.compose.ui.unit.dp
 import org.siloserver.silo.model.watchtogether.MemberRole
 import org.siloserver.silo.model.watchtogether.RoomSelectionMode
 import org.siloserver.silo.model.watchtogether.Suggestion
+import org.siloserver.silo.watchtogether.isVoteRoom
+import org.siloserver.silo.watchtogether.roomVoteWinner
 import org.koin.compose.viewmodel.koinViewModel
 import org.koin.core.parameter.parametersOf
 
@@ -131,12 +134,33 @@ fun WatchTogetherLobbyScreen(
                 }
 
                 HorizontalDivider()
+
+                val isVoteRoom = room.isVoteRoom()
+                val winner = roomVoteWinner(suggestions)
+                if (isVoteRoom && canManage) {
+                    // Disabled with no votes cast: the server refuses that start,
+                    // so a button that can only fail is worse than one visibly
+                    // not ready.
+                    Button(
+                        onClick = { winner?.let { viewModel.promote(it.id) } },
+                        enabled = winner != null,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            winner?.let { "Start winner: ${it.title}" }
+                                ?: "Start winner — no votes yet",
+                        )
+                    }
+                }
+
                 Text("Suggestions", style = MaterialTheme.typography.titleSmall)
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(suggestions, key = { it.id }) { s ->
                         SuggestionRow(
                             suggestion = s,
                             canManage = canManage,
+                            isWinning = isVoteRoom && winner?.id == s.id,
+                            isVoteRoom = isVoteRoom,
                             onVote = { if (s.votedByMe) viewModel.unvote(s.id) else viewModel.vote(s.id) },
                             onPromote = { viewModel.promote(s.id) },
                             onRemove = { viewModel.removeSuggestion(s.id) },
@@ -159,6 +183,8 @@ private fun SuggestionRow(
     suggestion: Suggestion,
     canManage: Boolean,
     onVote: () -> Unit,
+    isWinning: Boolean,
+    isVoteRoom: Boolean,
     onPromote: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -176,7 +202,11 @@ private fun SuggestionRow(
                 Text("${suggestion.voteCount}${if (suggestion.votedByMe) " ✓" else ""}")
             }
             if (canManage) {
-                TextButton(onClick = onPromote) { Text("Pick") }
+                // The server only promotes the winner in a vote room, so a
+                // per-row Pick would fail on every other row.
+                if (!isVoteRoom) {
+                    TextButton(onClick = onPromote) { Text("Pick") }
+                }
                 TextButton(onClick = onRemove) { Text("Remove") }
             }
         }

@@ -38,6 +38,7 @@ fun TvWatchTogetherEntryDialog(
     isBusy: Boolean,
     error: String?,
     onHost: () -> Unit,
+    onHostVote: () -> Unit,
     onJoin: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -85,6 +86,15 @@ fun TvWatchTogetherEntryDialog(
                     enabled = !isBusy,
                     onClick = onHost,
                     modifier = Modifier.focusRequester(hostFocus),
+                )
+
+                // A vote room is a different room, not a setting to change
+                // later: selection_mode is fixed at creation server-side, so it
+                // has to be chosen here.
+                TvDialogActionRow(
+                    title = if (isBusy) "Working…" else "Host a vote room",
+                    enabled = !isBusy,
+                    onClick = onHostVote,
                 )
 
                 TvDialogActionRow(

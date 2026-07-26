@@ -17,13 +17,14 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -156,10 +157,16 @@ fun TvWatchTogetherLobbyScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
+        // Scrollable: the host block alone (code, QR, two cycler rows, close
+        // button) is taller than a 1080p panel once the suggestion list is under
+        // it, so the lower rows were drawn past the bottom edge and could not be
+        // reached at all. The bottom padding leaves room for a focused row's
+        // scale/glow inside the overscan-safe area.
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 56.dp, vertical = 40.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(start = 56.dp, end = 56.dp, top = 40.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             // --- Header --------------------------------------------------------
@@ -273,20 +280,27 @@ fun TvWatchTogetherLobbyScreen(
                         color = Color.White.copy(alpha = 0.5f),
                     )
                 } else {
-                    LazyColumn(
+                    // Laid out directly rather than in a LazyColumn: the parent
+                    // now scrolls, and a lazy list inside a scrolling column is
+                    // measured with an unbounded height, which crashes. A room's
+                    // suggestion list is short enough that laziness bought
+                    // nothing anyway.
+                    Column(
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        items(suggestions, key = { it.id }) { s ->
-                            SuggestionRow(
-                                suggestion = s,
-                                canManage = canManage,
-                                onVote = {
-                                    if (s.votedByMe) viewModel.unvote(s.id) else viewModel.vote(s.id)
-                                },
-                                onPromote = { viewModel.promote(s.id) },
-                                onRemove = { viewModel.removeSuggestion(s.id) },
-                            )
+                        suggestions.forEach { s ->
+                            key(s.id) {
+                                SuggestionRow(
+                                    suggestion = s,
+                                    canManage = canManage,
+                                    onVote = {
+                                        if (s.votedByMe) viewModel.unvote(s.id) else viewModel.vote(s.id)
+                                    },
+                                    onPromote = { viewModel.promote(s.id) },
+                                    onRemove = { viewModel.removeSuggestion(s.id) },
+                                )
+                            }
                         }
                     }
                 }

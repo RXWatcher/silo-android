@@ -3,13 +3,13 @@ package org.siloserver.silo.tv.ui.screens.auth
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -33,6 +33,8 @@ fun QrCodePanel(
     size: Dp = 320.dp,
     foreground: Color = Color.Black,
     background: Color = Color.White,
+    /** Clear border around the modules; four modules' worth is the spec minimum. */
+    quietZone: Dp = 12.dp,
     modifier: Modifier = Modifier,
 ) {
     val matrix = remember(content) {
@@ -45,14 +47,20 @@ fun QrCodePanel(
         writer.encode(content, BarcodeFormat.QR_CODE, 256, 256, hints)
     }
 
+    // Square, with a real quiet zone. The rounded clip that used to be here cut
+    // the corners off the finder patterns — the three squares a scanner locks
+    // onto — and the promised padding never existed: the canvas was the same
+    // size as the box, so the modules ran edge to edge. The spec asks for four
+    // clear modules on every side, and against a dark TV background a scanner
+    // has nothing else to separate the code from the wall.
     Box(
         modifier = modifier
             .size(size)
-            .clip(RoundedCornerShape(16.dp))
-            .background(background),
+            .background(background)
+            .padding(quietZone),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(modifier = Modifier.size(size)) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
             val moduleCount = matrix.width
             val modulePx = this.size.minDimension / moduleCount
             for (y in 0 until moduleCount) {

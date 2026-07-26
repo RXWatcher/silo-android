@@ -57,7 +57,13 @@ class TvWatchTogetherViewModel(
                     // selection so the host lands on the synced player. The repo
                     // already stored the snapshot synchronously, so setSelection
                     // reads the right roomId/token.
-                    if (created.data.room.selectedContentId.isNullOrBlank()) {
+                    // A vote room must open EMPTY. Pre-selecting the title the
+                    // host happened to be looking at sets the room playing
+                    // immediately, throws everyone into the player, and the vote
+                    // never happens — the whole mode would be dead on arrival.
+                    if (selectionMode == RoomSelectionMode.Vote) {
+                        finish(created.data.room)
+                    } else if (created.data.room.selectedContentId.isNullOrBlank()) {
                         when (
                             val sel = repository.setSelection(
                                 SetSelectionRequest(contentId = contentId, fileId = fileId),

@@ -77,6 +77,14 @@ class WatchTogetherEntryViewModel(
         viewModelScope.launch {
             when (val created = repository.createRoom(CreateRoomRequest(selectionMode = selectionMode.wire))) {
                 is ApiResult.Success -> {
+                    // A vote room must open EMPTY. Pre-selecting the title the
+                    // host happened to be looking at sets the room playing
+                    // immediately and throws everyone into the player, so the
+                    // vote never happens and the mode is dead on arrival.
+                    if (selectionMode == RoomSelectionMode.Vote) {
+                        finish(created.data.room)
+                        return@launch
+                    }
                     // Set this title as the room selection so everyone lands on it.
                     when (
                         val sel = repository.setSelection(

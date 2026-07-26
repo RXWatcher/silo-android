@@ -13,6 +13,7 @@ import org.siloserver.silo.repository.ScheduledTransportCommand
 import org.siloserver.silo.repository.WatchTogetherRepository
 import org.siloserver.silo.watchtogether.RoomTransportIntent
 import org.siloserver.silo.watchtogether.roomTransportAuthorized
+import org.siloserver.silo.watchtogether.shouldEmitRoomStateReport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -21,7 +22,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 import java.time.Instant
 
 // ---- Pure transport-authority gate (unit-tested) ---------------------------
@@ -51,31 +51,6 @@ fun tvRoomTransportGate(s: RoomSnapshot?, action: TvTransportIntent): TransportG
     return if (roomTransportAuthorized(s, intent)) TransportGate.Send else TransportGate.Blocked
 }
 
-// ---- State-report cadence/suppression gate (duplicated from mobile) --------
-//
-// Mobile's pure shouldEmitStateReport lives in androidApp, which is NOT a TV
-// dependency, so we duplicate the exact logic here (matching the
-// notifications/subtitle cross-app duplication convention). Logic must stay in
-// lockstep with androidApp's RoomSyncStateReportGate.
-
-/**
- * Emit a `state_report` once per [cadenceMs], EXCEPT inside a +/-
- * [suppressWindowMs] window around a pending transport command's local execute
- * time — reporting our position right as we are about to seek/play would feed
- * the server a stale pre-execute sample and fight the sync barrier.
- */
-fun tvShouldEmitStateReport(
-    nowMs: Long,
-    lastReportMs: Long,
-    cadenceMs: Long,
-    pendingExecuteAtMs: Long?,
-    suppressWindowMs: Long,
-): Boolean {
-    if (nowMs - lastReportMs < cadenceMs) return false
-    if (pendingExecuteAtMs != null && abs(nowMs - pendingExecuteAtMs) <= suppressWindowMs) return false
-    return true
-}
-
 /**
  * Binds a Watch Together room to the TV [TvPlayerViewModel] for the lifetime of
  * a synced-player screen. Active ONLY when the player route carries a roomId.
@@ -93,7 +68,7 @@ fun tvShouldEmitStateReport(
  *    applies the resulting [SyncDecision] (seek / setPlaying) at the engine-
  *    scheduled local delay, auto-emitting `ready` on the waiting barrier;
  *  - emits `state_report` on a ~1.5s cadence, suppressed around a pending
- *    execute (see [tvShouldEmitStateReport]);
+ *    execute (see [shouldEmitRoomStateReport]);
  *  - emits `ready`/`buffering` on buffer transitions while the room is waiting;
  *  - routes user play/pause/seek through `transport_request`, gated on
  *    [tvRoomTransportGate];
@@ -235,7 +210,7 @@ class TvRoomSyncController(
                 val sessionId = state.sessionId
                 val now = monotonicMs()
                 if (sessionId != null &&
-                    tvShouldEmitStateReport(
+                    shouldEmitRoomStateReport(
                         now,
                         lastReportMs,
                         REPORT_CADENCE_MS,

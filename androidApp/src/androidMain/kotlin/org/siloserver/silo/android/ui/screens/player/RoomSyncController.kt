@@ -12,6 +12,7 @@ import org.siloserver.silo.repository.ScheduledTransportCommand
 import org.siloserver.silo.repository.WatchTogetherRepository
 import org.siloserver.silo.watchtogether.RoomTransportIntent
 import org.siloserver.silo.watchtogether.roomTransportAuthorized
+import org.siloserver.silo.watchtogether.shouldEmitRoomStateReport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -36,7 +37,7 @@ import java.time.Instant
  *    applies the resulting [SyncDecision] (seek / setPlaying) at the engine-
  *    scheduled local delay, auto-emitting `ready` on the waiting barrier;
  *  - emits `state_report` on a ~1.5s cadence, suppressed around a pending execute
- *    (the only unit-tested decision — see [shouldEmitStateReport]);
+ *    (the only unit-tested decision — see [shouldEmitRoomStateReport]);
  *  - emits `ready`/`buffering` on buffer transitions while the room is waiting;
  *  - routes user play/pause/seek through `transport_request`, gated on
  *    `self_can_control_transport`;
@@ -191,7 +192,7 @@ class RoomSyncController(
                 val sessionId = state.sessionId
                 val now = monotonicMs()
                 if (sessionId != null &&
-                    shouldEmitStateReport(now, lastReportMs, REPORT_CADENCE_MS, pendingExecuteAtMs, SUPPRESS_WINDOW_MS)
+                    shouldEmitRoomStateReport(now, lastReportMs, REPORT_CADENCE_MS, pendingExecuteAtMs, SUPPRESS_WINDOW_MS)
                 ) {
                     lastReportMs = now
                     repository.stateReport(

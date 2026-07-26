@@ -129,6 +129,17 @@ data class PlaybackPlanV3(
 @Serializable
 data class PlaybackSourceV3(
     @SerialName("color_range") val colorRange: String? = null,
+    /**
+     * Black bars BAKED INTO the picture, as a fraction of the frame height.
+     *
+     * A 2.39:1 image encoded inside a 1920x1080 frame reports 16:9 everywhere —
+     * only the pixels reveal the bars — so an overlay anchored to the bottom of
+     * the frame lands inside the bar. Zero means "not measured", which is also
+     * what a failed server-side measurement reports; both leave the client
+     * behaving exactly as it did before.
+     */
+    @SerialName("letterbox_top_fraction") val letterboxTopFraction: Double = 0.0,
+    @SerialName("letterbox_bottom_fraction") val letterboxBottomFraction: Double = 0.0,
 )
 
 @Serializable

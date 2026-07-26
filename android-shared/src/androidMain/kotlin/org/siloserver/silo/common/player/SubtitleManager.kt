@@ -47,6 +47,23 @@ class SubtitleManager(
     private val videoRectSyncs = WeakHashMap<PlayerView, SubtitleVideoRectSync>()
 
     /**
+     * Black bars baked into the current source's picture, as fractions of the
+     * frame height, measured server-side and delivered on the playback plan.
+     *
+     * The player cannot see them: a 2.39:1 image encoded inside a 16:9 frame is
+     * a full-height video as far as Media3 is concerned, so an overlay anchored
+     * to the bottom of the frame sits in the bar rather than over the image.
+     * Setting this insets the subtitle layer to the real picture on every bound
+     * view; NONE restores whole-frame behaviour.
+     */
+    var letterbox: LetterboxInsets = LetterboxInsets.NONE
+        set(value) {
+            if (field == value) return
+            field = value
+            videoRectSyncs.values.forEach { sync -> sync.letterbox = value }
+        }
+
+    /**
      * Builds MediaItem.SubtitleConfiguration entries for external subtitle tracks.
      *
      * @param subtitles The subtitle info list from the playback session
@@ -296,7 +313,11 @@ class SubtitleManager(
         playerView.subtitleView?.let { libassBridge?.attachTo(it) }
         val existing = videoRectSyncs[playerView]
         val sync = if (existing?.isDisposed == true || existing == null) {
-            SubtitleVideoRectSync(playerView).also { videoRectSyncs[playerView] = it }
+            // A view bound after the measurement arrived must not miss it.
+            SubtitleVideoRectSync(playerView).also {
+                it.letterbox = letterbox
+                videoRectSyncs[playerView] = it
+            }
         } else {
             existing
         }

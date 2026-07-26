@@ -114,6 +114,8 @@ internal fun PlaybackPlanV3.toSessionResponse(
             hdrFormat = effectiveRecipe.dynamicRange,
             colorRange = source.colorRange,
             subtitleCodec = subtitle.artifact?.format,
+            letterboxTopFraction = source.letterboxTopFraction,
+            letterboxBottomFraction = source.letterboxBottomFraction,
         ),
         claims = claims,
         transformations = transformations,

@@ -261,6 +261,15 @@ data class PlaybackSourceMetadata(
     @SerialName("color_range") val colorRange: String? = null,
     @SerialName("dolby_vision_profile") val dolbyVisionProfile: Int? = null,
     @SerialName("subtitle_codec") val subtitleCodec: String? = null,
+    /**
+     * Black bars baked INTO the picture, as fractions of the frame height,
+     * measured server-side. A 2.39:1 image encoded inside a 16:9 frame looks
+     * like a full-height video to the player, so anything anchored to the
+     * bottom of the frame lands in the bar without these. Zero means "not
+     * measured", which is also what a failed measurement reports.
+     */
+    @SerialName("letterbox_top_fraction") val letterboxTopFraction: Double = 0.0,
+    @SerialName("letterbox_bottom_fraction") val letterboxBottomFraction: Double = 0.0,
 )
 
 @Serializable

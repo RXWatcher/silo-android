@@ -109,6 +109,7 @@ import org.siloserver.silo.cast.SiloCastTrack
 import org.siloserver.silo.domain.player.IntroAutoSkipState
 import org.siloserver.silo.model.playback.PlaybackExecutionPlan
 import org.siloserver.silo.model.playback.PlaybackSourceMetadata
+import org.siloserver.silo.common.player.LetterboxInsets
 import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.executableMedia3ClientTransformations
 import org.siloserver.silo.model.settings.SubtitleAppearance
@@ -1597,8 +1598,18 @@ fun TvPlayerScreen(
         sessionPlayer,
         state.videoFillMode,
         state.subtitleTracks.firstOrNull { it.isSelected }?.index,
+        state.playbackPlan?.source?.letterboxTopFraction,
+        state.playbackPlan?.source?.letterboxBottomFraction,
     ) {
         val pv = playerViewRef ?: return@LaunchedEffect
+        // Black bars encoded INTO the picture (a 2.39:1 image inside a 16:9
+        // frame) are invisible to the player: it sees a full-height video, so
+        // cues anchored to the bottom of the frame land in the bar. The server
+        // measures them; this insets the subtitle layer to the real picture.
+        subtitleManager.letterbox = LetterboxInsets(
+            topFraction = (state.playbackPlan?.source?.letterboxTopFraction ?: 0.0).toFloat(),
+            bottomFraction = (state.playbackPlan?.source?.letterboxBottomFraction ?: 0.0).toFloat(),
+        )
         subtitleManager.applyAppearance(pv, subtitleAppearance)
     }
 

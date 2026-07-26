@@ -31,7 +31,7 @@ class PgsSupExtractorTest {
 
     @Test
     fun sniffsThePgMagic() {
-        val extractor = PgsSupExtractor(RecordingParserFactory())
+        val extractor = PgsSupExtractor(RecordingParserFactory(), { 0L }, pgsFormat())
 
         assertTrue(extractor.sniff(FakeExtractorInput.Builder().setData(supStream()).build()))
         assertEquals(
@@ -45,7 +45,7 @@ class PgsSupExtractorTest {
     @Test
     fun eachDisplaySetBecomesOneSampleAtItsOwnPts() {
         val factory = RecordingParserFactory()
-        val extractor = PgsSupExtractor(factory)
+        val extractor = PgsSupExtractor(factory, { 0L }, pgsFormat())
         val output = FakeExtractorOutput()
         extractor.init(output)
 
@@ -60,10 +60,42 @@ class PgsSupExtractorTest {
         assertEquals(3_000_000L, track.getSampleTimeUs(1))
     }
 
+    // The mount resolver matches on the track's id/language/label, so losing
+    // them makes a perfectly good sidecar unselectable.
+    // Sync and the re-anchor delta have to reach these cues; PGS carries no
+    // cue-relative time for the parser's offset wrapper to shift, so the
+    // extractor applies it to the sample timestamp.
+    @Test
+    fun theOffsetShiftsTheSampleTimestamp() {
+        val factory = RecordingParserFactory()
+        val extractor = PgsSupExtractor(factory, { -500_000L }, pgsFormat())
+        val output = FakeExtractorOutput()
+        extractor.init(output)
+
+        drain(extractor, FakeExtractorInput.Builder().setData(supStream()).build())
+
+        val track = output.trackOutputs[0]!!
+        assertEquals(500_000L, track.getSampleTimeUs(0))
+        assertEquals(2_500_000L, track.getSampleTimeUs(1))
+    }
+
+    @Test
+    fun theEmittedTrackKeepsTheSidecarIdentity() {
+        val extractor = PgsSupExtractor(RecordingParserFactory(), { 0L }, pgsFormat())
+        val output = FakeExtractorOutput()
+        extractor.init(output)
+
+        val emitted = output.trackOutputs[0]!!.lastFormat!!
+        assertEquals("silo-subtitle:8", emitted.id)
+        assertEquals("en", emitted.language)
+        assertEquals("English (SDH)", emitted.label)
+        assertEquals("application/pgs", emitted.codecs)
+    }
+
     @Test
     fun segmentsReachTheParserWithoutTheSupPrefix() {
         val factory = RecordingParserFactory()
-        val extractor = PgsSupExtractor(factory)
+        val extractor = PgsSupExtractor(factory, { 0L }, pgsFormat())
         extractor.init(FakeExtractorOutput())
 
         drain(extractor, FakeExtractorInput.Builder().setData(supStream()).build())
@@ -81,7 +113,7 @@ class PgsSupExtractorTest {
     @Test
     fun aTruncatedTrailingSegmentDoesNotInventACue() {
         val factory = RecordingParserFactory()
-        val extractor = PgsSupExtractor(factory)
+        val extractor = PgsSupExtractor(factory, { 0L }, pgsFormat())
         val output = FakeExtractorOutput()
         extractor.init(output)
 
@@ -91,6 +123,13 @@ class PgsSupExtractorTest {
         // The complete first set still parses; the severed one is dropped.
         assertEquals(1, factory.parsed.size)
     }
+
+    private fun pgsFormat(): Format = Format.Builder()
+        .setId("silo-subtitle:8")
+        .setSampleMimeType("application/pgs")
+        .setLanguage("en")
+        .setLabel("English (SDH)")
+        .build()
 
     private fun drain(extractor: Extractor, input: FakeExtractorInput) {
         val position = PositionHolder()

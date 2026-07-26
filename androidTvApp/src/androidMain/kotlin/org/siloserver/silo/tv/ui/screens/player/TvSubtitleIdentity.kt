@@ -70,7 +70,18 @@ internal fun tvSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdentity 
         catalogSource == "external" ||
         source == "server_artifact" ||
         subtitle.url.isNotBlank()
-    return if (external && isBitmapSubtitleCodecOrMime(media.codecFamily)) {
+    // A bitmap row that already HAS an artifact is one the server sidecar'd for
+    // us (PGS as `.sup`), so it is client-mounted like any other artifact.
+    // Calling it burn-in made the reconcile relabel a mounted, selected track as
+    // burned-in, and the transaction then stopped expecting the local mount it
+    // was actually using.
+    val mountableBitmapArtifact = subtitle.url.isNotBlank() &&
+        isClientMountableBitmapCodecFamily(media.codecFamily)
+    return if (
+        external &&
+        isBitmapSubtitleCodecOrMime(media.codecFamily) &&
+        !mountableBitmapArtifact
+    ) {
         SubtitleIdentity.ServerBurnIn(subtitle.index, media)
     } else {
         SubtitleIdentity.ServerSidecar(subtitle.index, media)

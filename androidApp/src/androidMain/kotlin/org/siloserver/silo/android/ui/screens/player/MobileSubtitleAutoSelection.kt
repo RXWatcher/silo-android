@@ -73,7 +73,15 @@ internal fun mobileSubtitleIdentity(subtitle: PlayerSubtitleInfo): SubtitleIdent
         catalogSource == "external" ||
         source == "server_artifact" ||
         subtitle.url.isNotBlank()
-    return if (external && isBitmapSubtitleCodecOrMime(media.codecFamily)) {
+    // A materialised bitmap artifact is client-mounted, not burned in — see the
+    // same guard in tvSubtitleIdentity.
+    val mountableBitmapArtifact = subtitle.url.isNotBlank() &&
+        isClientMountableBitmapCodecFamily(media.codecFamily)
+    return if (
+        external &&
+        isBitmapSubtitleCodecOrMime(media.codecFamily) &&
+        !mountableBitmapArtifact
+    ) {
         SubtitleIdentity.ServerBurnIn(subtitle.index, media)
     } else {
         SubtitleIdentity.ServerSidecar(subtitle.index, media)

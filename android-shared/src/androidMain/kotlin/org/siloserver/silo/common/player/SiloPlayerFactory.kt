@@ -34,6 +34,7 @@ import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ExtractorsFactory
+import androidx.media3.extractor.text.DefaultSubtitleParserFactory
 import androidx.media3.extractor.text.SubtitleExtractor
 import androidx.media3.extractor.text.SubtitleParser
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
@@ -108,8 +109,41 @@ class SiloPlayerFactory(
 
     private val sidecarSubtitleParserFactory = OffsetSubtitleParserFactory(
         offsetUsProvider = subtitleOffsetHolder::getOffsetUs,
-        delegate = libassBridge.parserFactory,
+        delegate = BitmapAwareSubtitleParserFactory(libassBridge.parserFactory),
     )
+
+    /**
+     * libass owns ASS/SSA and ass-media's factory claims every other format by
+     * delegating internally — except the bitmap ones, where its parser produces
+     * no cues at all. A mounted `.sup` therefore framed correctly and still
+     * rendered nothing. Hand bitmap formats to Media3's own parsers, which
+     * decode PGS, VobSub and DVB, and leave everything else on the libass path.
+     */
+    private class BitmapAwareSubtitleParserFactory(
+        private val delegate: SubtitleParser.Factory,
+        private val media3: SubtitleParser.Factory = DefaultSubtitleParserFactory(),
+    ) : SubtitleParser.Factory {
+        private fun isBitmap(format: androidx.media3.common.Format): Boolean =
+            when (format.sampleMimeType) {
+                MimeTypes.APPLICATION_PGS,
+                MimeTypes.APPLICATION_VOBSUB,
+                MimeTypes.APPLICATION_DVBSUBS,
+                -> true
+                else -> false
+            }
+
+        private fun factoryFor(format: androidx.media3.common.Format): SubtitleParser.Factory =
+            if (isBitmap(format)) media3 else delegate
+
+        override fun supportsFormat(format: androidx.media3.common.Format): Boolean =
+            factoryFor(format).supportsFormat(format)
+
+        override fun getCueReplacementBehavior(format: androidx.media3.common.Format): Int =
+            factoryFor(format).getCueReplacementBehavior(format)
+
+        override fun create(format: androidx.media3.common.Format): SubtitleParser =
+            factoryFor(format).create(format)
+    }
 
     private fun configuredExtractorsFactory() = libassBridge.wrapExtractors(
         DefaultExtractorsFactory()
@@ -292,6 +326,7 @@ class SiloPlayerFactory(
             hlsFactory = hlsMediaSourceFactory,
             dataSourceFactory = dataSourceFactory,
             subtitleParserFactory = sidecarSubtitleParserFactory,
+            subtitleOffsetProvider = subtitleOffsetHolder::getOffsetUs,
             loadErrorHandlingPolicy = mediaLoadErrorHandlingPolicy,
         )
 
@@ -527,6 +562,8 @@ class SiloPlayerFactory(
         private val hlsFactory: MediaSource.Factory,
         private val dataSourceFactory: DataSource.Factory,
         private val subtitleParserFactory: SubtitleParser.Factory,
+        /** Subtitle sync + re-anchor delta, for formats whose cues carry no shiftable time. */
+        private val subtitleOffsetProvider: () -> Long,
         private var loadErrorHandlingPolicy: LoadErrorHandlingPolicy,
     ) : MediaSource.Factory {
         private var drmSessionManagerProvider: DrmSessionManagerProvider? = null
@@ -623,7 +660,7 @@ class SiloPlayerFactory(
             // produce nothing. PgsSupExtractor frames it into display sets and
             // recovers each one's PTS. Text sidecars keep the standard path.
             val extractorsFactory = if (configuration.mimeType == MimeTypes.APPLICATION_PGS) {
-                ExtractorsFactory { arrayOf(PgsSupExtractor(subtitleParserFactory)) }
+                ExtractorsFactory { arrayOf(PgsSupExtractor(subtitleParserFactory, subtitleOffsetProvider, outputFormat)) }
             } else {
                 ExtractorsFactory {
                     arrayOf(

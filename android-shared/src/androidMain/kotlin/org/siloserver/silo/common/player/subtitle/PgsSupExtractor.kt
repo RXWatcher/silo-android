@@ -38,6 +38,19 @@ import java.io.EOFException
 @UnstableApi
 class PgsSupExtractor(
     private val parserFactory: SubtitleParser.Factory,
+    /**
+     * Subtitle sync + the server re-anchor delta, in microseconds. Applied to
+     * the sample timestamp here because PGS carries no cue-relative time for
+     * the parser's own offset wrapper to shift — it reports TIME_UNSET, and
+     * adding that produced timestamps ~9.2e15 ms into the future.
+     */
+    private val offsetUsProvider: () -> Long,
+    /**
+     * The sidecar's own format. Emitting a freshly built one instead drops the
+     * stable track id, language and label the mount resolver matches on — the
+     * track then appears as `mounted=[1:]` and the pick dies on its deadline.
+     */
+    private val sourceFormat: Format,
 ) : Extractor {
 
     private val cueEncoder = CueEncoder()
@@ -49,6 +62,8 @@ class PgsSupExtractor(
     /** Segments of the display set being accumulated, already prefix-stripped. */
     private var displaySet = ByteArrayBuilder()
     private var displaySetTimeUs = C.TIME_UNSET
+    private var emittedSets = 0
+    private var emittedCues = 0
 
     override fun sniff(input: ExtractorInput): Boolean {
         val probe = ByteArray(2)
@@ -62,19 +77,15 @@ class PgsSupExtractor(
 
     override fun init(output: ExtractorOutput) {
         val track = output.track(0, C.TRACK_TYPE_TEXT)
-        val format = Format.Builder()
-            .setSampleMimeType(MimeTypes.APPLICATION_MEDIA3_CUES)
-            .setCodecs(MimeTypes.APPLICATION_PGS)
-            .build()
-        parser = parserFactory.create(
-            Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_PGS).build(),
-        )
+        parser = parserFactory.create(sourceFormat)
+        // Everything except the sample mime carries over: id, language, label,
+        // selection and role flags are what identify this track downstream.
         track.format(
-            format.buildUpon()
+            sourceFormat.buildUpon()
+                .setSampleMimeType(MimeTypes.APPLICATION_MEDIA3_CUES)
+                .setCodecs(sourceFormat.sampleMimeType)
                 .setCueReplacementBehavior(
-                    parserFactory.getCueReplacementBehavior(
-                        Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_PGS).build(),
-                    ),
+                    parserFactory.getCueReplacementBehavior(sourceFormat),
                 )
                 .build(),
         )
@@ -152,12 +163,24 @@ class PgsSupExtractor(
         val activeParser = parser ?: return
         if (timeUs == C.TIME_UNSET) return
 
+        emittedSets++
+        if (emittedSets <= 3 || emittedSets % 200 == 0) {
+            org.siloserver.silo.common.player.SubDiag.log(
+                "SUP set=$emittedSets t=${timeUs / 1000}ms bytes=${bytes.size}",
+            )
+        }
         activeParser.parse(
             bytes,
             0,
             bytes.size,
             SubtitleParser.OutputOptions.allCues(),
         ) { cues ->
+            emittedCues += cues.cues.size
+            if (emittedCues <= 3) {
+                org.siloserver.silo.common.player.SubDiag.log(
+                    "SUP cue n=${cues.cues.size} at=${(timeUs + offsetUsProvider()) / 1000}ms",
+                )
+            }
             // Duration stays unset: PGS ends a caption with the next display
             // set, and the parser's REPLACE behaviour already means a new
             // sample supersedes the last one.
@@ -165,7 +188,7 @@ class PgsSupExtractor(
             val data = ParsableByteArray(encoded)
             output.sampleData(data, encoded.size)
             output.sampleMetadata(
-                timeUs,
+                (timeUs + offsetUsProvider()).coerceAtLeast(0L),
                 C.BUFFER_FLAG_KEY_FRAME,
                 encoded.size,
                 0,

@@ -218,10 +218,15 @@ class WatchTogetherRepositoryTest {
         r.reset()
         assertNull(r.roomSnapshot.value)
         assertTrue(r.suggestions.value.isEmpty())
-        // After reset the room token is gone; a room-scoped call must not reuse it.
+
+        // After reset there is no room, so a room-scoped call must fail fast
+        // rather than reach the API at all. It used to send one with an empty
+        // room id and an empty token, which came back as a 404/405 the UI
+        // reported as a rejected action.
         api.lastRoomToken = null
-        r.setSelection(SetSelectionRequest(contentId = "x"))
-        assertEquals("", api.lastRoomToken) // repository passes empty token when none stored
+        val result = r.setSelection(SetSelectionRequest(contentId = "x"))
+        assertTrue(result is ApiResult.Error && result.error == "no_active_room")
+        assertNull(api.lastRoomToken) // never reached the API
         job.cancel()
     }
 

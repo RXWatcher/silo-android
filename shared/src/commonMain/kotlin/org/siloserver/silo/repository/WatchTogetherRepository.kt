@@ -242,20 +242,21 @@ class WatchTogetherRepository(
 
     // ---- WS: client→server send passthroughs ----------------------------------
 
-    suspend fun attachSession(sessionId: String) { realtime?.attachSession(sessionId) }
-    suspend fun transportRequest(action: String, positionSeconds: Double?, isPaused: Boolean) {
-        realtime?.transportRequest(action, positionSeconds, isPaused)
-    }
-    suspend fun stateReport(sessionId: String, positionSeconds: Double, isPaused: Boolean) {
-        realtime?.stateReport(sessionId, positionSeconds, isPaused)
-    }
-    suspend fun ready(sessionId: String, positionSeconds: Double, isPaused: Boolean) {
-        realtime?.ready(sessionId, positionSeconds, isPaused)
-    }
-    suspend fun buffering(sessionId: String, positionSeconds: Double, isPaused: Boolean) {
-        realtime?.buffering(sessionId, positionSeconds, isPaused)
-    }
-    suspend fun ping(clientSentAt: String) { realtime?.ping(clientSentAt) }
+    // Each returns whether the frame reached an open socket. `false` is not an
+    // error condition — it is the ordinary state between launching connect() and
+    // the handshake completing — but a caller that only gets one attempt (attach,
+    // the first ping) has to know, or it loses the frame for the life of the room.
+    suspend fun attachSession(sessionId: String): Boolean =
+        realtime?.attachSession(sessionId) ?: false
+    suspend fun transportRequest(action: String, positionSeconds: Double?, isPaused: Boolean): Boolean =
+        realtime?.transportRequest(action, positionSeconds, isPaused) ?: false
+    suspend fun stateReport(sessionId: String, positionSeconds: Double, isPaused: Boolean): Boolean =
+        realtime?.stateReport(sessionId, positionSeconds, isPaused) ?: false
+    suspend fun ready(sessionId: String, positionSeconds: Double, isPaused: Boolean): Boolean =
+        realtime?.ready(sessionId, positionSeconds, isPaused) ?: false
+    suspend fun buffering(sessionId: String, positionSeconds: Double, isPaused: Boolean): Boolean =
+        realtime?.buffering(sessionId, positionSeconds, isPaused) ?: false
+    suspend fun ping(clientSentAt: String): Boolean = realtime?.ping(clientSentAt) ?: false
 
     // ---- WS lifecycle: connect + reconnect-with-backoff ------------------------
 

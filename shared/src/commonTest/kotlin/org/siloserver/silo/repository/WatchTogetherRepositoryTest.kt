@@ -23,6 +23,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -96,12 +97,28 @@ class WatchTogetherRepositoryTest {
             }
             return events.asSharedFlow()
         }
-        override suspend fun attachSession(sessionId: String) {}
-        override suspend fun transportRequest(action: String, positionSeconds: Double?, isPaused: Boolean) {}
-        override suspend fun stateReport(sessionId: String, positionSeconds: Double, isPaused: Boolean) {}
-        override suspend fun ready(sessionId: String, positionSeconds: Double, isPaused: Boolean) {}
-        override suspend fun buffering(sessionId: String, positionSeconds: Double, isPaused: Boolean) {}
-        override suspend fun ping(clientSentAt: String) {}
+        /** Whether this fake socket is "open" — see [WatchTogetherRealtimeClient]. */
+        var delivers: Boolean = true
+
+        override suspend fun attachSession(sessionId: String): Boolean = delivers
+        override suspend fun transportRequest(
+            action: String,
+            positionSeconds: Double?,
+            isPaused: Boolean,
+        ): Boolean = delivers
+        override suspend fun stateReport(
+            sessionId: String,
+            positionSeconds: Double,
+            isPaused: Boolean,
+        ): Boolean = delivers
+        override suspend fun ready(sessionId: String, positionSeconds: Double, isPaused: Boolean): Boolean =
+            delivers
+        override suspend fun buffering(
+            sessionId: String,
+            positionSeconds: Double,
+            isPaused: Boolean,
+        ): Boolean = delivers
+        override suspend fun ping(clientSentAt: String): Boolean = delivers
     }
 
     private fun repo(
@@ -335,5 +352,34 @@ class WatchTogetherRepositoryTest {
         assertEquals(WatchTogetherRepository.MAX_RECONNECT_ATTEMPTS, realtime.connectCount)
         // Stale room state must not be observable after the cap is hit.
         assertNull(r.roomSnapshot.value)
+    }
+    @Test
+    fun `sends report undelivered before the socket is up`() = runTest {
+        // There is a real window between launching connect() and the socket
+        // existing. Sends in it used to vanish with no signal, which cost the
+        // room this member's attach_session for good — the controller latched
+        // "already sent" on a frame that never left.
+        val r = repo()
+
+        assertFalse(r.attachSession("session-1"))
+        assertFalse(r.ping("2026-07-26T12:00:00Z"))
+        assertFalse(r.stateReport("session-1", positionSeconds = 10.0, isPaused = false))
+    }
+
+    @Test
+    fun `sends report delivered once connected`() = runTest {
+        val realtime = FakeRealtime()
+        val r = repo(realtime = realtime)
+        val job = launch { r.connect("room-1") }
+        advanceUntilIdle()
+
+        assertTrue(r.attachSession("session-1"))
+
+        // A socket that is up but refuses the write is reported the same way, so
+        // a caller with one shot at the frame can tell it has to try again.
+        realtime.delivers = false
+        assertFalse(r.attachSession("session-1"))
+
+        job.cancel()
     }
 }

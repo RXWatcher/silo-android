@@ -64,6 +64,9 @@ class RoomSyncController(
         private const val SUPPRESS_WINDOW_MS = 250L
         private const val REPORT_TICK_MS = 250L
         private const val PING_INTERVAL_MS = 15_000L
+
+        /** Retry cadence while the socket or the clock offset is not yet up. */
+        private const val PING_RETRY_MS = 1_000L
     }
 
     /** Live room snapshot for the overlay. */
@@ -142,8 +145,16 @@ class RoomSyncController(
                     // confirmed our association. Setting the latch BEFORE the
                     // (suspending) send is what suppresses pre-echo re-sends.
                     if (!serverHasOurSession && sentAttachForSessionId != sessionId) {
-                        sentAttachForSessionId = sessionId
-                        repository.attachSession(sessionId)
+                        // Latch only on a frame that actually went out. Setting it
+                        // first meant a send made before the socket finished
+                        // connecting was dropped silently and never retried: the
+                        // re-arm path needs a server-had -> hasn't transition,
+                        // which cannot happen for a session the server never had.
+                        // The room then ran with this member's playback session
+                        // unknown to it for good.
+                        if (repository.attachSession(sessionId)) {
+                            sentAttachForSessionId = sessionId
+                        }
                     }
                 }
         }
@@ -152,8 +163,16 @@ class RoomSyncController(
         // fold pongs into the engine's offset estimate.
         scope.launch {
             while (isActive) {
-                repository.ping(clientSentAt = nowWallClockRfc3339())
-                delay(PING_INTERVAL_MS)
+                val delivered = repository.ping(clientSentAt = nowWallClockRfc3339())
+                // Until a pong lands the engine has no server offset, and its
+                // documented fallback is to apply commands immediately — which
+                // silently discards the scheduled-execute barrier that keeps
+                // members in step. The opening seconds of a room are exactly
+                // when someone presses play, so retry quickly until the clock is
+                // established rather than waiting out a full interval on a ping
+                // that never reached an open socket.
+                val synced = delivered && engine.serverTimeOffsetMs != null
+                delay(if (synced) PING_INTERVAL_MS else PING_RETRY_MS)
             }
         }
         scope.launch {

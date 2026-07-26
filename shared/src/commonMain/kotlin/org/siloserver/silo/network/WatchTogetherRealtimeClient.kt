@@ -42,13 +42,20 @@ interface WatchTogetherRealtimeClient {
     /** Open the room socket. The returned flow ends with [RoomRealtimeEvent.Closed]. */
     fun connect(roomId: String, roomToken: String): Flow<RoomRealtimeEvent>
 
-    /** Client→server sends. No-op when no session is open (repository gates on connection). */
-    suspend fun attachSession(sessionId: String)
-    suspend fun transportRequest(action: String, positionSeconds: Double?, isPaused: Boolean)
-    suspend fun stateReport(sessionId: String, positionSeconds: Double, isPaused: Boolean)
-    suspend fun ready(sessionId: String, positionSeconds: Double, isPaused: Boolean)
-    suspend fun buffering(sessionId: String, positionSeconds: Double, isPaused: Boolean)
-    suspend fun ping(clientSentAt: String)
+    /**
+     * Client→server sends. Each returns whether the frame actually reached an
+     * open session: there is a real window — from [connect] being launched until
+     * the socket handshake completes — where there is nothing to write to, and a
+     * caller that assumes otherwise loses the frame silently. `attach_session`
+     * in particular is sent exactly once, so a dropped one leaves the member
+     * with no playback session on the server for the life of the room.
+     */
+    suspend fun attachSession(sessionId: String): Boolean
+    suspend fun transportRequest(action: String, positionSeconds: Double?, isPaused: Boolean): Boolean
+    suspend fun stateReport(sessionId: String, positionSeconds: Double, isPaused: Boolean): Boolean
+    suspend fun ready(sessionId: String, positionSeconds: Double, isPaused: Boolean): Boolean
+    suspend fun buffering(sessionId: String, positionSeconds: Double, isPaused: Boolean): Boolean
+    suspend fun ping(clientSentAt: String): Boolean
 }
 
 class DefaultWatchTogetherRealtimeClient(
@@ -105,8 +112,9 @@ class DefaultWatchTogetherRealtimeClient(
         awaitClose { /* socket closes when the collector is cancelled */ }
     }
 
-    private suspend fun sendText(text: String) {
-        session?.send(Frame.Text(text))
+    private suspend fun sendText(text: String): Boolean {
+        val open = session ?: return false
+        return runCatching { open.send(Frame.Text(text)) }.isSuccess
     }
 
     override suspend fun attachSession(sessionId: String) =

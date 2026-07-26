@@ -98,6 +98,7 @@ import org.siloserver.silo.model.catalog.isAudiobookItemType
 import org.siloserver.silo.model.ebook.MediaRelatedItem
 import org.siloserver.silo.model.section.SectionItem
 import org.siloserver.silo.model.feature.CLIENT_WATCH_TOGETHER_SURFACE_ENABLED
+import org.siloserver.silo.model.watchtogether.RoomSelectionMode
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.tv.ui.screens.watchtogether.TvJoinCodeDialog
 import org.siloserver.silo.tv.ui.screens.watchtogether.TvWatchTogetherEntryDialog
@@ -1058,6 +1059,13 @@ private fun HeroActionRow(
                 // is the next-up episode, not the container, which cannot be a
                 // room selection.
                 onHost = { watchTogetherViewModel.createRoom(playContentId, playFileId) },
+                onHostVote = {
+                    watchTogetherViewModel.createRoom(
+                        playContentId,
+                        playFileId,
+                        RoomSelectionMode.Vote,
+                    )
+                },
                 onJoin = {
                     watchTogetherViewModel.clearError()
                     joinCodeOpen = true

@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
+import org.siloserver.silo.model.watchtogether.RoomSelectionMode
 import org.koin.compose.viewmodel.koinViewModel
 
 /**
@@ -83,6 +84,16 @@ fun WatchTogetherEntrySheet(
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (state.busy) "Creating…" else "Host a room") }
+
+                // selection_mode is fixed server-side at creation, so a vote
+                // room has to be chosen here rather than switched on later.
+                OutlinedButton(
+                    onClick = {
+                        viewModel.host(contentId, fileId, RoomSelectionMode.Vote)
+                    },
+                    enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Host a vote room") }
 
                 OutlinedButton(
                     onClick = { viewModel.clearError(); showJoin = true },

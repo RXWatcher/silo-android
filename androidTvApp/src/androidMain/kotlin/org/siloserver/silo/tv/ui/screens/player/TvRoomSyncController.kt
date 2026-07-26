@@ -11,6 +11,7 @@ import org.siloserver.silo.model.watchtogether.TransportAction
 import org.siloserver.silo.repository.PongSample
 import org.siloserver.silo.repository.ScheduledTransportCommand
 import org.siloserver.silo.repository.WatchTogetherRepository
+import org.siloserver.silo.watchtogether.RoomSession
 import org.siloserver.silo.watchtogether.RoomTransportIntent
 import org.siloserver.silo.watchtogether.roomTransportAuthorized
 import org.siloserver.silo.watchtogether.shouldEmitRoomStateReport
@@ -90,6 +91,7 @@ fun tvRoomTransportGate(s: RoomSnapshot?, action: TvTransportIntent): TransportG
 class TvRoomSyncController(
     private val roomId: String,
     private val repository: WatchTogetherRepository,
+    private val roomSession: RoomSession,
     private val viewModel: TvPlayerViewModel,
     private val scope: CoroutineScope,
     private val engine: RoomSyncEngine = RoomSyncEngine(),
@@ -132,9 +134,10 @@ class TvRoomSyncController(
 
     fun start() {
         // Reconnect-with-backoff loop. The lobby's connect() ran in its own
-        // (now-dead) scope (the lobby route was popped on hand-off), so the
-        // player owns the live connection and re-runs connect(roomId).
-        scope.launch { repository.connect(roomId) }
+        // Adopt the app-scoped connection. Both this and the lobby used to call
+        // connect() in their own scopes, so a lobby -> player hand-off ran two
+        // reconnect loops racing over the repository's single realtime field.
+        scope.launch { roomSession.enter(roomId) }
 
         // Attach the player's own playback session id, and RE-attach on WS
         // reconnect. We combine the local session id with each server snapshot

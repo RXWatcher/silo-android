@@ -60,6 +60,7 @@ class SubtitleManager(
         set(value) {
             if (field == value) return
             field = value
+            SubDiag.log("LETTERBOX top=${value.topFraction} bottom=${value.bottomFraction}")
             videoRectSyncs.values.forEach { sync -> sync.letterbox = value }
         }
 

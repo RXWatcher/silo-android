@@ -140,6 +140,16 @@ class WatchTogetherRepository(
     @kotlin.concurrent.Volatile
     private var roomToken: String = ""
 
+    /**
+     * The room [connect] was called for. The snapshot is the better source of
+     * the id, but it is null until the first frame arrives over the socket and
+     * is cleared again on a transient close — and the lobby lets you vote in
+     * both of those windows. Without this, those actions fail for a room the
+     * caller is demonstrably in.
+     */
+    @kotlin.concurrent.Volatile
+    private var connectedRoomId: String = ""
+
     @kotlin.concurrent.Volatile
     private var realtime: WatchTogetherRealtimeClient? = null
 
@@ -174,7 +184,9 @@ class WatchTogetherRepository(
      * still have an in-flight action at that moment. Failing here says what
      * actually happened.
      */
-    private fun activeRoomId(): String? = _roomSnapshot.value?.roomId?.takeIf { it.isNotBlank() }
+    private fun activeRoomId(): String? =
+        _roomSnapshot.value?.roomId?.takeIf { it.isNotBlank() }
+            ?: connectedRoomId.takeIf { it.isNotBlank() }
 
     private fun <T> noActiveRoom(): ApiResult<T> =
         ApiResult.Error(code = 409, error = "no_active_room", message = "You are not in a room")
@@ -293,6 +305,7 @@ class WatchTogetherRepository(
     suspend fun connect(roomId: String) {
         val client = realtimeFactory() ?: return
         realtime = client
+        connectedRoomId = roomId
         _roomClosedReason.value = null // fresh connect: clear any stale close/error reason
         var backoffIndex = 0
         var failures = 0
@@ -380,6 +393,7 @@ class WatchTogetherRepository(
         _roomClosedReason.value = null
         votedIds.value = emptySet()
         roomToken = ""
+        connectedRoomId = ""
         realtime = null
     }
 

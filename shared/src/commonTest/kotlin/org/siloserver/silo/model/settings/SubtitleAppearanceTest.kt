@@ -24,14 +24,15 @@ class SubtitleAppearanceTest {
     fun defaultSubtitleAppearanceMatchesTheTvReferenceStyle() {
         assertEquals("#ffffff", SubtitleAppearance.DEFAULT.fontColor)
         assertEquals(SubtitleAppearance.SANS_SERIF, SubtitleAppearance.DEFAULT.fontFamily)
-        assertEquals(SubtitleBackgroundStylePreset.None, SubtitleAppearance.DEFAULT.backgroundStyle)
-        assertEquals(true, SubtitleAppearance.DEFAULT.textOutline)
+        // Matches the web client so one profile looks the same in both.
+        assertEquals(SubtitleBackgroundStylePreset.Shadow, SubtitleAppearance.DEFAULT.backgroundStyle)
+        assertEquals(false, SubtitleAppearance.DEFAULT.textOutline)
         assertEquals("#000000", SubtitleAppearance.DEFAULT.textOutlineColor)
         assertEquals(SubtitlePositionPreset.Bottom, SubtitleAppearance.DEFAULT.position)
     }
 
     @Test
-    fun decodingMissingBackgroundStyleUsesNoBackgroundDefault() {
+    fun decodingMissingBackgroundStyleUsesTheDefaultStyle() {
         val decoded = SubtitleAppearance.decode(
             """
             {
@@ -47,6 +48,7 @@ class SubtitleAppearanceTest {
             """.trimIndent(),
         )
 
-        assertEquals(SubtitleBackgroundStylePreset.None, decoded.backgroundStyle)
+        // An omitted field takes the model default, which is now Shadow.
+        assertEquals(SubtitleBackgroundStylePreset.Shadow, decoded.backgroundStyle)
     }
 }

@@ -346,13 +346,20 @@ class SubtitleManager(
         }
     }
 
+    /**
+     * Fraction of the view height per preset, matching the web client's scale
+     * so one stored preset means one rendered size everywhere: web maps these
+     * to px against a 720p reference frame (20/26/32/40/48), and these are the
+     * same ratios. They used to be ~13% larger here, which is what made
+     * "Large" look oversized on a TV while looking right in a browser.
+     */
     private fun fractionalSizeFor(preset: SubtitleFontSizePreset): Float {
         return when (preset) {
-            SubtitleFontSizePreset.Small -> 0.032f
-            SubtitleFontSizePreset.Medium -> 0.040f
-            SubtitleFontSizePreset.Large -> 0.050f
-            SubtitleFontSizePreset.XLarge -> 0.060f
-            SubtitleFontSizePreset.XXLarge -> 0.072f
+            SubtitleFontSizePreset.Small -> 20f / 720f
+            SubtitleFontSizePreset.Medium -> 26f / 720f
+            SubtitleFontSizePreset.Large -> 32f / 720f
+            SubtitleFontSizePreset.XLarge -> 40f / 720f
+            SubtitleFontSizePreset.XXLarge -> 48f / 720f
         }
     }
 

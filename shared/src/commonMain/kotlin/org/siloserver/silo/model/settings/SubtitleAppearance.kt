@@ -51,9 +51,13 @@ data class SubtitleAppearance(
     val fontFamily: String = SANS_SERIF,
     val fontColor: String = "#ffffff",
     val backgroundColor: String = "#000000",
-    val backgroundStyle: SubtitleBackgroundStylePreset = SubtitleBackgroundStylePreset.None,
+    // Shadow + no outline, matching the web client's defaults for the SAME
+    // stored preference. The previous pair (None + outline) resolves to a hard
+    // black stroke around every glyph — the most aggressive of the four looks —
+    // so one profile rendered loud on TV and quiet in a browser.
+    val backgroundStyle: SubtitleBackgroundStylePreset = SubtitleBackgroundStylePreset.Shadow,
     val backgroundOpacity: Int = 75,
-    val textOutline: Boolean = true,
+    val textOutline: Boolean = false,
     val textOutlineColor: String = "#000000",
     val position: SubtitlePositionPreset = SubtitlePositionPreset.Bottom,
 ) {

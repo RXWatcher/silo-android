@@ -107,7 +107,10 @@ class PgsSupExtractorTest {
         assertEquals(2, first[2].toInt())
         assertEquals(0xAA.toByte(), first[3])
         assertEquals(0xBB.toByte(), first[4])
-        assertEquals(5, first.size)
+        // The END section is kept, not stripped: Media3's PgsParser builds the
+        // cue when it reads one, so a set without it parses to nothing.
+        assertEquals(PgsSupExtractor.SEGMENT_TYPE_END.toByte(), first[5])
+        assertEquals(8, first.size)
     }
 
     @Test

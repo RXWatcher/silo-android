@@ -128,6 +128,11 @@ class PgsSupExtractor(
         }
 
         if (segmentType == SEGMENT_TYPE_END) {
+            // The END section stays in the buffer: Media3's PgsParser builds the
+            // cue when it reads one. Stripping it as pure framing produced a set
+            // the parser accepted and returned zero cues for — a mounted,
+            // selected, correctly timed track that drew nothing.
+            appendSegment(segmentType, segmentLength, payload)
             flushDisplaySet(output)
             return Extractor.RESULT_CONTINUE
         }
@@ -136,12 +141,16 @@ class PgsSupExtractor(
         if (displaySet.isEmpty()) {
             displaySetTimeUs = pts90kHz * C.MICROS_PER_SECOND / PTS_CLOCK_HZ
         }
-        // Back to the container-shaped form: [type][length][payload].
+        appendSegment(segmentType, segmentLength, payload)
+        return Extractor.RESULT_CONTINUE
+    }
+
+    /** Back to the container-shaped form the parser reads: [type][length][payload]. */
+    private fun appendSegment(segmentType: Int, segmentLength: Int, payload: ByteArray) {
         displaySet.append(segmentType.toByte())
         displaySet.append((segmentLength shr 8 and 0xFF).toByte())
         displaySet.append((segmentLength and 0xFF).toByte())
         displaySet.append(payload)
-        return Extractor.RESULT_CONTINUE
     }
 
     /**

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import org.siloserver.silo.android.ui.navigation.Route
 import org.siloserver.silo.model.watchtogether.CreateRoomRequest
 import org.siloserver.silo.model.watchtogether.JoinRoomRequest
+import org.siloserver.silo.model.watchtogether.MemberRole
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.model.watchtogether.SetSelectionRequest
 import org.siloserver.silo.network.ApiResult
@@ -24,7 +25,13 @@ import kotlinx.coroutines.launch
  * Kept top-level + pure so it is unit-testable without Compose or the repo.
  */
 fun watchTogetherDestination(room: RoomSnapshot): String =
-    if (!room.selectedContentId.isNullOrBlank()) {
+    // A host lands in the lobby even though hosting pre-selects a title, so the
+    // invite code stays on screen to share; the lobby hands off by itself once
+    // someone joins. A guest joins a room that is already running and goes
+    // straight in.
+    if (!room.selectedContentId.isNullOrBlank() &&
+        !(room.selfRole == MemberRole.Host && room.memberCount <= 1)
+    ) {
         Route.Player(
             contentId = room.selectedContentId!!,
             fileId = room.selectedFileId,

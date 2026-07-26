@@ -64,7 +64,7 @@ fun WatchTogetherLobbyScreen(
     val context = LocalContext.current
 
     // Auto-navigate into the synced player when the room starts playing.
-    LaunchedEffect(room?.phase, room?.selectedContentId) {
+    LaunchedEffect(room?.phase, room?.selectedContentId, room?.memberCount, room?.selfRole) {
         val snapshot = room ?: return@LaunchedEffect
         lobbyPlayerDestinationOrNull(snapshot)?.let { onNavigateToPlayer(it) }
     }

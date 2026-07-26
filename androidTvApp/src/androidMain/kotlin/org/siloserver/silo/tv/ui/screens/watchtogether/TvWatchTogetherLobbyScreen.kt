@@ -65,9 +65,19 @@ import org.koin.core.parameter.parametersOf
  * actually [RoomPhase.Playing] AND a (non-blank) selection has landed — mirrors
  * the phone lobby's `lobbyPlayerDestinationOrNull` semantics (enum compare +
  * isNullOrBlank, NOT a wire-string compare).
+ *
+ * A host who is still alone stays put. Hosting pre-selects the title, so the
+ * room is playing-and-selected the instant it exists, and handing off
+ * immediately flashed the invite code for a fraction of a second before
+ * replacing it with the player — leaving nothing on screen to read out to the
+ * person you are trying to invite. Guests are unaffected: they join a room that
+ * is already going and should land in it.
  */
-fun shouldEnterSyncedPlayer(s: RoomSnapshot?): Boolean =
-    s != null && s.phase == RoomPhase.Playing && !s.selectedContentId.isNullOrBlank()
+fun shouldEnterSyncedPlayer(s: RoomSnapshot?): Boolean {
+    if (s == null || s.phase != RoomPhase.Playing || s.selectedContentId.isNullOrBlank()) return false
+    if (s.selfRole == MemberRole.Host && s.memberCount <= 1) return false
+    return true
+}
 
 /**
  * Watch Together lobby (TV). Shows member count / role / selection mode, the
@@ -108,7 +118,7 @@ fun TvWatchTogetherLobbyScreen(
     val canManage = snapshot?.selfCanManageRoom == true
 
     // Auto-hand-off into the synced player once the room is playing + selected.
-    LaunchedEffect(room?.phase, room?.selectedContentId, room?.selectedFileId) {
+    LaunchedEffect(room?.phase, room?.selectedContentId, room?.selectedFileId, room?.memberCount, room?.selfRole) {
         val snapshot = room ?: return@LaunchedEffect
         if (shouldEnterSyncedPlayer(snapshot)) {
             onNavigateToPlayer(

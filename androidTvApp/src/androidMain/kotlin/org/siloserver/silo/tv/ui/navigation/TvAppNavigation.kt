@@ -46,6 +46,7 @@ import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsPromp
 import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsReportScreen
 import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsSettingsScreen
 import org.siloserver.silo.tv.ui.screens.settings.diagnostics.TvDiagnosticsViewModel
+import org.siloserver.silo.model.watchtogether.MemberRole
 import org.siloserver.silo.tv.ui.screens.watchtogether.TvWatchTogetherLobbyScreen
 import org.siloserver.silo.common.overlays.ProvideCardOverlays
 import org.siloserver.silo.common.diagnostics.DiagnosticsLifecycleLogger
@@ -685,7 +686,12 @@ fun TvAppNavigation(
                 // host-with-selection straight to the synced player (carrying
                 // roomId), otherwise into the lobby to wait/vote/pick.
                 onWatchTogether = { snapshot ->
-                    val target = if (!snapshot.selectedContentId.isNullOrBlank()) {
+                    // A host lands in the lobby even though hosting pre-selects a
+                    // title, so the invite code is on screen to read out. The
+                    // lobby hands off by itself once someone joins. A guest joins
+                    // a room that is already running and goes straight in.
+                    val hostAlone = snapshot.selfRole == MemberRole.Host && snapshot.memberCount <= 1
+                    val target = if (!snapshot.selectedContentId.isNullOrBlank() && !hostAlone) {
                         TvRoute.Player(
                             contentId = snapshot.selectedContentId!!,
                             fileId = snapshot.selectedFileId,

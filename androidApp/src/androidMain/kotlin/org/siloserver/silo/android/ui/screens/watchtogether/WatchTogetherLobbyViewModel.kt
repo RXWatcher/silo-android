@@ -9,6 +9,7 @@ import org.siloserver.silo.model.watchtogether.RoomPhase
 import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.model.watchtogether.Suggestion
 import org.siloserver.silo.repository.WatchTogetherRepository
+import org.siloserver.silo.watchtogether.RoomSession
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -50,12 +51,13 @@ fun lobbyPlayerDestinationOrNull(room: RoomSnapshot): String? =
 class WatchTogetherLobbyViewModel(
     private val roomId: String,
     private val repository: WatchTogetherRepository,
+    private val roomSession: RoomSession,
 ) : ViewModel() {
 
     init {
         // The repo owns reconnect/backoff; we just bind on enter. connect()
         // suspends for the lifetime of the socket, so launch it (don't call bare).
-        viewModelScope.launch { repository.connect(roomId) }
+        viewModelScope.launch { roomSession.enter(roomId) }
     }
 
     val room: StateFlow<RoomSnapshot?> = repository.roomSnapshot
@@ -78,7 +80,9 @@ class WatchTogetherLobbyViewModel(
 
     /** Guest/host leave: tear down the WS + clear room state. */
     fun leave() {
-        repository.reset()
+        // Explicit departure is the only thing that drops the connection now;
+        // leaving composition must not.
+        viewModelScope.launch { roomSession.leave() }
     }
 
     override fun onCleared() {

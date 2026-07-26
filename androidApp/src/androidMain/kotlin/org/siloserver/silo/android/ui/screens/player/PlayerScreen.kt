@@ -165,12 +165,14 @@ fun PlayerScreen(
     // The controller owns the room WS connection + RoomSyncEngine for the
     // lifetime of this screen and tears them down on explicit leave.
     val watchTogetherRepository: org.siloserver.silo.repository.WatchTogetherRepository = koinInject()
+    val watchTogetherSession: org.siloserver.silo.watchtogether.RoomSession = koinInject()
     val roomScope = rememberCoroutineScope()
     val roomController = remember(roomId) {
         roomId?.takeIf { it.isNotBlank() }?.let { id ->
             RoomSyncController(
                 roomId = id,
                 repository = watchTogetherRepository,
+                roomSession = watchTogetherSession,
                 viewModel = viewModel,
                 scope = roomScope,
             )

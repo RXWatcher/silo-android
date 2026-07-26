@@ -7,6 +7,7 @@ import org.siloserver.silo.model.watchtogether.RoomSnapshot
 import org.siloserver.silo.model.watchtogether.Suggestion
 import org.siloserver.silo.model.watchtogether.UpdatePolicyRequest
 import org.siloserver.silo.repository.WatchTogetherRepository
+import org.siloserver.silo.watchtogether.RoomSession
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -27,12 +28,14 @@ import kotlinx.coroutines.launch
 class TvWatchTogetherLobbyViewModel(
     private val roomId: String,
     private val repository: WatchTogetherRepository,
+    private val roomSession: RoomSession,
 ) : ViewModel() {
 
     init {
-        // The repo owns reconnect/backoff; we just bind on enter. connect()
-        // suspends for the lifetime of the socket, so launch it.
-        viewModelScope.launch { repository.connect(roomId) }
+        // Adopt the app-scoped connection rather than opening one here. Owning
+        // it in viewModelScope meant backing out of the lobby closed the socket
+        // and the server read that as the host leaving.
+        viewModelScope.launch { roomSession.enter(roomId) }
     }
 
     val room: StateFlow<RoomSnapshot?> = repository.roomSnapshot
@@ -71,7 +74,9 @@ class TvWatchTogetherLobbyViewModel(
      * network call against viewModelScope cancellation during screen dispose.
      */
     fun leave() {
-        repository.reset()
+        // Explicit departure is the only thing that drops the connection now;
+        // leaving composition must not.
+        viewModelScope.launch { roomSession.leave() }
     }
 
     override fun onCleared() {

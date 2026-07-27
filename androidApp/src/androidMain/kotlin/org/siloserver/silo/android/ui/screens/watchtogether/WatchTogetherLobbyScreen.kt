@@ -160,7 +160,6 @@ fun WatchTogetherLobbyScreen(
                             suggestion = s,
                             canManage = canManage,
                             isWinning = isVoteRoom && winner?.id == s.id,
-                            isVoteRoom = isVoteRoom,
                             onVote = { if (s.votedByMe) viewModel.unvote(s.id) else viewModel.vote(s.id) },
                             onPromote = { viewModel.promote(s.id) },
                             onRemove = { viewModel.removeSuggestion(s.id) },
@@ -184,7 +183,6 @@ private fun SuggestionRow(
     canManage: Boolean,
     onVote: () -> Unit,
     isWinning: Boolean,
-    isVoteRoom: Boolean,
     onPromote: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -202,11 +200,9 @@ private fun SuggestionRow(
                 Text("${suggestion.voteCount}${if (suggestion.votedByMe) " ✓" else ""}")
             }
             if (canManage) {
-                // The server only promotes the winner in a vote room, so a
-                // per-row Pick would fail on every other row.
-                if (!isVoteRoom) {
-                    TextButton(onClick = onPromote) { Text("Pick") }
-                }
+                // Available in vote rooms too — the host may override the
+                // tally. "Start winner" is the one-press path to its answer.
+                TextButton(onClick = onPromote) { Text("Pick") }
                 TextButton(onClick = onRemove) { Text("Remove") }
             }
         }

@@ -335,7 +335,6 @@ fun TvWatchTogetherLobbyScreen(
                                     suggestion = s,
                                     canManage = canManage,
                                     isWinning = isVoteRoom && winner?.id == s.id,
-                                    isVoteRoom = isVoteRoom,
                                     onVote = {
                                         if (s.votedByMe) viewModel.unvote(s.id) else viewModel.vote(s.id)
                                     },
@@ -383,7 +382,6 @@ private fun SuggestionRow(
     canManage: Boolean,
     /** True in a vote room for the suggestion currently winning. */
     isWinning: Boolean,
-    isVoteRoom: Boolean,
     onVote: () -> Unit,
     onPromote: () -> Unit,
     onRemove: () -> Unit,
@@ -496,13 +494,10 @@ private fun SuggestionRow(
             }
             if (canManage) {
                 Spacer(Modifier.width(8.dp))
-                // No per-row "Pick" in a vote room: the server refuses to
-                // promote anything but the winner, so offering it on every row
-                // would be an action that fails four times out of five. The
-                // host starts the winner from the button above the list.
-                if (!isVoteRoom) {
-                    RowAction(text = "Pick", onClick = onPromote)
-                }
+                // Available in vote rooms too: the host may start something
+                // other than the winner. "Start winner" above the list is the
+                // one-press path to the tally's answer; this is the override.
+                RowAction(text = "Pick", onClick = onPromote)
                 RowAction(text = "Remove", onClick = onRemove)
             }
         }

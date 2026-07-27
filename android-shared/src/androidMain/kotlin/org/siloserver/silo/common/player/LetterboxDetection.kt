@@ -45,3 +45,36 @@ internal fun SubtitleVideoRect.insetByLetterbox(insets: LetterboxInsets): Subtit
     if (remaining <= 0) return this
     return copy(top = top + topInset, height = remaining)
 }
+
+/**
+ * Pull the subtitle surface inside the display's title-safe area.
+ *
+ * Televisions crop the outer edge of the picture — historically overscan, and
+ * still common enough that broadcast guidance keeps a ~5% margin. Media3's text
+ * layer already clears the bottom via `setBottomPaddingFraction`, but libass
+ * positions ASS/SSA cues in the script's own coordinate space against whatever
+ * frame it is given, and that frame is the subtitle view. A cue authored to sit
+ * at the very bottom is therefore composited into pixels the TV never shows,
+ * and the line simply never appears — no error, no log, just missing dialogue.
+ * silo-apple hit exactly this (Silo-Server/silo-apple#95) and fixed it on their
+ * side by clamping the composited image to the safe area.
+ *
+ * Applied to the surface rather than to either renderer so both paths inherit
+ * it, and applied after the letterbox inset so the two compose instead of
+ * fighting: bars first (what the source wastes), then overscan (what the panel
+ * eats).
+ */
+internal fun SubtitleVideoRect.insetByTitleSafe(fraction: Float): SubtitleVideoRect {
+    if (fraction <= 0f || width <= 0 || height <= 0) return this
+    val horizontal = (width * fraction).roundToInt()
+    val vertical = (height * fraction).roundToInt()
+    val remainingWidth = width - horizontal * 2
+    val remainingHeight = height - vertical * 2
+    if (remainingWidth <= 0 || remainingHeight <= 0) return this
+    return copy(
+        left = left + horizontal,
+        top = top + vertical,
+        width = remainingWidth,
+        height = remainingHeight,
+    )
+}

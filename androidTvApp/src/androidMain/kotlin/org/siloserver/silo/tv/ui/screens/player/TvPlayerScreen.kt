@@ -207,6 +207,14 @@ internal fun shouldShowReconnectSpinner(
 ): Boolean = isReconnecting && !showNextUp && !isInPictureInPictureMode
 
 /**
+ * Held back on every edge for the display's title-safe area. 5% is the
+ * long-standing broadcast-safe margin and what TV UI guidance still assumes;
+ * it is deliberately not a user setting, because a viewer cannot tell
+ * "cropped by the panel" from "not rendered".
+ */
+private const val TV_TITLE_SAFE_FRACTION = 0.05f
+
+/**
  * Full-screen TV player. The ExoPlayer itself lives in [SiloPlaybackService];
  * we drive it via a [MediaController]. The Compose overlay ([TvPlayerControls])
  * replaces the default [PlayerView] controller so we own focus, skip buttons,
@@ -1612,6 +1620,12 @@ fun TvPlayerScreen(
             topFraction = (state.playbackPlan?.source?.letterboxTopFraction ?: 0.0).toFloat(),
             bottomFraction = (state.playbackPlan?.source?.letterboxBottomFraction ?: 0.0).toFloat(),
         )
+        // TVs crop the outer edge of the picture. Media3's text layer clears the
+        // bottom on its own, but libass places ASS/SSA cues against the surface
+        // it is given, so an authored bottom-anchored line lands in pixels the
+        // panel never shows and the dialogue silently goes missing. Phones do
+        // not overscan and leave this at zero.
+        subtitleManager.titleSafeFraction = TV_TITLE_SAFE_FRACTION
         subtitleManager.applyAppearance(pv, subtitleAppearance)
     }
 

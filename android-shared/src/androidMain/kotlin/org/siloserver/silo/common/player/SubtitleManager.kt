@@ -65,6 +65,18 @@ class SubtitleManager(
         }
 
     /**
+     * Fraction of the surface to hold back on every edge for the display's
+     * title-safe area. Zero on phones, which do not overscan; the TV player
+     * sets it. See [insetByTitleSafe] for why this is not a renderer concern.
+     */
+    var titleSafeFraction: Float = 0f
+        set(value) {
+            if (field == value) return
+            field = value
+            videoRectSyncs.values.forEach { sync -> sync.titleSafeFraction = value }
+        }
+
+    /**
      * Builds MediaItem.SubtitleConfiguration entries for external subtitle tracks.
      *
      * @param subtitles The subtitle info list from the playback session
@@ -317,6 +329,7 @@ class SubtitleManager(
             // A view bound after the measurement arrived must not miss it.
             SubtitleVideoRectSync(playerView).also {
                 it.letterbox = letterbox
+                it.titleSafeFraction = titleSafeFraction
                 videoRectSyncs[playerView] = it
             }
         } else {
@@ -386,11 +399,16 @@ class SubtitleManager(
     }
 
     private fun bottomPaddingFor(position: SubtitlePositionPreset): Float {
-        return when (position) {
+        val base = when (position) {
             SubtitlePositionPreset.Bottom -> 0.09f
             SubtitlePositionPreset.LowerThird -> 0.18f
             SubtitlePositionPreset.Top -> 0.74f
         }
+        // The title-safe inset already lifted the whole surface off the edge,
+        // and this fraction is measured against that smaller surface. Leaving
+        // the presets alone would stack the two and push styled text visibly
+        // higher than it sits today, so give back what the surface took.
+        return (base - titleSafeFraction).coerceAtLeast(0.02f)
     }
 
     private fun parseHexColor(hex: String, alpha: Int = 255): Int {
@@ -626,6 +644,13 @@ private class SubtitleVideoRectSync(playerView: PlayerView) :
             update()
         }
 
+    var titleSafeFraction: Float = 0f
+        set(value) {
+            if (field == value) return
+            field = value
+            update()
+        }
+
     var isDisposed: Boolean = false
         private set
 
@@ -741,7 +766,7 @@ private class SubtitleVideoRectSync(playerView: PlayerView) :
                     videoPixelWidthHeightRatio = videoSize.pixelWidthHeightRatio,
                     resizeMode = playerView.resizeMode,
                 )
-            ).insetByLetterbox(letterbox)
+            ).insetByLetterbox(letterbox).insetByTitleSafe(titleSafeFraction)
         val current = subtitleView.layoutParams as? FrameLayout.LayoutParams
         val params = current ?: FrameLayout.LayoutParams(rect.width, rect.height)
         val gravity = Gravity.TOP or Gravity.START

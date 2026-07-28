@@ -238,12 +238,19 @@ class TvRoomSyncController(
             viewModel.uiState.collect { state ->
                 val waiting = repository.roomSnapshot.value?.playbackState == RoomPlaybackState.Waiting
                 val sessionId = state.sessionId
-                if (waiting && sessionId != null && state.isBuffering != lastBuffering) {
+                // Track the transition ALWAYS; gate only the send. Updating the
+                // latch solely while waiting meant a transition that happened
+                // outside the waiting phase left the latch stale, and the first
+                // real transition inside the phase compared equal and was
+                // swallowed — the room never heard this member's ready.
+                if (state.isBuffering != lastBuffering) {
                     lastBuffering = state.isBuffering
-                    if (state.isBuffering) {
-                        repository.buffering(sessionId, state.position, state.isPaused)
-                    } else {
-                        repository.ready(sessionId, state.position, state.isPaused)
+                    if (waiting && sessionId != null) {
+                        if (state.isBuffering) {
+                            repository.buffering(sessionId, state.position, state.isPaused)
+                        } else {
+                            repository.ready(sessionId, state.position, state.isPaused)
+                        }
                     }
                 }
             }
@@ -355,7 +362,14 @@ class TvRoomSyncController(
         scope.launch {
             if (closeRoom) repository.closeRoom()
             engine.reset()
-            repository.reset()
+            // Through the session, not repository.reset() directly: the session
+            // owns the app-scoped socket. Resetting the repo while the socket
+            // stayed open left a ghost member the server kept waiting on, the
+            // next snapshot frame repopulated the "cleared" state, and a
+            // re-enter of the same room landed on a half-dead connection whose
+            // sends all silently failed. leave() cancels the connection first
+            // and then resets, in that order.
+            roomSession.leave()
         }
     }
 

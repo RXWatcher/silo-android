@@ -36,6 +36,13 @@ class TvWatchTogetherLobbyViewModel(
         // it in viewModelScope meant backing out of the lobby closed the socket
         // and the server read that as the host leaving.
         viewModelScope.launch { roomSession.enter(roomId) }
+        // The server pushes only a snapshot at connect; suggestions_update is
+        // broadcast on mutation. A member entering (or re-entering) the lobby
+        // therefore saw an EMPTY list until someone else next touched a
+        // suggestion — which guts a vote room for late joiners. Fetch the
+        // current list over REST on entry; failures are tolerated (the next
+        // broadcast still lands).
+        viewModelScope.launch { repository.refreshSuggestions() }
     }
 
     val room: StateFlow<RoomSnapshot?> = repository.roomSnapshot
@@ -44,6 +51,15 @@ class TvWatchTogetherLobbyViewModel(
         .stateIn(viewModelScope, SharingStarted.Eagerly, repository.suggestions.value)
     val roomClosedReason: StateFlow<String?> = repository.roomClosedReason
         .stateIn(viewModelScope, SharingStarted.Eagerly, repository.roomClosedReason.value)
+
+    /**
+     * Transient, non-terminal server errors (a rejected vote/promote, a refused
+     * transport request). They used to flow only to the player screens; in the
+     * lobby — where the rejections actually happen — they went nowhere. A
+     * SharedFlow passthrough (not a StateFlow) so an identical message repeated
+     * still re-fires the toast.
+     */
+    val errors: kotlinx.coroutines.flow.SharedFlow<String> = repository.errors
 
     fun vote(suggestionId: String) = viewModelScope.launch { repository.vote(suggestionId) }
     fun unvote(suggestionId: String) = viewModelScope.launch { repository.unvote(suggestionId) }

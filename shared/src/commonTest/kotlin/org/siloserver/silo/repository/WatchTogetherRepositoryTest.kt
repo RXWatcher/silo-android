@@ -60,8 +60,9 @@ class WatchTogetherRepositoryTest {
         override suspend fun closeRoom(roomId: String, roomToken: String): ApiResult<Unit> {
             lastRoomToken = roomToken; return ApiResult.Success(Unit)
         }
+        var suggestionsResponse: ApiResult<SuggestionsResponse> = ApiResult.Success(SuggestionsResponse())
         override suspend fun listSuggestions(roomId: String, roomToken: String) =
-            ApiResult.Success(SuggestionsResponse()).also { lastRoomToken = roomToken }
+            suggestionsResponse.also { lastRoomToken = roomToken }
         override suspend fun addSuggestion(roomId: String, roomToken: String, request: AddSuggestionRequest) =
             ApiResult.Success(SuggestionsResponse()).also { lastRoomToken = roomToken }
         override suspend fun deleteSuggestion(roomId: String, roomToken: String, suggestionId: String) =
@@ -87,6 +88,13 @@ class WatchTogetherRepositoryTest {
          * failures were reset per-event rather than per-clean-completion.
          */
         var flappingEvent: RoomRealtimeEvent? = null
+        /**
+         * Per-attempt scripted flows, consumed in order; when exhausted, falls
+         * back to the hot [events] flow. Lets a test model the REAL client's
+         * behaviour — a flow that emits Disconnected and then completes — for
+         * one attempt, and a healthy connection for the next.
+         */
+        val scriptedAttempts = ArrayDeque<List<RoomRealtimeEvent>>()
         override fun connect(roomId: String, roomToken: String): Flow<RoomRealtimeEvent> {
             connectCount++
             if (failConnect) return flow { throw IllegalStateException("boom") }
@@ -94,6 +102,9 @@ class WatchTogetherRepositoryTest {
             if (flapEvent != null) return flow {
                 emit(flapEvent)
                 throw IllegalStateException("connection dropped after event")
+            }
+            scriptedAttempts.removeFirstOrNull()?.let { scripted ->
+                return flow { scripted.forEach { emit(it) } }
             }
             return events.asSharedFlow()
         }
@@ -358,6 +369,130 @@ class WatchTogetherRepositoryTest {
         // Stale room state must not be observable after the cap is hit.
         assertNull(r.roomSnapshot.value)
     }
+    // ---- disconnect vs closed (regression for the review's finding 1) ---------
+
+    @Test
+    fun `a socket disconnect reconnects instead of ending the room`() = runTest {
+        // Attempt 1 behaves like the REAL client on a network blip: one healthy
+        // snapshot, then Disconnected, then flow completion. Attempt 2 is the
+        // healed connection (falls back to the hot events flow). Under the old
+        // code the Disconnected (then Closed) event was terminal: one blip set
+        // roomClosedReason, nulled the snapshot, and never reconnected.
+        val realtime = FakeRealtime().apply {
+            scriptedAttempts.addLast(
+                listOf(
+                    RoomRealtimeEvent.SnapshotEvent(
+                        RoomSnapshot(roomId = "room-1", code = "ABCD1234"),
+                    ),
+                    RoomRealtimeEvent.Disconnected("connection reset"),
+                ),
+            )
+        }
+        val r = repo(realtime = realtime)
+        r.createRoom(CreateRoomRequest())
+        val job = launch { r.connect("room-1") }
+        advanceUntilIdle()
+
+        // Reconnected: a second attempt happened and the room is NOT closed.
+        assertTrue(realtime.connectCount >= 2, "expected a reconnect attempt, got ${'$'}{realtime.connectCount}")
+        assertNull(r.roomClosedReason.value)
+
+        // The healed connection still folds events.
+        realtime.events.emit(RoomRealtimeEvent.SnapshotEvent(snapshot(revision = 9)))
+        advanceUntilIdle()
+        assertEquals(9L, r.roomSnapshot.value?.selectionRevision)
+        job.cancel()
+    }
+
+    @Test
+    fun `a disconnect keeps the last snapshot while reconnecting`() = runTest {
+        // The lobby should keep showing the room while the connection heals;
+        // only room_closed / giving up may null the snapshot.
+        val realtime = FakeRealtime().apply {
+            scriptedAttempts.addLast(
+                listOf(
+                    RoomRealtimeEvent.SnapshotEvent(snapshot(memberCount = 4)),
+                    RoomRealtimeEvent.Disconnected(null),
+                ),
+            )
+        }
+        val r = repo(realtime = realtime)
+        r.createRoom(CreateRoomRequest())
+        val job = launch { r.connect("room-1") }
+        advanceUntilIdle()
+        assertEquals(4, r.roomSnapshot.value?.memberCount)
+        job.cancel()
+    }
+
+    @Test
+    fun `reconnect refreshes suggestions missed while disconnected`() = runTest {
+        // Suggestions are only broadcast on mutation, so anything voted or
+        // suggested during the gap is invisible until the next mutation. The
+        // loop must re-fetch over REST before re-collecting.
+        val api = FakeApi()
+        val realtime = FakeRealtime().apply {
+            scriptedAttempts.addLast(listOf(RoomRealtimeEvent.Disconnected("blip")))
+        }
+        val r = repo(api = api, realtime = realtime)
+        r.createRoom(CreateRoomRequest())
+        api.lastRoomToken = null
+        val job = launch { r.connect("room-1") }
+        advanceUntilIdle()
+        assertTrue(realtime.connectCount >= 2)
+        // listSuggestions ran with the room token during the reconnect.
+        assertEquals("jwt-room", api.lastRoomToken)
+        job.cancel()
+    }
+
+    @Test
+    fun `repeated disconnects still hit the reconnect cap`() = runTest {
+        // Every attempt ends in Disconnected (real-client shape for a dead
+        // network). The cap must terminate the loop exactly as it does for
+        // throwing attempts — a disconnect is a failure, not a clean end.
+        val realtime = FakeRealtime()
+        repeat(WatchTogetherRepository.MAX_RECONNECT_ATTEMPTS + 2) {
+            realtime.scriptedAttempts.addLast(listOf(RoomRealtimeEvent.Disconnected("down")))
+        }
+        val r = repo(realtime = realtime)
+        r.createRoom(CreateRoomRequest())
+        val job = launch { r.connect("room-1") }
+        advanceUntilIdle()
+        assertTrue(job.isCompleted || job.isCancelled)
+        assertEquals("connection_lost", r.roomClosedReason.value)
+        assertEquals(WatchTogetherRepository.MAX_RECONNECT_ATTEMPTS, realtime.connectCount)
+        assertNull(r.roomSnapshot.value)
+    }
+
+    // ---- cross-device unvote unlearns (regression for finding 6) ---------------
+
+    @Test
+    fun `a REST list that denies a vote unlearns the stale local vote`() = runTest {
+        val api = FakeApi()
+        val realtime = FakeRealtime()
+        val r = repo(api = api, realtime = realtime)
+        r.createRoom(CreateRoomRequest())
+        val job = launch { r.connect("room-1") }
+        advanceUntilIdle()
+
+        // Voted here...
+        r.vote("s2"); advanceUntilIdle()
+
+        // ...then unvoted on ANOTHER device. The next REST refresh carries the
+        // authoritative votedByMe=false; the local set must unlearn it so a
+        // later broadcast re-merge doesn't resurrect the vote forever.
+        api.suggestionsResponse = ApiResult.Success(
+            SuggestionsResponse(suggestions = listOf(suggestion("s2", votedByMe = false))),
+        )
+        r.refreshSuggestions(); advanceUntilIdle()
+
+        realtime.events.emit(
+            RoomRealtimeEvent.SuggestionsEvent(listOf(suggestion("s2", votedByMe = false))),
+        )
+        advanceUntilIdle()
+        assertFalse(r.suggestions.value.first().votedByMe)
+        job.cancel()
+    }
+
     @Test
     fun `sends report undelivered before the socket is up`() = runTest {
         // There is a real window between launching connect() and the socket

@@ -33,6 +33,19 @@ sealed class RoomRealtimeEvent {
     /** Server `room_closed{reason}`. The repository stops reconnecting on this. */
     data class Closed(val reason: String? = null) : RoomRealtimeEvent()
 
+    /**
+     * The SOCKET ended — network drop, server restart, clean TCP close —
+     * without the server saying the room is over. Distinct from [Closed],
+     * which is reserved for a decoded `room_closed` frame (and for terminal
+     * client-side conditions like missing auth, where retrying cannot help).
+     *
+     * The distinction is load-bearing: the repository reconnects with backoff
+     * on a [Disconnected] and treats only [Closed] as terminal. When the two
+     * were one event, every wifi blip ended the room for that member and the
+     * entire reconnect loop was unreachable in production.
+     */
+    data class Disconnected(val reason: String? = null) : RoomRealtimeEvent()
+
     /** Server `error{code,message}`. */
     data class Error(val code: String, val message: String) : RoomRealtimeEvent()
 }

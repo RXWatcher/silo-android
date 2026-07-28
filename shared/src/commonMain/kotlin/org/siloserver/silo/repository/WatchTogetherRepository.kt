@@ -267,8 +267,13 @@ class WatchTogetherRepository(
      */
     private fun applySuggestions(list: List<Suggestion>, fromBroadcast: Boolean) {
         if (!fromBroadcast) {
-            val authoritative = list.filter { it.votedByMe }.map { it.id }
-            if (authoritative.isNotEmpty()) votedIds.update { it + authoritative }
+            // A REST list is authoritative in BOTH directions for the ids it
+            // carries: seed votes it confirms, and unlearn votes it denies —
+            // an unvote made on another device used to leave a stale local
+            // "voted" here forever, because the set only ever grew.
+            val listedIds = list.mapTo(mutableSetOf()) { it.id }
+            val authoritative = list.filter { it.votedByMe }.mapTo(mutableSetOf()) { it.id }
+            votedIds.update { (it - listedIds) + authoritative }
         }
         val voted = votedIds.value
         _suggestions.value = list.map { s ->
@@ -309,37 +314,65 @@ class WatchTogetherRepository(
         _roomClosedReason.value = null // fresh connect: clear any stale close/error reason
         var backoffIndex = 0
         var failures = 0
+        var reconnecting = false
         while (true) {
             var closedByServer = false
+            if (reconnecting) {
+                // The socket was down for a while, and suggestion state is only
+                // broadcast on mutation — anything voted/suggested during the gap
+                // is invisible until the next mutation. Re-fetch over REST before
+                // re-collecting so the reconnected member sees the current list.
+                runCatching { refreshSuggestions() }
+            }
             try {
                 client.connect(roomId, roomToken).collect { event ->
-                    if (event is RoomRealtimeEvent.Closed) {
-                        // Any server-initiated close (with or without a reason) is terminal.
-                        // The event flow (a hot SharedFlow) never completes on its
-                        // own, so we stop collecting by throwing a private sentinel.
-                        closedByServer = true
-                        _roomClosedReason.value = event.reason // surface "host left" etc.
-                        _roomSnapshot.value = null
-                        throw ServerClosed
-                    } else {
-                        backoffIndex = 0 // healthy traffic resets backoff to short delays
+                    when (event) {
+                        is RoomRealtimeEvent.Closed -> {
+                            // A decoded `room_closed` frame (or terminal client-side
+                            // condition like missing auth) — the ONLY terminal event.
+                            closedByServer = true
+                            _roomClosedReason.value = event.reason // surface "host left" etc.
+                            _roomSnapshot.value = null
+                            throw ServerClosed
+                        }
+                        is RoomRealtimeEvent.Disconnected -> {
+                            // The SOCKET ended without the server ending the room:
+                            // reconnect with backoff. The snapshot is deliberately
+                            // kept — the lobby shows the last known room while the
+                            // connection heals, and a fresh snapshot arrives on
+                            // reconnect. Treating this as Closed is what used to
+                            // make every wifi blip terminal.
+                            throw SocketDropped
+                        }
+                        else -> {
+                            backoffIndex = 0 // healthy traffic resets backoff to short delays
+                            fold(event)
+                        }
                     }
-                    fold(event)
                 }
-                // Flow completed without throwing — this was a clean connection end.
-                // Only reset the failure counter on a genuinely clean completion so a
-                // server that emits one event then drops every attempt cannot reset
-                // failures to 0 and bypass the cap.
+                // Flow completed without any terminal/disconnect event — only fakes
+                // and exotic transports do this. Treat as a clean end.
                 failures = 0
             } catch (e: CancellationException) {
-                realtime = null
+                // Guarded: a successor connect() may already have installed its own
+                // client, and unconditionally nulling here handed that successor a
+                // dead send path — every attach/ping silently returned false for
+                // the rest of the room.
+                if (realtime === client) realtime = null
                 throw e
             } catch (_: ServerClosed) {
                 // terminal — handled below via closedByServer
+            } catch (_: SocketDropped) {
+                // A disconnect counts toward the same cap as a failed attempt —
+                // NOT reset by the healthy traffic that preceded it, so a
+                // flapping server still terminates (see the flapping test).
+                failures++
+                reconnecting = true
             } catch (_: Throwable) {
                 // Any throw (including from a flapping server) counts as a failure,
                 // regardless of whether a healthy event arrived in the same attempt.
                 failures++
+                reconnecting = true
             }
             if (closedByServer) break
             if (failures >= MAX_RECONNECT_ATTEMPTS) {
@@ -350,11 +383,14 @@ class WatchTogetherRepository(
             delay(BACKOFF_MS[backoffIndex])
             backoffIndex = (backoffIndex + 1).coerceAtMost(BACKOFF_MS.lastIndex)
         }
-        realtime = null
+        if (realtime === client) realtime = null
     }
 
     /** Sentinel to unwind the [connect] collect loop on a server `room_closed`. */
     private object ServerClosed : Throwable()
+
+    /** Sentinel to unwind the [connect] collect loop on a socket disconnect. */
+    private object SocketDropped : Throwable()
 
     /** Pure-ish fold of one realtime event into the state flows + side streams. */
     private fun fold(event: RoomRealtimeEvent) {
@@ -375,6 +411,7 @@ class WatchTogetherRepository(
                 ),
             )
             is RoomRealtimeEvent.Closed -> { /* lifecycle handled in connect() */ }
+            is RoomRealtimeEvent.Disconnected -> { /* lifecycle handled in connect() */ }
             is RoomRealtimeEvent.Error ->
                 // Transient, NON-terminal: a server `error` frame (e.g. a rejected
                 // transport_request) must be "ignored gracefully" per the design.

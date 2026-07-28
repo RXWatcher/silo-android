@@ -1131,7 +1131,12 @@ fun PlayerScreen(
                     onSeek = { castManager.seekTo(it) },
                     onBack = {
                         exitRequested = true
-                        roomController?.leave(closeRoom = roomSnapshot?.isHost == true)
+                        roomController?.leave(
+                            // Live repo value, not the composed snapshot: the composed
+                            // state can be transiently null (e.g. right after a reconnect
+                            // cleared it) and a host's leave must still close the room.
+                            closeRoom = watchTogetherRepository.roomSnapshot.value?.isHost == true,
+                        )
                         viewModel.onExit()
                         if (!navController.popBackStack()) activity?.finish()
                     },
@@ -1161,7 +1166,12 @@ fun PlayerScreen(
                             // by the overlay before this fires). The controller resets the
                             // repo + engine; solo playback just pops.
                             exitRequested = true
-                            roomController?.leave(closeRoom = roomSnapshot?.isHost == true)
+                            roomController?.leave(
+                            // Live repo value, not the composed snapshot: the composed
+                            // state can be transiently null (e.g. right after a reconnect
+                            // cleared it) and a host's leave must still close the room.
+                            closeRoom = watchTogetherRepository.roomSnapshot.value?.isHost == true,
+                        )
                             viewModel.onExit()
                             // Nothing behind the player (launcher/deep-link/notification
                             // open) → popBackStack can't land anywhere and leaves a blank

@@ -30,8 +30,9 @@ import kotlinx.serialization.json.JsonPrimitive
  * `?token=<authJWT>&room_token=<roomJWT>&profile_id=<id>&profile_token=<token>`
  * (a separate socket from `/events/ws`). Every server frame is mapped through
  * the pure [decodeRoomFrame] into the returned [Flow]; the flow completes
- * (emitting [RoomRealtimeEvent.Closed]) when the socket ends — reconnect with
- * capped backoff is the repository's job.
+ * (emitting [RoomRealtimeEvent.Disconnected]) when the socket ends — reconnect
+ * with capped backoff is the repository's job, and only a decoded
+ * `room_closed` frame ([RoomRealtimeEvent.Closed]) is terminal.
  *
  * [send*] methods write client frames on an open session; the repository holds
  * the session and the ping loop. Auth values are read from [TokenManager] at
@@ -39,7 +40,9 @@ import kotlinx.serialization.json.JsonPrimitive
  * — the only logic worth unit-testing is the pure [decodeRoomFrame].
  */
 interface WatchTogetherRealtimeClient {
-    /** Open the room socket. The returned flow ends with [RoomRealtimeEvent.Closed]. */
+    /** Open the room socket. The returned flow ends with [RoomRealtimeEvent.Disconnected]
+     *  on any socket end; [RoomRealtimeEvent.Closed] only for a server `room_closed`
+     *  frame or a terminal client-side condition (missing auth). */
     fun connect(roomId: String, roomToken: String): Flow<RoomRealtimeEvent>
 
     /**
@@ -91,20 +94,27 @@ class DefaultWatchTogetherRealtimeClient(
 
         try {
             client.webSocket(urlString = url) {
-                session = this
+                val opened = this
+                session = opened
                 try {
                     for (frame in incoming) {
                         if (frame !is Frame.Text) continue
                         decodeRoomFrame(json, frame.readText())?.let { trySend(it) }
                     }
                 } finally {
-                    session = null
+                    // Guarded: a successor connect() may already have installed
+                    // its own session, and unconditionally nulling here handed
+                    // that successor a dead send path for the life of the room.
+                    if (session === opened) session = null
                 }
             }
-            trySend(RoomRealtimeEvent.Closed())
+            // The socket ended without a room_closed frame. That is a
+            // DISCONNECT, not a close: the repository reconnects with backoff.
+            // Emitting Closed here was what made every network blip terminal
+            // and left the reconnect loop as dead code.
+            trySend(RoomRealtimeEvent.Disconnected())
         } catch (e: Throwable) {
-            session = null
-            trySend(RoomRealtimeEvent.Closed(e.message))
+            trySend(RoomRealtimeEvent.Disconnected(e.message))
         } finally {
             close()
         }

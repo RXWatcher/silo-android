@@ -124,6 +124,17 @@ fun TvWatchTogetherLobbyScreen(
     val isVoteRoom = snapshot.isVoteRoom()
 
     // Auto-hand-off into the synced player once the room is playing + selected.
+    val toastContext = androidx.compose.ui.platform.LocalContext.current
+    // Transient server rejections (vote/promote refused) — the lobby is where
+    // these actually happen, and they used to go nowhere.
+    LaunchedEffect(Unit) {
+        viewModel.errors.collect { message ->
+            if (message.isNotBlank()) {
+                android.widget.Toast.makeText(toastContext, message, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     LaunchedEffect(room?.phase, room?.selectedContentId, room?.selectedFileId, room?.memberCount, room?.selfRole) {
         val snapshot = room ?: return@LaunchedEffect
         if (shouldEnterSyncedPlayer(snapshot)) {

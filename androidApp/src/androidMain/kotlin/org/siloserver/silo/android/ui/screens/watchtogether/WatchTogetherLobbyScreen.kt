@@ -67,6 +67,16 @@ fun WatchTogetherLobbyScreen(
     val context = LocalContext.current
 
     // Auto-navigate into the synced player when the room starts playing.
+    // Transient server rejections (vote/promote refused) — the lobby is where
+    // these actually happen, and they used to go nowhere.
+    LaunchedEffect(Unit) {
+        viewModel.errors.collect { message ->
+            if (message.isNotBlank()) {
+                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     LaunchedEffect(room?.phase, room?.selectedContentId, room?.memberCount, room?.selfRole) {
         val snapshot = room ?: return@LaunchedEffect
         lobbyPlayerDestinationOrNull(snapshot)?.let { onNavigateToPlayer(it) }

@@ -405,10 +405,16 @@ class SubtitleManager(
             SubtitlePositionPreset.Top -> 0.74f
         }
         // The title-safe inset already lifted the whole surface off the edge,
-        // and this fraction is measured against that smaller surface. Leaving
-        // the presets alone would stack the two and push styled text visibly
-        // higher than it sits today, so give back what the surface took.
-        return (base - titleSafeFraction).coerceAtLeast(0.02f)
+        // and this fraction is measured against that SMALLER surface — height
+        // scaled by (1 - 2f). Give back what the surface took exactly:
+        // solving f·H + p·(1 - 2f)·H = base·H for p gives (base - f)/(1 - 2f).
+        // The earlier (base - f) alone ignored the scale factor, which was
+        // near-exact at the Bottom preset but sat the Top preset ~7% of the
+        // screen lower than before the inset.
+        val f = titleSafeFraction
+        val scale = 1f - 2f * f
+        if (scale <= 0f) return base
+        return ((base - f) / scale).coerceAtLeast(0.02f)
     }
 
     private fun parseHexColor(hex: String, alpha: Int = 255): Int {

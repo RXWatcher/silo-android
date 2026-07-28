@@ -340,6 +340,7 @@ class DownloadWorker(
             bytesSent = 0,
             fileSize = 0,
             localUri = activeUri,
+            zeroProgress = true,
         )
         return Result.failure()
     }
@@ -361,6 +362,10 @@ class DownloadWorker(
         fileName: String? = null,
         // null = keep existing; "" = clear (download finished/failed); else set.
         resumeValidator: String? = null,
+        // Permanent failure wipes the partial from disk, so the sidecar's
+        // progress must go to zero WITH it — the keep-when-not-positive rule
+        // below otherwise carries the dead attempt's numbers into Failed.
+        zeroProgress: Boolean = false,
     ) {
         runCatching {
             val existing = metadataStore.readSidecar(serverId, profileId, fileId) ?: return@runCatching
@@ -369,8 +374,16 @@ class DownloadWorker(
                 existing.copy(
                     record = existing.record.copy(
                         status = status,
-                        bytesSent = if (bytesSent > 0) bytesSent else existing.record.bytesSent,
-                        fileSize = if (fileSize > 0) fileSize else existing.record.fileSize,
+                        bytesSent = when {
+                            zeroProgress -> 0
+                            bytesSent > 0 -> bytesSent
+                            else -> existing.record.bytesSent
+                        },
+                        fileSize = when {
+                            zeroProgress -> 0
+                            fileSize > 0 -> fileSize
+                            else -> existing.record.fileSize
+                        },
                     ),
                     localUri = localUri ?: existing.localUri,
                     fileName = fileName?.takeIf { it.isNotBlank() } ?: existing.fileName,

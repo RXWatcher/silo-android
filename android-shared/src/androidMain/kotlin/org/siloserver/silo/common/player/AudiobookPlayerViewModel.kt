@@ -21,9 +21,11 @@ import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.network.ServerRegistry
 import org.siloserver.silo.repository.CatalogRepository
 import org.siloserver.silo.repository.ProfileRepository
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -34,7 +36,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.random.Random
@@ -1322,12 +1323,19 @@ class AudiobookPlayerViewModel(
         positionSaveJob?.cancel()
         val state = _uiState.value
         state.sessionId?.let { sessionId ->
-            runCatching {
-                runBlocking(Dispatchers.IO) {
+            // Fire-and-forget on an app-lifetime scope. onCleared runs on the
+            // MAIN thread, and reportAndStopSession is two network calls —
+            // runBlocking here froze the UI for the full network timeout on a
+            // slow link (the exact ANR PlaybackSessionLifecycle.stopAsync's doc
+            // warns about). The teardown scope outlives the ViewModel and
+            // NonCancellable keeps the report running through the transition.
+            val position = sessionLocalPosition(state)
+            audiobookTeardownScope.launch(NonCancellable) {
+                runCatching {
                     // SINK 1: report the retiring session in part-local space.
                     reportAndStopSession(
                         sessionId = sessionId,
-                        positionSeconds = sessionLocalPosition(state),
+                        positionSeconds = position,
                         isPaused = true,
                     )
                 }
@@ -1375,3 +1383,10 @@ private fun AudiobookTimeline.toWholeBookChapters(): List<VersionChapter> =
             endSeconds = chapter.endSeconds ?: chapter.startSeconds,
         )
     }
+
+/**
+ * Process-lifetime scope for the audiobook player's final session report.
+ * ViewModel scopes are cancelling inside onCleared, and blocking main there is
+ * an ANR — this outlives the ViewModel so the report can complete off-thread.
+ */
+private val audiobookTeardownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

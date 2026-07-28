@@ -193,8 +193,17 @@ class RoomSyncController(
             while (isActive) {
                 val state = viewModel.uiState.value
                 val sessionId = state.sessionId
+                // Report only once the SERVER has confirmed our attach: it
+                // rejects a state_report whose session it has not attached
+                // (ErrConnectionNotAttached), the read loop turns every
+                // rejection into an `error` frame, and the client toasts each
+                // one — a "toast that never goes away" at the report cadence
+                // for as long as the attach echo is outstanding (or forever,
+                // if the attach frame was lost).
+                val attached = sessionId != null &&
+                    repository.roomSnapshot.value?.attachedSessionId == sessionId
                 val now = monotonicMs()
-                if (sessionId != null &&
+                if (attached &&
                     shouldEmitRoomStateReport(now, lastReportMs, REPORT_CADENCE_MS, pendingExecuteAtMs, SUPPRESS_WINDOW_MS)
                 ) {
                     lastReportMs = now
@@ -212,8 +221,10 @@ class RoomSyncController(
         scope.launch {
             var lastBuffering: Boolean? = null
             viewModel.uiState.collect { state ->
-                val waiting = repository.roomSnapshot.value?.playbackState == RoomPlaybackState.Waiting
+                val snapshotNow = repository.roomSnapshot.value
+                val waiting = snapshotNow?.playbackState == RoomPlaybackState.Waiting
                 val sessionId = state.sessionId
+                    ?.takeIf { snapshotNow?.attachedSessionId == it } // same attach gate as state_report
                 // Track the transition ALWAYS; gate only the send. Updating the
                 // latch solely while waiting meant a transition that happened
                 // outside the waiting phase left the latch stale, and the first
@@ -291,9 +302,13 @@ class RoomSyncController(
         pendingExecuteAtMs = null
 
         // Auto-emit ready on the waiting barrier (command.playback_state == waiting).
-        if (decision.shouldEmitReady && sessionId != null) {
+        // Same attach gate as state_report: an unattached ready is rejected with
+        // an error frame the UI toasts.
+        val attachedSessionId = sessionId
+            ?.takeIf { repository.roomSnapshot.value?.attachedSessionId == it }
+        if (decision.shouldEmitReady && attachedSessionId != null) {
             val s = viewModel.uiState.value
-            repository.ready(sessionId, s.position, s.isPaused)
+            repository.ready(attachedSessionId, s.position, s.isPaused)
         }
     }
 

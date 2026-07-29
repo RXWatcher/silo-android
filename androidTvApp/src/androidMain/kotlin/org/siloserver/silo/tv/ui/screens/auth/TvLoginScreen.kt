@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -77,6 +78,7 @@ import org.siloserver.silo.tv.ui.components.TvPillVariant
 import org.siloserver.silo.tv.ui.components.tvOutlinedTextFieldColors
 import org.siloserver.silo.tv.ui.theme.Spacing
 import org.koin.compose.viewmodel.koinViewModel
+import kotlin.math.min
 
 /**
  * Sign-in form — compact, TOP-anchored so the username/password fields stay
@@ -611,6 +613,7 @@ private fun QrLoginCard(
                     size = 150.dp,
                 )
                 MatchCodeTiles(code = state.session.matchCode)
+                ManualSignInCode(code = state.session.userCode)
             }
             is DeviceLoginRepository.DeviceLoginState.Approved -> {
                 Text(
@@ -657,8 +660,8 @@ private fun QrLoginCard(
 
 /**
  * Match-code confirmation tiles — "CONFIRM THIS CODE" over the server-issued
- * code, one monospaced tile per character. Mirrors tvOS
- * `TVLoginView.matchCodeTiles`; word/number separators render as a thin dash.
+ * variable-length word pair, one monospaced tile per character. Tile metrics
+ * adapt to the card width so the final character cannot be clipped.
  */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -679,36 +682,116 @@ private fun MatchCodeTiles(code: String, modifier: Modifier = Modifier) {
             ),
             color = Color.White.copy(alpha = 0.6f),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            code.uppercase().forEach { ch ->
-                val isSep = ch == '-' || ch == ' '
-                if (isSep) {
-                    Text(
-                        text = "–",
-                        style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.Bold),
-                        color = Color.White.copy(alpha = 0.4f),
-                        modifier = Modifier.width(10.dp),
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 24.dp, height = 30.dp)
-                            .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(6.dp))
-                            .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(6.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
+        BoxWithConstraints(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            val metrics = matchCodeTileMetrics(code = code, availableWidthDp = maxWidth.value)
+            Row(horizontalArrangement = Arrangement.spacedBy(metrics.gapDp.dp)) {
+                code.uppercase().forEach { ch ->
+                    val isSep = ch == '-' || ch == ' '
+                    if (isSep) {
                         Text(
-                            text = ch.toString(),
+                            text = "–",
                             style = TextStyle(
-                                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                fontSize = metrics.fontSizeSp.sp,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp,
                             ),
-                            color = MaterialTheme.colorScheme.onBackground,
+                            color = Color.White.copy(alpha = 0.4f),
+                            modifier = Modifier.width(metrics.separatorWidthDp.dp),
                         )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(
+                                    width = metrics.tileWidthDp.dp,
+                                    height = metrics.tileHeightDp.dp,
+                                )
+                                .background(Color.White.copy(alpha = 0.06f), RoundedCornerShape(6.dp))
+                                .border(1.dp, Color.White.copy(alpha = 0.16f), RoundedCornerShape(6.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = ch.toString(),
+                                style = TextStyle(
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = metrics.fontSizeSp.sp,
+                                ),
+                                color = MaterialTheme.colorScheme.onBackground,
+                            )
+                        }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ManualSignInCode(code: String, modifier: Modifier = Modifier) {
+    if (code.isBlank()) return
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Spacing.xs),
+        modifier = modifier,
+    ) {
+        Text(
+            text = "SIGN-IN CODE",
+            style = TextStyle(
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 14.sp,
+                letterSpacing = 2.sp,
+            ),
+            color = Color.White.copy(alpha = 0.6f),
+        )
+        Text(
+            text = code.uppercase(),
+            maxLines = 1,
+            softWrap = false,
+            style = TextStyle(
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 20.sp,
+                letterSpacing = 2.sp,
+            ),
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+    }
+}
+
+internal data class MatchCodeTileMetrics(
+    val tileWidthDp: Float,
+    val separatorWidthDp: Float,
+    val tileHeightDp: Float,
+    val fontSizeSp: Float,
+    val gapDp: Float,
+)
+
+internal fun matchCodeTileMetrics(
+    code: String,
+    availableWidthDp: Float,
+): MatchCodeTileMetrics {
+    val characters = code.uppercase()
+    val separatorCount = characters.count { it == '-' || it == ' ' }
+    val tileCount = characters.length - separatorCount
+    val gapDp = 4f
+    val totalGapDp = gapDp * (characters.length - 1).coerceAtLeast(0)
+    val separatorRatio = 10f / 24f
+    val widthUnits = tileCount + separatorCount * separatorRatio
+    val availableForCharacters = (availableWidthDp - totalGapDp).coerceAtLeast(0f)
+    val tileWidthDp = if (widthUnits > 0f) {
+        min(24f, availableForCharacters / widthUnits)
+    } else {
+        24f
+    }
+
+    return MatchCodeTileMetrics(
+        tileWidthDp = tileWidthDp,
+        separatorWidthDp = tileWidthDp * separatorRatio,
+        tileHeightDp = tileWidthDp * 1.25f,
+        fontSizeSp = min(16f, tileWidthDp * (2f / 3f)),
+        gapDp = gapDp,
+    )
 }

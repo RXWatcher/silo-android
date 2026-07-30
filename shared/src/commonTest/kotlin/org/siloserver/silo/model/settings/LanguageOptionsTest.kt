@@ -56,15 +56,33 @@ class LanguageOptionsTest {
     }
 
     @Test
-    fun thePickerOffersEveryLanguageTheWebClientDoes() {
-        // The web (silo-server web/src/player/utils/languageNames.ts) is the
-        // widest first-party list, and the server enforces no enum of its own:
-        // playback.subtitle_language is typed language_tag, BCP 47 shape only.
-        // A user who set Dutch on the web could not previously set or
-        // re-select it here, which is the report this list exists to answer.
+    fun thePickerMirrorsTheWebClientsTableExactly() {
+        // The whole claim of this list is that it mirrors the web's ISO 639-1
+        // table (silo-server web/src/player/utils/languageNames.ts) IN ITS
+        // ORDER. Asserting only a count and one language would let a wrong
+        // label or a silent reordering through, so the table is pinned whole:
+        // if the web list changes, this fails and someone decides deliberately.
+        assertEquals(
+            listOf(
+                "en" to "English", "es" to "Spanish", "fr" to "French",
+                "de" to "German", "it" to "Italian", "pt" to "Portuguese",
+                "nl" to "Dutch", "pl" to "Polish", "ru" to "Russian",
+                "zh" to "Chinese", "ja" to "Japanese", "ko" to "Korean",
+                "ar" to "Arabic", "tr" to "Turkish", "sv" to "Swedish",
+                "da" to "Danish", "no" to "Norwegian", "fi" to "Finnish",
+                "hu" to "Hungarian", "cs" to "Czech", "ro" to "Romanian",
+                "he" to "Hebrew", "th" to "Thai", "vi" to "Vietnamese",
+                "el" to "Greek", "bg" to "Bulgarian", "hr" to "Croatian",
+                "sk" to "Slovak", "sl" to "Slovenian", "uk" to "Ukrainian",
+                "id" to "Indonesian", "ms" to "Malay", "hi" to "Hindi",
+                "ta" to "Tamil", "te" to "Telugu", "bn" to "Bengali",
+                "fa" to "Persian",
+            ),
+            LanguageOptions.tags,
+        )
+        // The reported case, called out by name so a regression names itself.
         assertEquals("Dutch", LanguageOptions.label("nl", unsetLabel = "Off"))
         assertEquals("nl", LanguageOptions.wireValue("Dutch"))
-        assertEquals(37, LanguageOptions.tags.size)
     }
 
     @Test

@@ -116,10 +116,26 @@ class SubtitleLanguageTest {
         // Guards the pairing the pickers depend on: if a language is offered,
         // some 639-2 spelling of it must canonicalise back to the offered tag,
         // or a server exposing that spelling can never match the choice.
-        val reachable = LanguageOptions.tags.map { it.first }.filter { tag ->
-            THREE_LETTER_FORMS[tag]?.any { canonicalSubtitleLanguage(it) == tag } ?: true
+        //
+        // Every offered tag must HAVE a spelling listed and every listed
+        // spelling must resolve. An earlier version defaulted a tag with no
+        // entry to "reachable", which meant adding a language and forgetting
+        // its aliases — precisely the drift this guards — passed silently.
+        val offered = LanguageOptions.tags.map { it.first }
+        val unmapped = offered.filterNot(THREE_LETTER_FORMS::containsKey)
+        assertEquals(emptyList(), unmapped, "offered languages with no 639-2 spelling listed")
+
+        val unreachable = offered.flatMap { tag ->
+            THREE_LETTER_FORMS.getValue(tag)
+                .filter { canonicalSubtitleLanguage(it) != tag }
+                .map { "$it should canonicalise to $tag, got ${canonicalSubtitleLanguage(it)}" }
         }
-        assertEquals(LanguageOptions.tags.size, reachable.size)
+        assertEquals(emptyList(), unreachable, "639-2 spellings that do not resolve")
+
+        // And nothing stale: a spelling listed for a language the picker no
+        // longer offers would quietly stop being exercised.
+        val orphaned = THREE_LETTER_FORMS.keys.filterNot(offered::contains)
+        assertEquals(emptyList(), orphaned.toList(), "spellings listed for unoffered languages")
     }
 
     private companion object {

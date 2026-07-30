@@ -92,8 +92,15 @@ val repositoryModule = module {
     single { org.siloserver.silo.repository.HomeRealtimeCoordinator(get(), get()) }
     single { SettingsRepository(get()) }
     // Profile-scoped canonical settings, shared by the phone and TV screens so
-    // one platform cannot grow a behavior the other lacks.
-    single { org.siloserver.silo.domain.settings.ProfileSettingsController(get()) }
+    // one platform cannot grow a behavior the other lacks. The second argument
+    // is the pre-contract fallback, so servers that 404 the settings API keep
+    // working instead of silently discarding every change.
+    single {
+        org.siloserver.silo.domain.settings.ProfileSettingsController(
+            get(),
+            org.siloserver.silo.domain.settings.ProfileBackedLegacySettings(get()),
+        )
+    }
     single { LibraryPlaybackPrefsRepository(get()) }
     single { DownloadsRepository(get(), getOrNull<org.siloserver.silo.repository.port.DownloadDeletionPort>() ?: org.siloserver.silo.repository.port.NoOpDownloadDeletionPort) }
     single { EbookReaderRepository(get()) }

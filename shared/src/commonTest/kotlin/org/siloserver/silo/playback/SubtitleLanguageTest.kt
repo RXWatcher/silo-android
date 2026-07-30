@@ -4,7 +4,6 @@ import org.siloserver.silo.model.settings.LanguageOptions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 /**
  * Auto-selection compares a stored preference against a track's language with
@@ -65,12 +64,14 @@ class SubtitleLanguageTest {
     }
 
     @Test
-    fun norwegianVariantsFoldIntoTheSingleOfferedChoice() {
-        // Bokmal and Nynorsk are distinct codes but one picker entry; a viewer
-        // asking for Norwegian wants whichever the release carries.
-        for (form in listOf("nor", "nob", "nno")) {
-            assertEquals("no", canonicalSubtitleLanguage(form), "form $form")
-        }
+    fun norwegianVariantsStayDistinctExactlyAsTheServerKeepsThem() {
+        // The server's canonical_language_code maps nob to nb and nno to nn,
+        // NOT to no. Folding them here would look friendlier and then fail to
+        // match: the catalog stores what the server canonicalised, so a
+        // Bokmal file is "nb" on both sides or it matches nothing.
+        assertEquals("no", canonicalSubtitleLanguage("nor"))
+        assertEquals("nb", canonicalSubtitleLanguage("nob"))
+        assertEquals("nn", canonicalSubtitleLanguage("nno"))
     }
 
     @Test
@@ -91,27 +92,52 @@ class SubtitleLanguageTest {
 
     @Test
     fun anUnknownTagPassesThroughRatherThanBeingDropped() {
-        // The table covers the offered languages; anything else is still a
-        // real preference and must keep comparing equal to itself.
-        assertEquals("sr", canonicalSubtitleLanguage("sr"))
-        assertEquals("cat", canonicalSubtitleLanguage("cat"))
+        // Outside the table entirely — the server does the same (its ELSE
+        // branch returns lower(trim(code))), so both sides still agree and the
+        // preference keeps comparing equal to itself.
+        assertEquals("tlh", canonicalSubtitleLanguage("tlh"))
+        assertEquals("sme", canonicalSubtitleLanguage("SME"))
     }
 
     @Test
-    fun everyAliasResolvesToALanguageThePickerOffers() {
-        // An alias pointing at a tag no picker lists would be dead weight and
-        // a sign the two tables had drifted.
-        val offered = LanguageOptions.tags.map { it.first }.toSet()
-        val aliases = listOf(
-            "eng", "spa", "fre", "fra", "ger", "deu", "ita", "por", "dut", "nld",
-            "pol", "rus", "chi", "zho", "jpn", "kor", "ara", "tur", "swe", "dan",
-            "nor", "nob", "nno", "fin", "hun", "cze", "ces", "rum", "ron", "heb",
-            "iw", "tha", "vie", "gre", "ell", "bul", "hrv", "slo", "slk", "slv",
-            "ukr", "ind", "in", "may", "msa", "hin", "tam", "tel", "ben", "per", "fas",
-        )
-        for (alias in aliases) {
-            val canonical = canonicalSubtitleLanguage(alias)
-            assertTrue(canonical in offered, "$alias resolves to $canonical, which no picker offers")
+    fun aliasesCoverLanguagesBeyondThePickerToo() {
+        // The table mirrors the server's full map rather than just the offered
+        // list, so an unlisted language still compares correctly against a
+        // preference synced from another surface.
+        assertEquals("ca", canonicalSubtitleLanguage("cat"))
+        assertEquals("sr", canonicalSubtitleLanguage("srp"))
+        assertEquals("is", canonicalSubtitleLanguage("ice"))
+        assertEquals("cy", canonicalSubtitleLanguage("wel"))
+        assertEquals("eu", canonicalSubtitleLanguage("baq"))
+    }
+
+    @Test
+    fun everyOfferedLanguageIsReachableFromItsThreeLetterForm() {
+        // Guards the pairing the pickers depend on: if a language is offered,
+        // some 639-2 spelling of it must canonicalise back to the offered tag,
+        // or a server exposing that spelling can never match the choice.
+        val reachable = LanguageOptions.tags.map { it.first }.filter { tag ->
+            THREE_LETTER_FORMS[tag]?.any { canonicalSubtitleLanguage(it) == tag } ?: true
         }
+        assertEquals(LanguageOptions.tags.size, reachable.size)
+    }
+
+    private companion object {
+        /** A representative 639-2 spelling per offered language, where one exists. */
+        val THREE_LETTER_FORMS = mapOf(
+            "en" to listOf("eng"), "es" to listOf("spa"), "fr" to listOf("fre", "fra"),
+            "de" to listOf("ger", "deu"), "it" to listOf("ita"), "pt" to listOf("por"),
+            "nl" to listOf("dut", "nld"), "pl" to listOf("pol"), "ru" to listOf("rus"),
+            "zh" to listOf("chi", "zho"), "ja" to listOf("jpn"), "ko" to listOf("kor"),
+            "ar" to listOf("ara"), "tr" to listOf("tur"), "sv" to listOf("swe"),
+            "da" to listOf("dan"), "no" to listOf("nor"), "fi" to listOf("fin"),
+            "hu" to listOf("hun"), "cs" to listOf("cze", "ces"), "ro" to listOf("rum", "ron"),
+            "he" to listOf("heb"), "th" to listOf("tha"), "vi" to listOf("vie"),
+            "el" to listOf("gre", "ell"), "bg" to listOf("bul"), "hr" to listOf("hrv"),
+            "sk" to listOf("slo", "slk"), "sl" to listOf("slv"), "uk" to listOf("ukr"),
+            "id" to listOf("ind"), "ms" to listOf("may", "msa"), "hi" to listOf("hin"),
+            "ta" to listOf("tam"), "te" to listOf("tel"), "bn" to listOf("ben"),
+            "fa" to listOf("per", "fas"),
+        )
     }
 }

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
@@ -25,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -80,8 +82,19 @@ fun TvRecommendationsScreen(
     val firstRecommendationRowFocusRequester = remember { FocusRequester() }
     val firstRecommendationCardFocusRequester = remember { FocusRequester() }
     val focusBridgeScope = rememberCoroutineScope()
-    var savedListSelection by remember { mutableStateOf(entryRequest.selection) }
-    var lastAppliedEntrySequence by remember { mutableIntStateOf(0) }
+    // rememberSaveable, not remember: opening an item disposes this screen's
+    // composition, and a plain remember would re-initialise from
+    // entryRequest.selection on the way back. Top-level For You entry carries
+    // selection = null, so returning from a Watchlist item did not merely
+    // forget the list — it actively reselected the recommendations feed.
+    //
+    // lastAppliedEntrySequence must survive with it. Resetting it to 0 makes
+    // the LaunchedEffect below treat the unchanged entry request as new and
+    // re-apply its selection, which reintroduces the same jump even once the
+    // selection itself is saved.
+    val recommendationsListState = rememberLazyListState()
+    var savedListSelection by rememberSaveable { mutableStateOf(entryRequest.selection) }
+    var lastAppliedEntrySequence by rememberSaveable { mutableIntStateOf(0) }
     val moveIntoRecommendations: () -> Boolean = {
         if (
             !shouldBridgeRecommendationsDown(
@@ -235,6 +248,11 @@ fun TvRecommendationsScreen(
             }
             else -> {
                 LazyColumn(
+                    // Hoisted above the `when` so it is not discarded when a
+                    // refresh briefly flips this branch to loading/empty and
+                    // back — that is what dropped the reader at the top of the
+                    // feed after opening an item.
+                    state = recommendationsListState,
                     modifier = Modifier
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background),

@@ -53,6 +53,7 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
@@ -1149,6 +1150,29 @@ fun TvMainShell(
                 }
             }
         }
+
+        // The scrim TvTopMenuBar documents but the shell had stopped drawing.
+        // The bar deliberately has no background band of its own ("the SHELL
+        // draws a fixed top scrim behind the bar", QA 2026-07-08); without it
+        // the labels sat directly on whatever scrolled underneath, which on
+        // For You is a poster row and is unreadable. A gradient rather than a
+        // solid band keeps the tvOS look this shell asks for — content stays
+        // visible behind the bar, just no longer competing with the labels.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(TvTopMenuLayout.contentTopInset)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
+                            MaterialTheme.colorScheme.background.copy(alpha = 0.72f),
+                            MaterialTheme.colorScheme.background.copy(alpha = 0f),
+                        ),
+                    ),
+                ),
+        )
 
         // Menu overlay — content remains visible behind the transparent bar,
         // matching tvOS without a heavy top-edge shadow.

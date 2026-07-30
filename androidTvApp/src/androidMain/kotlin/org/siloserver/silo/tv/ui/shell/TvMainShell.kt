@@ -318,6 +318,15 @@ fun TvMainShell(
     // Opening an outer item-detail route pauses/removes this shell. Remember the
     // pending hand-back in the Main back-stack entry so it survives either form,
     // then re-enter the existing content focusRestorer when Main resumes.
+    // Two flags, deliberately. `restoreContentAfterDetail` says a detail return
+    // is pending for ANY root, and gates the resume claim below so focus lands
+    // back inside content instead of Compose's default search picking the top
+    // bar. `restoreHomeContentAfterDetail` additionally says it was the Home
+    // feed, which is the only root that attaches
+    // homeDetailReturnCardFocusRequester to its launch card — using that
+    // requester as the restorer fallback for a root that never attached it
+    // would point the restorer at a detached node.
+    var restoreContentAfterDetail by rememberSaveable { mutableStateOf(false) }
     var restoreHomeContentAfterDetail by rememberSaveable { mutableStateOf(false) }
     var suppressHomeRefreshAfterDetail by rememberSaveable { mutableStateOf(false) }
     var homeDetailReturnFocusRequest by remember { mutableIntStateOf(0) }
@@ -336,7 +345,7 @@ fun TvMainShell(
     // yanks focus to a different card for a frame.
     var contentHasFocus by remember { mutableStateOf(false) }
     LifecycleResumeEffect(Unit) {
-        if (restoreHomeContentAfterDetail) {
+        if (restoreContentAfterDetail) {
             // Claim the content group synchronously during ON_RESUME, before
             // Compose's default search can briefly settle on the Home tab —
             // but only when the feed hasn't already claimed it. Claim BEFORE
@@ -347,6 +356,7 @@ fun TvMainShell(
             } else {
                 runCatching { !contentFocusRequester.requestFocus() }.getOrDefault(true)
             }
+            restoreContentAfterDetail = false
             restoreHomeContentAfterDetail = false
             homeDetailReturnFocusRequest++
         }
@@ -365,8 +375,18 @@ fun TvMainShell(
         suppressHomeRefreshAfterDetail = false
     }
     val openHomeItemDetail: (String) -> Unit = { contentId ->
+        restoreContentAfterDetail = true
         restoreHomeContentAfterDetail = true
         suppressHomeRefreshAfterDetail = true
+        onOpenItemDetail(contentId)
+    }
+    // Same hand-back for roots that render inside the shell but do not attach a
+    // launch-card requester (For You). Without this the shell never claims
+    // content focus on the return resume, so focus settles wherever Compose's
+    // default search lands — in practice the top bar — and the D-pad no longer
+    // drives the rows the viewer was just in.
+    val openContentItemDetail: (String) -> Unit = { contentId ->
+        restoreContentAfterDetail = true
         onOpenItemDetail(contentId)
     }
     var contentUpFallback by remember { mutableStateOf<((Boolean) -> Boolean)?>(null) }
@@ -992,7 +1012,7 @@ fun TvMainShell(
                 }
                 composable(TvMainRoute.ForYou.route) {
                     TvRecommendationsScreen(
-                        onItemClick = onOpenItemDetail,
+                        onItemClick = openContentItemDetail,
                         onInitialContentFocus = { focusState.closeProfileMenuForContent() },
                         focusRequest = contentFocusRequest,
                         entryRequest = forYouEntryRequest,

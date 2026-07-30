@@ -157,8 +157,17 @@ fun TvRecommendationsScreen(
     // The saved-list shortcuts are the stable first row in every state. Focus
     // Watchlist once per entry, matching tvOS, without letting later refreshes
     // pull focus away from the user's current position.
-    var initialFocusRequested by remember { mutableStateOf(false) }
-    var lastAppliedFocusRequest by remember { mutableStateOf(-1) }
+    // rememberSaveable for the same reason as the selection above: these guard
+    // a once-per-entry focus grab, and as plain `remember` they reset when an
+    // item detail disposes this composition. The effect then re-fires on the
+    // way back and slams focus onto the Watchlist pill while the feed is still
+    // scrolled where the viewer left it — which is the shell's documented
+    // anti-pattern ("fired LaunchedEffects in each screen that imperatively
+    // re-focused index 0 — defeating the restorer"). Saved, the grab stays a
+    // genuine once-per-entry action and the shell's content restorer is left
+    // to put focus back where it was.
+    var initialFocusRequested by rememberSaveable { mutableStateOf(false) }
+    var lastAppliedFocusRequest by rememberSaveable { mutableStateOf(-1) }
     LaunchedEffect(focusRequest) {
         if (initialFocusRequested && focusRequest == lastAppliedFocusRequest) return@LaunchedEffect
         runCatching { watchlistFocusRequester.requestFocus() }

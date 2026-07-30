@@ -19,6 +19,7 @@ import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.network.ServerRegistry
 import org.siloserver.silo.network.TokenManager
 import org.siloserver.silo.repository.AuthRepository
+import org.siloserver.silo.repository.CatalogRepository
 import org.siloserver.silo.repository.ProfileRepository
 import org.siloserver.silo.tv.data.preferences.LegacyTvPrefsMigration
 import org.siloserver.silo.tv.data.preferences.SubtitleMode
@@ -55,6 +56,7 @@ class TvSettingsViewModel(
     private val overlayPrefsStore: OverlayPrefsStore,
     private val legacyTvPrefsMigration: LegacyTvPrefsMigration,
     private val profileSettings: ProfileSettingsController,
+    private val catalogRepository: CatalogRepository,
     private val tvLibraryScopeStore: org.siloserver.silo.tv.data.preferences.TvLibraryScopeStore? = null,
 ) : ViewModel() {
 
@@ -62,6 +64,13 @@ class TvSettingsViewModel(
 
     data class UiState(
         val user: User? = null,
+        /**
+         * Language codes the catalog holds, used to lift the viewer's own
+         * languages above a 37-entry list. Matters most here: a D-pad has no
+         * way to jump, and the device locale is no help (the Shield ships with
+         * persist.sys.locale unset and ro.product.locale at the factory en-US).
+         */
+        val libraryLanguages: List<String> = emptyList(),
         val userLoading: Boolean = true,
         val userError: String? = null,
         // Active profile identity for the tappable account header row.
@@ -116,9 +125,26 @@ class TvSettingsViewModel(
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     init {
+        loadLibraryLanguages()
         loadUser()
         loadSettings()
         observePlayerSettings()
+    }
+
+    /** Best-effort; the pickers stay fully usable without it. */
+    private fun loadLibraryLanguages() {
+        viewModelScope.launch {
+            val result = catalogRepository.getFilters(includeTechnical = true)
+            if (result is ApiResult.Success) {
+                val languages = buildList {
+                    addAll(result.data.subtitleLanguages.orEmpty())
+                    addAll(result.data.audioLanguages.orEmpty())
+                }
+                if (languages.isNotEmpty()) {
+                    _uiState.update { it.copy(libraryLanguages = languages) }
+                }
+            }
+        }
     }
 
     /**

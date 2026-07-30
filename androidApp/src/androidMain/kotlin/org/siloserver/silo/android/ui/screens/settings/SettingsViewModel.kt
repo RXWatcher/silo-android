@@ -15,6 +15,7 @@ import org.siloserver.silo.model.notifications.NotificationPreferencesUpdate
 import org.siloserver.silo.model.settings.QualityPresets
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.repository.AuthRepository
+import org.siloserver.silo.repository.CatalogRepository
 import org.siloserver.silo.repository.NotificationsRepository
 import org.siloserver.silo.repository.ProfileRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -70,6 +71,12 @@ data class SettingsUiState(
     val qualityConstrained: Boolean = false,
     // BCP 47 tag, "" = no preference. The picker converts to and from labels.
     val audioLanguage: String = "",
+    /**
+     * Language codes the catalog actually holds, used to float the
+     * viewer's own languages to the top of a 37-entry picker. Empty is
+     * fine — the pickers fall back to alphabetical.
+     */
+    val libraryLanguages: List<String> = emptyList(),
     val autoSkipIntro: Boolean = false,
     val autoSkipCredits: Boolean = false,
     val pictureInPictureEnabled: Boolean = true,
@@ -120,16 +127,38 @@ class SettingsViewModel(
     private val overlayPrefsStore: OverlayPrefsStore,
     private val notificationsRepository: NotificationsRepository,
     private val profileSettings: ProfileSettingsController,
+    private val catalogRepository: CatalogRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     init {
+        loadLibraryLanguages()
         loadUserInfo()
         observePlayerSettings()
         observePlaybackBehaviorSettings()
         observeNotifications()
+    }
+
+    /**
+     * Best-effort: the picker is fully usable without it, so a failure here is
+     * silent rather than an error the viewer has to dismiss on a settings
+     * screen they opened to do something else.
+     */
+    private fun loadLibraryLanguages() {
+        viewModelScope.launch {
+            val result = catalogRepository.getFilters(includeTechnical = true)
+            if (result is ApiResult.Success) {
+                val languages = buildList {
+                    addAll(result.data.subtitleLanguages.orEmpty())
+                    addAll(result.data.audioLanguages.orEmpty())
+                }
+                if (languages.isNotEmpty()) {
+                    _uiState.update { it.copy(libraryLanguages = languages) }
+                }
+            }
+        }
     }
 
     private fun loadUserInfo() {

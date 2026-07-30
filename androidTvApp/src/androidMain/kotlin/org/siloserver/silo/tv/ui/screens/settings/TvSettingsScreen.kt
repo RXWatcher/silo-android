@@ -905,7 +905,11 @@ private fun TvPlaybackSettingsPane(
         )
         PlaybackPicker.AudioLanguage -> TvSettingsPickerSheet(
             title = "Audio Language",
-            options = audioLanguages.map { PickerOption(it.first, it.second) },
+            options = LanguageOptions.optionsPrioritising(
+                unsetLabel = "Default",
+                libraryLanguages = state.libraryLanguages,
+                current = state.audioLanguage,
+            ).map { PickerOption(it.first, it.second) },
             selectedId = state.audioLanguage,
             onSelect = { onAudioLanguageChanged(it); activePicker = null },
             onDismiss = { activePicker = null },
@@ -1114,14 +1118,22 @@ private fun TvSubtitleSettingsPane(
         )
         SubtitlePicker.Language -> TvSettingsPickerSheet(
             title = "Language",
-            options = subtitleLanguages.map { PickerOption(it.first, it.second) },
+            options = LanguageOptions.optionsPrioritising(
+                unsetLabel = "Off",
+                libraryLanguages = state.libraryLanguages,
+                current = state.subtitleLanguage,
+            ).map { PickerOption(it.first, it.second) },
             selectedId = state.subtitleLanguage,
             onSelect = { onSubtitleLanguageChanged(it); activePicker = null },
             onDismiss = { activePicker = null },
         )
         SubtitlePicker.MetadataLanguage -> TvSettingsPickerSheet(
             title = "Metadata Language",
-            options = metadataLanguages.map { PickerOption(it.first, it.second) },
+            options = LanguageOptions.optionsPrioritising(
+                unsetLabel = "Default",
+                libraryLanguages = state.libraryLanguages,
+                current = state.metadataLanguage,
+            ).map { PickerOption(it.first, it.second) },
             selectedId = state.metadataLanguage,
             onSelect = { onMetadataLanguageChanged(it); activePicker = null },
             onDismiss = { activePicker = null },
@@ -2063,15 +2075,12 @@ private val NextUpPromptOptions = listOf(0, 10, 30, 60, 120)
 // for playback.audio_language and the profile's subtitle_language. Audio used
 // to store the display name here, which the server now rejects — and which
 // never matched a track anyway, since ExoPlayer compares against `eng`.
-private val audioLanguages = LanguageOptions.options(unsetLabel = "Default")
 
-private val subtitleLanguages = LanguageOptions.options(unsetLabel = "Off")
 
 // "Off" is right for subtitles — no language means no subtitles — but wrong for
 // metadata, where unset inherits the library's language rather than disabling
 // anything (catalog.metadata_language: "Language Silo prefers for titles,
 // descriptions, and artwork").
-private val metadataLanguages = LanguageOptions.options(unsetLabel = "Default")
 
 private fun audioLanguageLabel(wire: String): String =
     LanguageOptions.label(wire, unsetLabel = "Default")

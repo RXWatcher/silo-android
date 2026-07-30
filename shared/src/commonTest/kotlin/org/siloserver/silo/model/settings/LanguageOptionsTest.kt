@@ -137,4 +137,73 @@ class LanguageOptionsTest {
         // value stay the same string.
         assertEquals("cat", LanguageOptions.displayLanguage("cat"))
     }
+
+    @Test
+    fun theLibrarysOwnLanguagesComeFirst() {
+        // The signal the device locale cannot give on a TV: a viewer whose
+        // catalog carries Dutch is far likelier to want Dutch than Bengali.
+        val options = LanguageOptions.optionsPrioritising(
+            unsetLabel = "Off",
+            libraryLanguages = listOf("nld", "en", "de"),
+        )
+
+        assertEquals(LanguageOptions.UNSET to "Off", options.first())
+        assertEquals(listOf("Dutch", "English", "German"), options.drop(1).take(3).map { it.second })
+        // Nothing is lost from the tail.
+        assertEquals(LanguageOptions.tags.size + 1, options.size)
+    }
+
+    @Test
+    fun theLanguageAlreadyInForceIsPinnedAboveTheLibrary() {
+        // If the catalog lookup fails or the library has no Dutch yet, the
+        // choice the viewer already made must not sink into the alphabet.
+        val options = LanguageOptions.optionsPrioritising(
+            unsetLabel = "Off",
+            libraryLanguages = listOf("en"),
+            current = "nl",
+        )
+
+        assertEquals(listOf("Dutch", "English"), options.drop(1).take(2).map { it.second })
+    }
+
+    @Test
+    fun withNoSignalTheListIsAlphabeticalRatherThanEditorial() {
+        // Thirty-seven entries in prominence order is unscannable; with
+        // nothing to prioritise, predictable ordering is the only help left.
+        val options = LanguageOptions.optionsPrioritising(unsetLabel = "Off", libraryLanguages = emptyList())
+        val labels = options.drop(1).map { it.second }
+
+        assertEquals(labels.sorted(), labels)
+        assertEquals(LanguageOptions.tags.size + 1, options.size)
+    }
+
+    @Test
+    fun libraryLanguagesTheUiCannotOfferAreIgnoredNotInvented() {
+        // The catalog holds languages with no picker entry (Catalan, Klingon);
+        // they must not appear as unlabelled rows.
+        val options = LanguageOptions.optionsPrioritising(
+            unsetLabel = "Off",
+            libraryLanguages = listOf("cat", "tlh", "nl"),
+        )
+
+        assertEquals(LanguageOptions.tags.size + 1, options.size)
+        assertEquals("Dutch", options[1].second)
+    }
+
+    @Test
+    fun everyOptionRemainsUniquelyReversibleWhenPrioritised() {
+        // The phone pickers select by label and map back with wireValue, so a
+        // reordering that duplicated or dropped a label would misroute writes.
+        val options = LanguageOptions.optionsPrioritising(
+            unsetLabel = "Off",
+            libraryLanguages = listOf("nl", "en"),
+            current = "de",
+        )
+        val offered = options.drop(1)
+
+        assertEquals(offered.size, offered.map { it.second }.toSet().size)
+        for ((wire, label) in offered) {
+            assertEquals(wire, LanguageOptions.wireValue(label), "label $label")
+        }
+    }
 }

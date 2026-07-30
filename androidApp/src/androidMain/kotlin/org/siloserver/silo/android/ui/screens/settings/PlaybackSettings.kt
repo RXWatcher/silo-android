@@ -26,8 +26,6 @@ import org.siloserver.silo.model.settings.QualityPresets
 // Audio language stores BCP 47 tags ("" = no preference) — display labels,
 // persist codes, as the server's settings contract requires. Shared with the TV
 // UI and with subtitles so the four surfaces cannot drift apart again.
-private val audioLanguageOptions = LanguageOptions.options(unsetLabel = "Default")
-private val audioLanguageLabels = audioLanguageOptions.map { it.second }
 
 // Discrete choices for the two behavior settings (0 = off). Dropdown idiom
 // matches the rest of this section; the label↔value maps below convert.
@@ -53,6 +51,8 @@ fun PlaybackSettings(
     qualityResolution: String,
     maxBitrateKbps: Int?,
     audioLanguage: String,
+    /** Codes the catalog holds; floats the viewer's own languages to the top. */
+    libraryLanguages: List<String> = emptyList(),
     autoSkipIntro: Boolean,
     autoSkipCredits: Boolean,
     pictureInPictureEnabled: Boolean,
@@ -77,6 +77,14 @@ fun PlaybackSettings(
     onResetPlaybackOverrides: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val audioLanguageLabels = remember(libraryLanguages, audioLanguage) {
+        LanguageOptions.optionsPrioritising(
+            unsetLabel = "Default",
+            libraryLanguages = libraryLanguages,
+            current = audioLanguage,
+        ).map { it.second }
+    }
+
     SettingsSectionCard(modifier = modifier) {
         SettingsSectionHeader("Playback")
 

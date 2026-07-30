@@ -1,6 +1,7 @@
 package org.siloserver.silo.model.settings
 
 import org.siloserver.silo.playback.canonicalSubtitleLanguage
+import org.siloserver.silo.playback.orNullIfBlank
 
 /**
  * The language choices the settings UI offers, and the wire values they map to.
@@ -92,6 +93,43 @@ object LanguageOptions {
         if (wire.isNullOrBlank()) return unsetLabel
         tags.firstOrNull { it.first == wire }?.let { return it.second }
         return if (isPreservableTag(wire)) wire else unsetLabel
+    }
+
+    /**
+     * The picker list with the languages the viewer's own library carries
+     * lifted to the top, and everything else alphabetical beneath them.
+     *
+     * Thirty-seven entries is a long way to travel on a D-pad, and the obvious
+     * shortcut — the device locale — is worthless on a TV: the Shield ships
+     * `persist.sys.locale` empty and `ro.product.locale` at the factory
+     * `en-US`, so it would suggest English to everyone. What the catalog holds
+     * is a real signal: a viewer whose library has Dutch subtitles is far more
+     * likely to want Dutch than Bengali.
+     *
+     * [current] is pinned first so the language already in force stays at the
+     * top even when the catalog lookup fails or returns nothing. The tail is
+     * alphabetical rather than the web's prominence order, which stops being
+     * meaningful once a list is this long — with no signal, predictable
+     * beats editorial.
+     */
+    fun optionsPrioritising(
+        unsetLabel: String,
+        libraryLanguages: Collection<String>,
+        current: String? = null,
+    ): List<Pair<String, String>> {
+        val offered = tags.associateBy { it.first }
+        val priority = LinkedHashSet<String>()
+        current.orNullIfBlank()
+            ?.let { canonicalSubtitleLanguage(it) }
+            ?.takeIf { offered.containsKey(it) }
+            ?.let(priority::add)
+        for (code in libraryLanguages) {
+            val canonical = canonicalSubtitleLanguage(code) ?: continue
+            if (offered.containsKey(canonical)) priority.add(canonical)
+        }
+        val top = priority.mapNotNull { offered[it] }
+        val rest = tags.filterNot { it.first in priority }.sortedBy { it.second }
+        return listOf(UNSET to unsetLabel) + top + rest
     }
 
     /**

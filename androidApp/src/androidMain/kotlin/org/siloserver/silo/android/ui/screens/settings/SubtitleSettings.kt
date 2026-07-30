@@ -1,6 +1,7 @@
 package org.siloserver.silo.android.ui.screens.settings
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.ui.Modifier
@@ -8,9 +9,6 @@ import org.siloserver.silo.model.settings.LanguageOptions
 
 // Both language rows store codes, not the labels shown in the picker: the
 // profile's subtitle_language and the metadata language are BCP 47 on the wire.
-// Hoisted so recomposition doesn't rebuild the label list per frame.
-private val languageOptionLabels =
-    LanguageOptions.options(unsetLabel = SUBTITLE_UNSET_LABEL).map { it.second }
 
 // "Off" is right for subtitles — no language means no subtitles — but wrong for
 // metadata, where unset inherits the library's language rather than disabling
@@ -18,8 +16,6 @@ private val languageOptionLabels =
 private const val SUBTITLE_UNSET_LABEL = "Off"
 private const val METADATA_UNSET_LABEL = "Default"
 
-private val metadataLanguageOptionLabels =
-    LanguageOptions.options(unsetLabel = METADATA_UNSET_LABEL).map { it.second }
 
 /**
  * Subtitle settings section with language, display mode, and forced subtitles toggle.
@@ -27,6 +23,8 @@ private val metadataLanguageOptionLabels =
 @Composable
 fun SubtitleSettings(
     subtitleLanguage: String,
+    /** Codes the catalog holds; floats the viewer's own languages to the top. */
+    libraryLanguages: List<String> = emptyList(),
     subtitleMode: SubtitleMode,
     showForcedSubtitles: Boolean,
     onLanguageChanged: (String) -> Unit,
@@ -41,6 +39,23 @@ fun SubtitleSettings(
     metadataLanguage: String = "",
     onMetadataLanguageChanged: (String) -> Unit = {},
 ) {
+    // Recomputed only when the catalog languages or the current choice change,
+    // not per frame.
+    val languageOptionLabels = remember(libraryLanguages, subtitleLanguage) {
+        LanguageOptions.optionsPrioritising(
+            unsetLabel = SUBTITLE_UNSET_LABEL,
+            libraryLanguages = libraryLanguages,
+            current = subtitleLanguage,
+        ).map { it.second }
+    }
+    val metadataLanguageOptionLabels = remember(libraryLanguages, metadataLanguage) {
+        LanguageOptions.optionsPrioritising(
+            unsetLabel = METADATA_UNSET_LABEL,
+            libraryLanguages = libraryLanguages,
+            current = metadataLanguage,
+        ).map { it.second }
+    }
+
     SettingsSectionCard(modifier = modifier) {
         SettingsSectionHeader("Subtitles")
 

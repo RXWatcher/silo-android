@@ -196,6 +196,7 @@ fun SettingsScreen(
             item {
                 PlaybackSettings(
                     qualityResolution = state.qualityResolution,
+                    libraryLanguages = state.libraryLanguages,
                     maxBitrateKbps = state.maxBitrateKbps,
                     audioLanguage = state.audioLanguage,
                     autoSkipIntro = state.autoSkipIntro,
@@ -227,6 +228,7 @@ fun SettingsScreen(
                 val metadataAiStatus by metadataAiStore.status.collectAsState()
                 SubtitleSettings(
                     subtitleLanguage = state.subtitleLanguage,
+                    libraryLanguages = state.libraryLanguages,
                     subtitleMode = state.subtitleMode,
                     showForcedSubtitles = state.showForcedSubtitles,
                     onLanguageChanged = viewModel::setSubtitleLanguage,

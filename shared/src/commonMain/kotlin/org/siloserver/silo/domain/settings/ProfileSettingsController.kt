@@ -30,6 +30,12 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 class ProfileSettingsController(
     private val repository: SettingsRepository,
+    /**
+     * The pre-contract path, used when the server does not serve the canonical
+     * settings API. Null disables the fallback entirely, which is what the
+     * canonical-path tests want.
+     */
+    private val legacy: LegacyProfileSettings? = null,
 ) {
 
     /**
@@ -93,7 +99,21 @@ class ProfileSettingsController(
             is SettingsCapabilitiesResult.Error,
             is SettingsCapabilitiesResult.NetworkError -> Availability.UNAVAILABLE
         }
-        if (availability != Availability.AVAILABLE) return LoadResult(availability, null)
+        // Remembered so the setters know which path to write on without
+        // re-probing per keystroke.
+        contractServed = availability == Availability.AVAILABLE
+
+        if (availability != Availability.AVAILABLE) {
+            // A server that never had the contract is not an error state: the
+            // legacy columns still hold these four preferences, so read them
+            // rather than leaving the screen on defaults it will then write
+            // back over the top of the user's real settings.
+            val fallback = legacy?.load()
+            return LoadResult(
+                availability = if (fallback != null) Availability.AVAILABLE else availability,
+                snapshot = fallback,
+            )
+        }
 
         return when (val result = repository.getEffectiveValues(PROFILE_KEYS)) {
             is ApiResult.Success -> LoadResult(availability, snapshotOf(result.data))
@@ -101,6 +121,13 @@ class ProfileSettingsController(
                 LoadResult(Availability.UNAVAILABLE, null)
         }
     }
+
+    /**
+     * False until [load] finds the contract. Starts true so a setter called
+     * before any load still tries the canonical path first and only falls back
+     * on its 404, rather than assuming the worst of an unprobed server.
+     */
+    private var contractServed: Boolean = true
 
     /**
      * Re-resolves every profile key after a successful write.
@@ -126,18 +153,59 @@ class ProfileSettingsController(
 
     /** [language] is a BCP 47 tag, or "" for no preference. */
     suspend fun setSubtitleLanguage(language: String): WriteResult =
-        resolved(writeLanguage(SettingKeys.PLAYBACK_SUBTITLE_LANGUAGE, language))
+        viaContractOrLegacy(
+            canonical = { writeLanguage(SettingKeys.PLAYBACK_SUBTITLE_LANGUAGE, language) },
+            legacyWrite = { it.update(subtitleLanguage = language.trim()) },
+        )
 
     /** [mode] is a `playback.subtitle_mode` member: "auto", "always" or "off". */
     suspend fun setSubtitleMode(mode: String): WriteResult =
-        resolved(write(SettingKeys.PLAYBACK_SUBTITLE_MODE, JsonPrimitive(normalizeSubtitleMode(mode))))
+        viaContractOrLegacy(
+            canonical = {
+                write(SettingKeys.PLAYBACK_SUBTITLE_MODE, JsonPrimitive(normalizeSubtitleMode(mode)))
+            },
+            legacyWrite = { it.update(subtitleMode = normalizeSubtitleMode(mode)) },
+        )
 
     suspend fun setShowForcedSubtitles(enabled: Boolean): WriteResult =
-        resolved(write(SettingKeys.PLAYBACK_SHOW_FORCED_SUBTITLES, JsonPrimitive(enabled)))
+        viaContractOrLegacy(
+            canonical = { write(SettingKeys.PLAYBACK_SHOW_FORCED_SUBTITLES, JsonPrimitive(enabled)) },
+            legacyWrite = { it.update(showForcedSubtitles = enabled) },
+        )
 
     /** [language] is a BCP 47 tag, or "" to inherit the library's language. */
     suspend fun setMetadataLanguage(language: String): WriteResult =
-        resolved(writeLanguage(SettingKeys.CATALOG_METADATA_LANGUAGE, language))
+        viaContractOrLegacy(
+            canonical = { writeLanguage(SettingKeys.CATALOG_METADATA_LANGUAGE, language) },
+            legacyWrite = { it.update(metadataLanguage = language.trim()) },
+        )
+
+    /**
+     * Writes on whichever path this server actually serves.
+     *
+     * The canonical path is tried whenever the contract is believed present.
+     * A 404 from it means the belief was wrong — an unprobed server, or one
+     * that changed under a long-lived session — so the fallback runs
+     * immediately and the belief is corrected for subsequent writes. Any other
+     * failure is a real failure and is reported as one; retrying a rejected
+     * value on the legacy path would only store what the contract refused.
+     */
+    private suspend fun viaContractOrLegacy(
+        canonical: suspend () -> ApiResult<Unit>,
+        legacyWrite: suspend (LegacyProfileSettings) -> Snapshot?,
+    ): WriteResult {
+        val fallback = legacy
+        if (contractServed) {
+            val result = canonical()
+            if (result is ApiResult.Success) return WriteResult(true, reresolve())
+            val absent = result is ApiResult.Error && result.code == HTTP_NOT_FOUND
+            if (!absent || fallback == null) return WriteResult(false, null)
+            contractServed = false
+        }
+        if (fallback == null) return WriteResult(false, null)
+        val snapshot = legacyWrite(fallback)
+        return WriteResult(succeeded = snapshot != null, snapshot = snapshot)
+    }
 
     private suspend fun resolved(write: ApiResult<Unit>): WriteResult =
         if (write is ApiResult.Success) {
@@ -172,7 +240,7 @@ class ProfileSettingsController(
             metadataLanguage = effective.stringOrEmpty(SettingKeys.CATALOG_METADATA_LANGUAGE),
         )
 
-    private companion object {
+    internal companion object {
         const val DEFAULT_SUBTITLE_MODE = "auto"
         val SUBTITLE_MODES = setOf("auto", "always", "off")
 
@@ -190,6 +258,13 @@ class ProfileSettingsController(
             SettingKeys.PLAYBACK_SHOW_FORCED_SUBTITLES,
             SettingKeys.CATALOG_METADATA_LANGUAGE,
         )
+
+        /**
+         * A server without the canonical settings API answers 404 to the whole
+         * family, which is what distinguishes "this route does not exist here"
+         * from "this value was rejected".
+         */
+        private const val HTTP_NOT_FOUND = 404
 
         fun normalizeSubtitleMode(value: String): String {
             val v = value.trim().lowercase()

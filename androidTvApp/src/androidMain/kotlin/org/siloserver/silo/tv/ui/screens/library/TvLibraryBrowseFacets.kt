@@ -4,6 +4,7 @@ import org.siloserver.silo.model.catalog.CatalogFiltersResponse
 import org.siloserver.silo.model.catalog.CatalogQueryGroup
 import org.siloserver.silo.model.catalog.CatalogQueryRule
 import org.siloserver.silo.model.navigation.isAudiobookLikeLibraryType
+import org.siloserver.silo.model.settings.LanguageOptions
 
 /**
  * Personalized watch-status facet, mirroring tvOS `WatchStatusFilter`. Each
@@ -71,9 +72,9 @@ enum class TvCatalogFacet(val title: String) {
         Studio -> options?.studios.orEmpty().map { it to it }
         Network -> options?.networks.orEmpty().map { it to it }
         Country -> options?.countries.orEmpty().map { it to it }
-        AudioLanguage -> options?.audioLanguages.orEmpty().map { it to it }
-        SubtitleLanguage -> options?.subtitleLanguages.orEmpty().map { it to it }
-        OriginalLanguage -> options?.originalLanguages.orEmpty().map { it to it }
+        AudioLanguage -> options?.audioLanguages.orEmpty().map { it to LanguageOptions.displayLanguage(it) }
+        SubtitleLanguage -> options?.subtitleLanguages.orEmpty().map { it to LanguageOptions.displayLanguage(it) }
+        OriginalLanguage -> options?.originalLanguages.orEmpty().map { it to LanguageOptions.displayLanguage(it) }
         Author -> options?.authors.orEmpty().map { it to it }
         Narrator -> options?.narrators.orEmpty().map { it to it }
         SeriesName -> options?.series.orEmpty().map { it to it }

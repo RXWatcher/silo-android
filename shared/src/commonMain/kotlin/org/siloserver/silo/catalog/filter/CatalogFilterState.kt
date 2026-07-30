@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 import org.siloserver.silo.model.catalog.CatalogFiltersResponse
 import org.siloserver.silo.model.catalog.CatalogQueryGroup
 import org.siloserver.silo.model.catalog.CatalogQueryRule
+import org.siloserver.silo.model.settings.LanguageOptions
 
 /**
  * The mobile browse facet system, mirroring silo-apple's
@@ -84,9 +85,11 @@ fun facetOptionPairs(
     CatalogFacet.Studio -> vocabulary?.studios.orEmpty().map { it to it }
     CatalogFacet.Network -> vocabulary?.networks.orEmpty().map { it to it }
     CatalogFacet.Country -> vocabulary?.countries.orEmpty().map { it to it }
-    CatalogFacet.AudioLanguage -> vocabulary?.audioLanguages.orEmpty().map { it to it }
-    CatalogFacet.SubtitleLanguage -> vocabulary?.subtitleLanguages.orEmpty().map { it to it }
-    CatalogFacet.OriginalLanguage -> vocabulary?.originalLanguages.orEmpty().map { it to it }
+    // Labelled, not raw: the vocabulary carries codes ('nl', 'dut'), and a
+    // filter row reading 'dut' tells the viewer nothing.
+    CatalogFacet.AudioLanguage -> vocabulary?.audioLanguages.orEmpty().map { it to LanguageOptions.displayLanguage(it) }
+    CatalogFacet.SubtitleLanguage -> vocabulary?.subtitleLanguages.orEmpty().map { it to LanguageOptions.displayLanguage(it) }
+    CatalogFacet.OriginalLanguage -> vocabulary?.originalLanguages.orEmpty().map { it to LanguageOptions.displayLanguage(it) }
     CatalogFacet.Author -> vocabulary?.authors.orEmpty().map { it to it }
     CatalogFacet.Narrator -> vocabulary?.narrators.orEmpty().map { it to it }
     CatalogFacet.SeriesName -> vocabulary?.series.orEmpty().map { it to it }

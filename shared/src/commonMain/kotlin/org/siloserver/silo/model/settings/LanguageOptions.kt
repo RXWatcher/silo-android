@@ -95,6 +95,21 @@ object LanguageOptions {
     }
 
     /**
+     * A human-readable name for a language code that came from server data
+     * rather than from a picker — catalog filter facets, for instance.
+     *
+     * Unlike [label] this canonicalises first, because catalog values are
+     * whatever the ingest wrote before the server's own canonicalisation ran,
+     * and a facet list should read "Dutch" whether the file said `nl`, `nld`
+     * or `dut`. An unrecognised code is returned as-is: showing the raw tag is
+     * honest, and better than hiding a filter the user can still apply.
+     */
+    fun displayLanguage(code: String): String {
+        val canonical = canonicalSubtitleLanguage(code) ?: return code
+        return tags.firstOrNull { it.first == canonical }?.second ?: code
+    }
+
+    /**
      * The wire value for a label the user picked. Falls back to [UNSET], which
      * is the one value the server always accepts.
      */

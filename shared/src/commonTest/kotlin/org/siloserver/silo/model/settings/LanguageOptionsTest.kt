@@ -115,4 +115,26 @@ class LanguageOptionsTest {
         assertEquals(LanguageOptions.UNSET, LanguageOptions.migrateLegacyValue("Off"))
         assertEquals(LanguageOptions.UNSET, LanguageOptions.migrateLegacyValue("Default"))
     }
+
+    @Test
+    fun facetCodesRenderAsLanguageNamesWhateverSpellingTheCatalogHolds() {
+        // Catalog vocabulary carries whatever ingest wrote. A filter row
+        // reading "dut" tells the viewer nothing.
+        assertEquals("Dutch", LanguageOptions.displayLanguage("nl"))
+        assertEquals("Dutch", LanguageOptions.displayLanguage("dut"))
+        assertEquals("Dutch", LanguageOptions.displayLanguage("nld"))
+        assertEquals("English", LanguageOptions.displayLanguage("eng"))
+        assertEquals("Portuguese", LanguageOptions.displayLanguage("pt-BR"))
+    }
+
+    @Test
+    fun anUnlabelledFacetCodeIsShownRatherThanHidden() {
+        // Outside the offered list: the raw tag is honest, and the filter
+        // still applies. Blanking it would hide a usable filter.
+        assertEquals("tlh", LanguageOptions.displayLanguage("tlh"))
+        // Catalan canonicalises to "ca" but no picker offers it, so the code
+        // the facet actually filters by is what gets shown — display and wire
+        // value stay the same string.
+        assertEquals("cat", LanguageOptions.displayLanguage("cat"))
+    }
 }

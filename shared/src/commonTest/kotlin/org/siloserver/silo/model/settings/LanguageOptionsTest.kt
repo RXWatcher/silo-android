@@ -49,9 +49,36 @@ class LanguageOptionsTest {
     fun aPreservedTagOutsideTheTableReadsAsItselfNotAsUnset() {
         // migrateLegacyValue passes these through, so playback still applies
         // them; showing "Off"/"Default" would claim an active preference is
-        // disabled.
-        assertEquals("nl", LanguageOptions.label("nl", unsetLabel = "Off"))
+        // disabled. Region- and script-qualified tags stay outside the table
+        // even though their primary languages are in it.
         assertEquals("pt-BR", LanguageOptions.label("pt-BR", unsetLabel = "Default"))
+        assertEquals("zh-Hant", LanguageOptions.label("zh-Hant", unsetLabel = "Off"))
+    }
+
+    @Test
+    fun thePickerOffersEveryLanguageTheWebClientDoes() {
+        // The web (silo-server web/src/player/utils/languageNames.ts) is the
+        // widest first-party list, and the server enforces no enum of its own:
+        // playback.subtitle_language is typed language_tag, BCP 47 shape only.
+        // A user who set Dutch on the web could not previously set or
+        // re-select it here, which is the report this list exists to answer.
+        assertEquals("Dutch", LanguageOptions.label("nl", unsetLabel = "Off"))
+        assertEquals("nl", LanguageOptions.wireValue("Dutch"))
+        assertEquals(37, LanguageOptions.tags.size)
+    }
+
+    @Test
+    fun noLanguageIsListedTwice() {
+        assertEquals(
+            LanguageOptions.tags.size,
+            LanguageOptions.tags.map { it.first }.toSet().size,
+            "duplicate wire tag",
+        )
+        assertEquals(
+            LanguageOptions.tags.size,
+            LanguageOptions.tags.map { it.second }.toSet().size,
+            "duplicate display label",
+        )
     }
 
     @Test

@@ -25,18 +25,54 @@ object LanguageOptions {
      * (wire tag, display label), in the order the pickers show them. The first
      * entry is the unset choice, whose label differs by context — "Default" for
      * audio, "Off" for subtitles — so callers supply it.
+     *
+     * This mirrors the web client's ISO 639-1 table
+     * (`web/src/player/utils/languageNames.ts` in silo-server), in its order,
+     * because that is the widest first-party list and the server imposes no
+     * enum of its own: the settings contract types
+     * `playback.subtitle_language` as `language_tag`, validated only for BCP 47
+     * shape. A language missing here was never a server limitation — it was
+     * simply a shorter picker, which left users who had set e.g. Dutch on the
+     * web unable to set or re-select it on Android.
      */
     val tags: List<Pair<String, String>> = listOf(
         "en" to "English",
         "es" to "Spanish",
         "fr" to "French",
         "de" to "German",
+        "it" to "Italian",
+        "pt" to "Portuguese",
+        "nl" to "Dutch",
+        "pl" to "Polish",
+        "ru" to "Russian",
+        "zh" to "Chinese",
         "ja" to "Japanese",
         "ko" to "Korean",
-        "zh" to "Chinese",
-        "pt" to "Portuguese",
-        "it" to "Italian",
-        "ru" to "Russian",
+        "ar" to "Arabic",
+        "tr" to "Turkish",
+        "sv" to "Swedish",
+        "da" to "Danish",
+        "no" to "Norwegian",
+        "fi" to "Finnish",
+        "hu" to "Hungarian",
+        "cs" to "Czech",
+        "ro" to "Romanian",
+        "he" to "Hebrew",
+        "th" to "Thai",
+        "vi" to "Vietnamese",
+        "el" to "Greek",
+        "bg" to "Bulgarian",
+        "hr" to "Croatian",
+        "sk" to "Slovak",
+        "sl" to "Slovenian",
+        "uk" to "Ukrainian",
+        "id" to "Indonesian",
+        "ms" to "Malay",
+        "hi" to "Hindi",
+        "ta" to "Tamil",
+        "te" to "Telugu",
+        "bn" to "Bengali",
+        "fa" to "Persian",
     )
 
     /** The full option list for a picker, led by [unsetLabel]. */
@@ -46,7 +82,7 @@ object LanguageOptions {
     /**
      * The label for a stored wire value.
      *
-     * A tag outside the picker table ("nl", "pt-BR" synced from another
+     * A tag outside the picker table ("pt-BR", "zh-Hant" synced from another
      * surface) is echoed back as itself: it is a real, active preference, and
      * labeling it as unset would tell the user a preference playback still
      * applies is off. Only values that aren't tags at all — legacy display
@@ -72,8 +108,8 @@ object LanguageOptions {
      * server rejects them and track matching never hit on them — but left alone
      * they would keep being read and re-sent. A value that is already a known
      * tag, or already unset, is returned unchanged; a known label becomes its
-     * tag. Anything else that is tag-shaped ("pt-BR", "nl", an alias like
-     * "eng") passes through untouched — the table lists only the languages the
+     * tag. Anything else that is tag-shaped ("pt-BR", "zh-Hant", an alias
+     * like "eng") passes through untouched — the table lists only the languages the
      * pickers offer, and a valid tag synced from another surface must not be
      * erased just because it is outside that list. Only values that are neither
      * a plausible tag nor a known label (i.e. legacy display names we no longer

@@ -1178,21 +1178,23 @@ fun TvMainShell(
         // For You is a poster row and is unreadable. A gradient rather than a
         // solid band keeps the tvOS look this shell asks for — content stays
         // visible behind the bar, just no longer competing with the labels.
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(TvTopMenuLayout.contentTopInset)
-                .align(Alignment.TopCenter)
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
-                            MaterialTheme.colorScheme.background.copy(alpha = 0.72f),
-                            MaterialTheme.colorScheme.background.copy(alpha = 0f),
+        if (currentRoute != TvMainRoute.Settings.route) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(TvTopMenuLayout.contentTopInset)
+                    .align(Alignment.TopCenter)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
+                                MaterialTheme.colorScheme.background.copy(alpha = 0.72f),
+                                MaterialTheme.colorScheme.background.copy(alpha = 0f),
+                            ),
                         ),
                     ),
-                ),
-        )
+            )
+        }
 
         // Menu overlay — content remains visible behind the transparent bar,
         // matching tvOS without a heavy top-edge shadow.

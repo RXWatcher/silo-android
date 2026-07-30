@@ -1,6 +1,8 @@
 package org.siloserver.silo.tv.ui.screens.recommendations
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +22,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,6 +55,7 @@ import org.siloserver.silo.tv.ui.screens.personal.TvFavoritesInline
 import org.siloserver.silo.tv.ui.screens.personal.TvWatchlistInline
 import org.siloserver.silo.tv.ui.shell.TvTopMenuLayout
 import org.siloserver.silo.tv.ui.theme.Spacing
+import org.siloserver.silo.tv.ui.theme.TvSmoothBringIntoViewSpec
 import org.siloserver.silo.tv.ui.util.visibleOnTv
 import org.siloserver.silo.viewmodel.RecommendationsViewModel
 import org.koin.compose.viewmodel.koinViewModel
@@ -65,7 +69,7 @@ private val RecommendationsFilterBandHeight = 52.dp
  * (rows down the page) minus the featured hero — the discover API returns
  * section-style rows, not a hero card.
  */
-@OptIn(ExperimentalTvMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalTvMaterial3Api::class)
 @Composable
 fun TvRecommendationsScreen(
     onItemClick: (contentId: String) -> Unit,
@@ -256,46 +260,50 @@ fun TvRecommendationsScreen(
                 }
             }
             else -> {
-                LazyColumn(
-                    // Hoisted above the `when` so it is not discarded when a
-                    // refresh briefly flips this branch to loading/empty and
-                    // back — that is what dropped the reader at the top of the
-                    // feed after opening an item.
-                    state = recommendationsListState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.background),
-                    verticalArrangement = Arrangement.spacedBy(18.dp),
-                    contentPadding = PaddingValues(
-                        top = TvTopMenuLayout.contentTopInset + RecommendationsFilterBandHeight,
-                        bottom = 24.dp,
-                    ),
+                CompositionLocalProvider(
+                    LocalBringIntoViewSpec provides TvSmoothBringIntoViewSpec,
                 ) {
-                    itemsIndexed(
-                        items = visibleSections,
-                        key = { _, section -> section.id },
-                        contentType = { _, _ -> "recommendation-section-row" },
-                    ) { index, section ->
-                        TvMediaRow(
-                            title = section.title,
-                            items = section.items,
-                            onItemClick = onItemClick,
-                            style = TvRowStyle.Poster,
-                            firstItemFocusRequester = firstRecommendationCardFocusRequester
-                                .takeIf { index == 0 },
-                            rowContainerFocusRequester = firstRecommendationRowFocusRequester
-                                .takeIf { index == 0 },
-                            onDirectionUp = if (index == 0) {
-                                {
-                                    runCatching { forYouFocusRequester.requestFocus() }
-                                        .getOrDefault(false)
-                                }
-                            } else {
-                                null
-                            },
-                        )
+                    LazyColumn(
+                        // Hoisted above the `when` so it is not discarded when a
+                        // refresh briefly flips this branch to loading/empty and
+                        // back — that is what dropped the reader at the top of the
+                        // feed after opening an item.
+                        state = recommendationsListState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background),
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                        contentPadding = PaddingValues(
+                            top = TvTopMenuLayout.contentTopInset + RecommendationsFilterBandHeight,
+                            bottom = 24.dp,
+                        ),
+                    ) {
+                        itemsIndexed(
+                            items = visibleSections,
+                            key = { _, section -> section.id },
+                            contentType = { _, _ -> "recommendation-section-row" },
+                        ) { index, section ->
+                            TvMediaRow(
+                                title = section.title,
+                                items = section.items,
+                                onItemClick = onItemClick,
+                                style = TvRowStyle.Poster,
+                                firstItemFocusRequester = firstRecommendationCardFocusRequester
+                                    .takeIf { index == 0 },
+                                rowContainerFocusRequester = firstRecommendationRowFocusRequester
+                                    .takeIf { index == 0 },
+                                onDirectionUp = if (index == 0) {
+                                    {
+                                        runCatching { forYouFocusRequester.requestFocus() }
+                                            .getOrDefault(false)
+                                    }
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                        item { Spacer(modifier = Modifier.height(8.dp)) }
                     }
-                    item { Spacer(modifier = Modifier.height(8.dp)) }
                 }
             }
         }

@@ -96,6 +96,23 @@ class TvTrackSelectionPersistenceTest {
     }
 
     @Test
+    fun playbackReturnPreservesPreviouslySelectedFileForUnknownExitFile() {
+        val contentId = "episode-playback-return-file"
+        TvDetailTrackSelectionSession.remember(contentId, fileId = 22, audio = 1, subtitle = 2)
+
+        TvDetailTrackSelectionSession.rememberPlaybackReturn(
+            contentId = contentId,
+            fileId = null,
+            audio = null,
+            subtitle = null,
+            positionSeconds = 37.0,
+            durationSeconds = 120.0,
+        )
+
+        assertEquals(22, TvDetailTrackSelectionSession.recall(contentId)?.fileId)
+    }
+
+    @Test
     fun playbackReturnProgressIsConsumedOnceWhileTrackChoicesRemain() {
         val contentId = "episode-playback-return-progress"
         TvDetailTrackSelectionSession.remember(contentId, fileId = 22, audio = 1, subtitle = 2)

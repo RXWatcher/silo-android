@@ -1515,7 +1515,9 @@ internal object TvDetailTrackSelectionSession {
         if (contentId.isBlank() || !positionSeconds.isFinite() || positionSeconds < 0.0) return
         val previous = byContent[contentId]
         byContent[contentId] = Saved(
-            fileId = fileId,
+            // Exit can race teardown before either player file identifier is
+            // available. Keep the detail page's selected version in that case.
+            fileId = fileId ?: previous?.fileId,
             // The player currently reports subtitle selection on exit but not
             // audio selection. Keep the detail page's explicit audio choice
             // instead of replacing it with an unknown/null value.

@@ -160,17 +160,17 @@ fun TvRecommendationsScreen(
     }
 
     LaunchedEffect(firstRecommendationRowFocused) {
-        while (firstRecommendationRowFocused) {
+        while (
+            firstRecommendationRowFocused &&
+            (recommendationsListState.firstVisibleItemIndex != 0 ||
+                recommendationsListState.firstVisibleItemScrollOffset != 0)
+        ) {
             // Focus-driven bring-into-view can run after the focus callback.
-            // Keep the top anchor armed until focus leaves this first row.
+            // Delay before re-anchoring so that relocation finishes first,
+            // then stop once the list reaches its true top.
             kotlinx.coroutines.delay(80)
             if (!firstRecommendationRowFocused) break
-            if (
-                recommendationsListState.firstVisibleItemIndex != 0 ||
-                recommendationsListState.firstVisibleItemScrollOffset != 0
-            ) {
-                runCatching { recommendationsListState.animateScrollToItem(0) }
-            }
+            runCatching { recommendationsListState.animateScrollToItem(0) }
         }
     }
 

@@ -865,7 +865,7 @@ private fun MatchCodeCard(code: String) {
                         text = "–",
                         style = TvServerSetupTextStyles.CodeSeparator,
                         color = Color.White.copy(alpha = 0.42f),
-                        modifier = Modifier.width(12.dp),
+                        modifier = Modifier.width(MATCH_CODE_SEPARATOR_WIDTH_DP.dp),
                     )
                 } else {
                     Box(

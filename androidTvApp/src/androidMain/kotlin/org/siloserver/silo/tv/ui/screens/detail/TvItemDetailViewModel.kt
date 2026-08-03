@@ -1520,7 +1520,9 @@ internal object TvDetailTrackSelectionSession {
             // audio selection. Keep the detail page's explicit audio choice
             // instead of replacing it with an unknown/null value.
             audio = audio ?: previous?.audio,
-            subtitle = subtitle,
+            // A null player result means the mounted track could not be
+            // resolved to a stable server index (keep current), not Off.
+            subtitle = subtitle ?: previous?.subtitle,
             positionSeconds = positionSeconds,
             durationSeconds = durationSeconds?.takeIf { it.isFinite() && it > 0.0 },
         )

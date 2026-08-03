@@ -212,10 +212,10 @@ class TvVideoPlaybackStarter(
             val serverSourceStartPos = readyV3.plan.timeline.sourceStartSeconds
                 .takeIf { it.isFinite() && it >= 0.0 }
                 ?: resolved.position.coerceAtLeast(0.0)
-            val sourceStartPos = resolvePlaybackStartPosition(
-                overridePosition = request.resumePositionOverride,
-                sessionPosition = serverSourceStartPos,
-                detailPosition = startRequestPosition ?: playerStartPos,
+            val sourceStartPos = resolveTvSourceStartPosition(
+                startRequestPosition = startRequestPosition,
+                serverSourceStartPosition = serverSourceStartPos,
+                playerStartPosition = playerStartPos,
             )
 
             val adopted = sessionLifecycle.adoptActiveSessionIfCurrent(
@@ -322,6 +322,16 @@ class TvVideoPlaybackStarter(
         const val TAG = "TvVideoPlaybackStarter"
     }
 }
+
+internal fun resolveTvSourceStartPosition(
+    startRequestPosition: Double?,
+    serverSourceStartPosition: Double,
+    playerStartPosition: Double,
+): Double = resolvePlaybackStartPosition(
+    overridePosition = startRequestPosition,
+    sessionPosition = serverSourceStartPosition,
+    detailPosition = playerStartPosition,
+)
 
 /**
  * Resolves session-only episode intent after the target detail is available.

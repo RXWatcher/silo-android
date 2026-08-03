@@ -79,6 +79,23 @@ class TvTrackSelectionPersistenceTest {
     }
 
     @Test
+    fun playbackReturnPreservesPreviouslySelectedSubtitleForKeepCurrent() {
+        val contentId = "episode-playback-return-subtitle"
+        TvDetailTrackSelectionSession.remember(contentId, fileId = 22, audio = 1, subtitle = 2)
+
+        TvDetailTrackSelectionSession.rememberPlaybackReturn(
+            contentId = contentId,
+            fileId = 22,
+            audio = null,
+            subtitle = null,
+            positionSeconds = 37.0,
+            durationSeconds = 120.0,
+        )
+
+        assertEquals(2, TvDetailTrackSelectionSession.recall(contentId)?.subtitle)
+    }
+
+    @Test
     fun playbackReturnProgressIsConsumedOnceWhileTrackChoicesRemain() {
         val contentId = "episode-playback-return-progress"
         TvDetailTrackSelectionSession.remember(contentId, fileId = 22, audio = 1, subtitle = 2)

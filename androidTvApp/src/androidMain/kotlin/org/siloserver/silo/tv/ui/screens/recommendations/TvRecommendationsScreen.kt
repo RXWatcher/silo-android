@@ -99,6 +99,7 @@ fun TvRecommendationsScreen(
     val recommendationsListState = rememberLazyListState()
     var savedListSelection by rememberSaveable { mutableStateOf(entryRequest.selection) }
     var lastAppliedEntrySequence by rememberSaveable { mutableIntStateOf(0) }
+    var firstRecommendationRowFocused by remember { mutableStateOf(false) }
     val moveIntoRecommendations: () -> Boolean = {
         if (
             !shouldBridgeRecommendationsDown(
@@ -155,6 +156,21 @@ fun TvRecommendationsScreen(
     LaunchedEffect(state.isLoading, state.error, visibleSections) {
         if (!state.isLoading && state.error == null && visibleSections.isEmpty() && savedListSelection == null) {
             savedListSelection = SavedListSelection.Watchlist
+        }
+    }
+
+    LaunchedEffect(firstRecommendationRowFocused) {
+        while (firstRecommendationRowFocused) {
+            // Focus-driven bring-into-view can run after the focus callback.
+            // Keep the top anchor armed until focus leaves this first row.
+            kotlinx.coroutines.delay(80)
+            if (!firstRecommendationRowFocused) break
+            if (
+                recommendationsListState.firstVisibleItemIndex != 0 ||
+                recommendationsListState.firstVisibleItemScrollOffset != 0
+            ) {
+                runCatching { recommendationsListState.animateScrollToItem(0) }
+            }
         }
     }
 
@@ -300,17 +316,8 @@ fun TvRecommendationsScreen(
                                 } else {
                                     null
                                 },
-                                onItemFocused = if (index == 0) {
-                                    {
-                                        if (
-                                            recommendationsListState.firstVisibleItemIndex != 0 ||
-                                            recommendationsListState.firstVisibleItemScrollOffset != 0
-                                        ) {
-                                            focusBridgeScope.launch {
-                                                recommendationsListState.animateScrollToItem(0)
-                                            }
-                                        }
-                                    }
+                                onRowFocusChanged = if (index == 0) {
+                                    { focused -> firstRecommendationRowFocused = focused }
                                 } else {
                                     null
                                 },

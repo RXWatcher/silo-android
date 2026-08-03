@@ -64,6 +64,7 @@ import org.siloserver.silo.model.playback.PlayMethod
 import org.siloserver.silo.model.playback.PlaybackExecutionPlan
 import org.siloserver.silo.model.playback.PlaybackRouteFamily
 import org.siloserver.silo.model.playback.PlaybackSessionResponse
+import org.siloserver.silo.model.playback.PlaybackTimeline
 import org.siloserver.silo.model.playback.PlayerSubtitleInfo
 import org.siloserver.silo.model.playback.SubtitleIdentity
 import org.siloserver.silo.model.playback.SubtitleMediaIdentity
@@ -3915,8 +3916,22 @@ class TvPlayerViewModel(
         positionMs: Long? = null,
         durationMs: Long? = null,
     ) {
-        if (positionMs != null && durationMs != null) {
-            onPositionChanged(positionMs, durationMs)
+        // This is the controller's final sample. It must bypass transient
+        // seek/mount presentation gates, while still mapping a shortened
+        // Media3 timeline back onto source/movie time.
+        _uiState.update { current ->
+            val snapshot = resolveTvPlaybackExitSnapshot(
+                currentPositionSeconds = current.position,
+                currentDurationSeconds = current.duration,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                timeline = current.playbackPlan?.timeline,
+                serverDurationSeconds = current.serverDuration,
+            )
+            current.copy(
+                position = snapshot.positionSeconds,
+                duration = snapshot.durationSeconds,
+            )
         }
         val subtitlePersistenceReservation =
             subtitleTransactions.reserveDurableFinalPersistence()
@@ -4201,6 +4216,41 @@ class TvPlayerViewModel(
         introAutoSkipController.reset()
     }
 
+}
+
+internal data class TvPlaybackExitSnapshot(
+    val positionSeconds: Double,
+    val durationSeconds: Double,
+)
+
+internal fun resolveTvPlaybackExitSnapshot(
+    currentPositionSeconds: Double,
+    currentDurationSeconds: Double,
+    positionMs: Long?,
+    durationMs: Long?,
+    timeline: PlaybackTimeline?,
+    serverDurationSeconds: Double,
+): TvPlaybackExitSnapshot {
+    if (positionMs == null || durationMs == null || positionMs < 0L) {
+        return TvPlaybackExitSnapshot(currentPositionSeconds, currentDurationSeconds)
+    }
+
+    val serverDuration = serverDurationSeconds.takeIf { it.isFinite() && it > 0.0 }
+    val playerPositionSeconds = positionMs / 1_000.0
+    val sourcePositionSeconds = (
+        timeline?.sourcePositionForPlayer(playerPositionSeconds) ?: playerPositionSeconds
+        ).let { position -> serverDuration?.let(position::coerceAtMost) ?: position }
+    val sourceDurationSeconds = if (durationMs > 0L) {
+        val playerDurationSeconds = durationMs / 1_000.0
+        timeline?.sourcePositionForPlayer(playerDurationSeconds) ?: playerDurationSeconds
+    } else {
+        currentDurationSeconds
+    }.let { duration -> serverDuration?.let(duration::coerceAtMost) ?: duration }
+
+    return TvPlaybackExitSnapshot(
+        positionSeconds = sourcePositionSeconds.coerceAtLeast(0.0),
+        durationSeconds = maxOf(currentDurationSeconds, sourceDurationSeconds),
+    )
 }
 
 data class PlaybackClock(

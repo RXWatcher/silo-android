@@ -87,6 +87,7 @@ import org.siloserver.silo.player.DolbyVisionPolicy
 import org.siloserver.silo.repository.SubtitlesRepository
 import org.siloserver.silo.repository.port.PlaybackWriteScope
 import org.siloserver.silo.repository.port.TrackSelectionFingerprintUpdate
+import org.siloserver.silo.tv.ui.screens.detail.TvDetailTrackSelectionSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -3910,13 +3911,30 @@ class TvPlayerViewModel(
     }
 
     /** Ordinary Back/remote-stop path: snapshot locally and return to detail immediately. */
-    fun stopSessionForExitAsync() {
+    fun stopSessionForExitAsync(
+        positionMs: Long? = null,
+        durationMs: Long? = null,
+    ) {
+        if (positionMs != null && durationMs != null) {
+            onPositionChanged(positionMs, durationMs)
+        }
+        val subtitlePersistenceReservation =
+            subtitleTransactions.reserveDurableFinalPersistence()
+        val state = _uiState.value
+        TvDetailTrackSelectionSession.rememberPlaybackReturn(
+            contentId = contentId,
+            fileId = state.selectedFileId ?: state.mediaFileId,
+            audio = null,
+            subtitle = selectedSubtitleTrackIndex(state),
+            positionSeconds = state.position,
+            durationSeconds = state.duration.takeIf { it > 0.0 },
+        )
         subtitleTransactions.invalidate()
         playbackMutationFence.invalidateAll()
         prepareSessionExit()
-        // Final-position durability is owned by the application-scoped
-        // finalPlaybackPositionWriter; only the subtitle flush needs a scope here.
-        viewModelScope.launch { subtitleTransactions.persistCommittedSelectionAndFlush() }
+        subtitlePersistenceReservation?.let(
+            subtitleTransactions::requestDurableFinalPersistence,
+        )
         sessionLifecycle.stopAsync(expectedSessionId = exitSessionId)
     }
 

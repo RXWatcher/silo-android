@@ -844,6 +844,7 @@ private fun completedSummary(names: List<String>): String =
 @Composable
 private fun MatchCodeCard(code: String) {
     if (code.isBlank()) return
+    val tileWidthDp = matchCodeTileWidthDp(code)
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(Spacing.sm),
@@ -857,7 +858,7 @@ private fun MatchCodeCard(code: String) {
             style = TvServerSetupTextStyles.CodeLabel,
             color = Color.White.copy(alpha = 0.62f),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(MATCH_CODE_TILE_GAP_DP.dp)) {
             code.uppercase().forEach { ch ->
                 if (ch == '-' || ch == ' ') {
                     Text(
@@ -869,7 +870,7 @@ private fun MatchCodeCard(code: String) {
                 } else {
                     Box(
                         modifier = Modifier
-                            .size(width = 34.dp, height = 42.dp)
+                            .size(width = tileWidthDp.dp, height = 42.dp)
                             .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(7.dp))
                             .border(1.dp, Color.White.copy(alpha = 0.20f), RoundedCornerShape(7.dp)),
                         contentAlignment = Alignment.Center,

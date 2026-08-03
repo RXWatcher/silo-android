@@ -300,6 +300,20 @@ fun TvRecommendationsScreen(
                                 } else {
                                     null
                                 },
+                                onItemFocused = if (index == 0) {
+                                    {
+                                        if (
+                                            recommendationsListState.firstVisibleItemIndex != 0 ||
+                                            recommendationsListState.firstVisibleItemScrollOffset != 0
+                                        ) {
+                                            focusBridgeScope.launch {
+                                                recommendationsListState.animateScrollToItem(0)
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    null
+                                },
                             )
                         }
                         item { Spacer(modifier = Modifier.height(8.dp)) }

@@ -112,6 +112,12 @@ class PlaybackSessionLifecycle(
         val renewMissingSessionWithLegacyStart: Boolean,
         val diagnosticsRecording: DiagnosticsPlaybackSessionRecording,
         val reporterWasActive: Boolean,
+        /**
+         * Ownership at capture time. Held explicitly because it cannot be
+         * derived from [state]: a predecessor in Reconnecting or Failed carries
+         * no session, yet still owns one.
+         */
+        val lastAdoptedSessionId: String?,
     )
 
     private data class PendingActiveSessionPublication(
@@ -377,6 +383,7 @@ class PlaybackSessionLifecycle(
             renewMissingSessionWithLegacyStart = renewMissingSessionWithLegacyStart,
             diagnosticsRecording = diagnosticsRecording,
             reporterWasActive = reporterJob?.isActive == true,
+            lastAdoptedSessionId = lastAdoptedSessionId,
         )
 
     private fun restoreActiveSessionSnapshot(
@@ -394,7 +401,11 @@ class PlaybackSessionLifecycle(
         diagnosticsRecording = snapshot.diagnosticsRecording
         _notice.value = snapshot.notice
         // A rollback to the predecessor hands ownership back to that session.
-        (snapshot.state as? SessionState.Active)?.let { lastAdoptedSessionId = it.session.sessionId }
+        // Restored unconditionally: deriving it from an Active state left a
+        // Reconnecting or Failed predecessor still recorded as owning the
+        // replacement that was just retired, so a later stop would target the
+        // dead replacement and leave the real session running on the server.
+        lastAdoptedSessionId = snapshot.lastAdoptedSessionId
         _state.value = snapshot.state
         if (
             restartReporter &&

@@ -583,6 +583,42 @@ class PlaybackSessionLifecycleTest {
     }
 
     @Test
+    fun `rollback to reconnecting predecessor restores its ownership for stop`() = runTest {
+        val stoppedSessions = mutableListOf<String>()
+        val sessionMgr = object : FakeSessionManager() {
+            override suspend fun stopSession(sessionId: String): ApiResult<Unit> {
+                stoppedSessions += sessionId
+                return ApiResult.Success(Unit)
+            }
+        }.apply {
+            progressResults = ArrayDeque(
+                listOf(ApiResult.NetworkError(RuntimeException("offline"))),
+            )
+        }
+        val healthApi = FakeHealthApi().apply {
+            alwaysReturn = ApiResult.NetworkError(RuntimeException("still down"))
+        }
+        val lifecycle = newLifecycle(sessionMgr, healthApi = healthApi, scope = backgroundScope)
+
+        lifecycle.adoptActiveSession(defaultStartParams(), makeSession("session-a"))
+        lifecycle.reportPosition(10.0, 100.0, isPaused = false)
+        advanceTimeBy(PlaybackSessionLifecycle.PROGRESS_REPORT_INTERVAL_MS + 100)
+        advanceUntilIdle()
+        assertTrue(lifecycle.state.value is SessionState.Reconnecting)
+
+        lifecycle.adoptActiveSession(
+            params = defaultStartParams(),
+            session = makeSession("session-b"),
+            deferPublication = true,
+        )
+        assertTrue(lifecycle.rollbackUnpublishedActiveSession("session-b"))
+
+        lifecycle.stop()
+
+        assertEquals(listOf("session-a"), stoppedSessions)
+    }
+
+    @Test
     fun `health probe Success transitions back to Active and clears notice`() = runTest {
         val sessionMgr = FakeSessionManager().apply {
             startResult = ApiResult.Success(makeSession("sess-keepalive"))

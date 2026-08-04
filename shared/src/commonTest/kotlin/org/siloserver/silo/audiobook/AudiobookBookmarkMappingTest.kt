@@ -184,7 +184,8 @@ class AudiobookBookmarkMappingTest {
         seconds: Double,
         space: BookmarkPositionSpace = BookmarkPositionSpace.WholeBook,
         sourceFileId: Int? = null,
-    ) = bookmarkSeekTarget(mode, space, seconds, sourceFileId)
+        timeline: AudiobookTimeline? = null,
+    ) = bookmarkSeekTarget(mode, space, seconds, sourceFileId, timeline)
 
     @Test
     fun onlineSeeksInWholeBookTime() {
@@ -291,6 +292,85 @@ class AudiobookBookmarkMappingTest {
         assertEquals(
             BookmarkSeekTarget.Seek(140.0),
             seek(WholeBookProgressMode.Unmappable, 140.0, BookmarkPositionSpace.AsRecorded),
+        )
+    }
+
+    // ── Recovering an unconverted bookmark ───────────────────────────────
+
+    @Test
+    fun anUnconvertedBookmarkIsConvertedOnceALayoutIsAvailable() {
+        // Dropped offline against a book whose layout was unknown, then opened
+        // online where the parts ARE known. Passing 40.0 through would read
+        // "40s into part two" as "40s into the book"; the recorded file says
+        // which part it meant, so it converts to 140.0 instead.
+        assertEquals(
+            BookmarkSeekTarget.Seek(140.0),
+            seek(
+                WholeBookProgressMode.AlreadyGlobal,
+                40.0,
+                BookmarkPositionSpace.AsRecorded,
+                sourceFileId = second.fileId,
+                timeline = timeline,
+            ),
+        )
+    }
+
+    @Test
+    fun anUnconvertedBookmarkIsRefusedWhenItsFileIsNotInTheLayout() {
+        // The recorded file is gone from the book's current part list, so the
+        // position cannot be placed. It is definitely not whole-book time, and
+        // passing it through would seek somewhere arbitrary.
+        assertEquals(
+            BookmarkSeekTarget.OutOfReach,
+            seek(
+                WholeBookProgressMode.AlreadyGlobal,
+                40.0,
+                BookmarkPositionSpace.AsRecorded,
+                sourceFileId = 999,
+                timeline = timeline,
+            ),
+        )
+    }
+
+    @Test
+    fun anUnconvertedBookmarkPassesThroughOnSingleFilePlayback() {
+        // No timeline means no parts, so file time already is book time.
+        assertEquals(
+            BookmarkSeekTarget.Seek(40.0),
+            seek(
+                WholeBookProgressMode.AlreadyGlobal,
+                40.0,
+                BookmarkPositionSpace.AsRecorded,
+                sourceFileId = second.fileId,
+            ),
+        )
+    }
+
+    // ── Alternate files for one logical part ─────────────────────────────
+
+    @Test
+    fun aBookmarkFromAnotherVariantOfThisPartIsStillReachable() {
+        // The timeline can hold alternate files for the same logical part. The
+        // global position maps into the part on disk regardless of which
+        // variant recorded it, so file identity must not override it — that
+        // would refuse a bookmark that is plainly inside the part being played.
+        assertEquals(
+            BookmarkSeekTarget.Seek(40.0),
+            seek(offline(second), 140.0, sourceFileId = 4242),
+        )
+    }
+
+    @Test
+    fun theBoundaryTieIsTheOnlyPlaceFileIdentityDecides() {
+        // Strictly inside part two: position wins, whoever recorded it.
+        assertEquals(BookmarkSeekTarget.Seek(40.0), seek(offline(second), 140.0, sourceFileId = 4242))
+        // Exactly part two's end, recorded elsewhere: ownership gives it to
+        // part three, so part two refuses it.
+        assertEquals(BookmarkSeekTarget.OutOfReach, seek(offline(second), 300.0, sourceFileId = 4242))
+        // Exactly part two's end, recorded by part two: reachable.
+        assertEquals(
+            BookmarkSeekTarget.Seek(200.0),
+            seek(offline(second), 300.0, sourceFileId = second.fileId),
         )
     }
 }

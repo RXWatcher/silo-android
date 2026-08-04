@@ -55,7 +55,8 @@ fun bookmarkPositionFor(
      * multi-part playback does: its position is already whole-book, but the
      * part still matters, because a bookmark dropped at a part boundary is
      * later read back by an offline session that can only reach one part.
-     * Null for single-file playback, which has no parts to disambiguate.
+     * Null for single-file playback, which has no parts to disambiguate, and
+     * for the offline modes, which carry their own file.
      */
     activeFileId: Int? = null,
 ): BookmarkPosition? {
@@ -75,7 +76,7 @@ fun bookmarkPositionFor(
             // number is local to the file I am playing" from "this number is
             // local to some other file", which is the difference between a
             // usable bookmark and a seek into the wrong content.
-            sourceFileId = mode.fileId ?: activeFileId,
+            sourceFileId = mode.fileId,
         )
 
         // globalTimeFor clamps into the track's own span, so a converted
@@ -131,14 +132,16 @@ fun bookmarkSeekTarget(
     space: BookmarkPositionSpace,
     bookmarkSeconds: Double,
     sourceFileId: Int? = null,
+    /**
+     * The book's part layout, when this session has one. Lets an unconverted
+     * position be converted on the way out — what could not be established at
+     * drop time often can be later.
+     */
+    timeline: AudiobookTimeline? = null,
 ): BookmarkSeekTarget {
     val position = bookmarkSeconds.coerceAtLeast(0.0)
+
     if (space == BookmarkPositionSpace.AsRecorded) {
-        // Unconverted seconds are only meaningful against the file that
-        // produced them. With no recorded origin there is nothing to check and
-        // pass-through is the old behaviour; with one, a different file today
-        // means this number describes somewhere else entirely, and seeking it
-        // is the wrong-content failure the ownership rule exists to avoid.
         // Both offline modes know which file is playing; only OfflinePart also
         // knows where it sits in the book.
         val currentFileId = when (mode) {
@@ -146,10 +149,31 @@ fun bookmarkSeekTarget(
             is WholeBookProgressMode.UnknownOfflineLayout -> mode.fileId
             else -> null
         }
-        return if (sourceFileId != null && currentFileId != null && sourceFileId != currentFileId) {
-            BookmarkSeekTarget.OutOfReach
-        } else {
-            BookmarkSeekTarget.Seek(position)
+        return when {
+            // No recorded origin: a pre-marker row, whole-book if it was
+            // dropped online and part-local if offline, with nothing to tell
+            // them apart. Pass-through is what it was written for.
+            sourceFileId == null -> BookmarkSeekTarget.Seek(position)
+
+            // Same file, so the number means here what it meant there.
+            currentFileId != null && sourceFileId == currentFileId ->
+                BookmarkSeekTarget.Seek(position)
+
+            // A different file is playing: this number describes somewhere
+            // else entirely.
+            currentFileId != null -> BookmarkSeekTarget.OutOfReach
+
+            // No current file, so playback is whole-book — and a layout is
+            // available that this position was recorded without. Convert it
+            // now: an unconverted position is not global, and passing it
+            // through would read part-local seconds as book seconds.
+            timeline != null -> timeline.tracks
+                .firstOrNull { it.fileId == sourceFileId }
+                ?.let { BookmarkSeekTarget.Seek(timeline.globalTimeFor(position, it)) }
+                ?: BookmarkSeekTarget.OutOfReach
+
+            // Single-file playback: no parts, so file time is book time.
+            else -> BookmarkSeekTarget.Seek(position)
         }
     }
 
@@ -161,12 +185,19 @@ fun bookmarkSeekTarget(
         is WholeBookProgressMode.UnknownOfflineLayout -> BookmarkSeekTarget.OutOfReach
 
         is WholeBookProgressMode.OfflinePart -> {
-            val belongsHere = if (sourceFileId != null) {
-                sourceFileId == mode.track.fileId
-            } else {
-                mode.timeline.trackIndexAt(position) == mode.track.index
-            }
-            if (belongsHere) {
+            // The global position is the authority, and it maps into exactly
+            // one part — except at a part boundary, which two parts share.
+            // [sourceFileId] breaks only that tie. It deliberately does not
+            // override the position elsewhere: the timeline can hold alternate
+            // files for the same logical part, so a bookmark stamped with one
+            // variant must not be refused while another variant of that very
+            // part is the one on disk.
+            val ownsPosition = mode.timeline.trackIndexAt(position) == mode.track.index
+            val isThisPartsEnd = position ==
+                mode.track.startOffsetSeconds + maxOf(0.0, mode.track.durationSeconds)
+            val reachable = ownsPosition ||
+                (isThisPartsEnd && sourceFileId != null && sourceFileId == mode.track.fileId)
+            if (reachable) {
                 BookmarkSeekTarget.Seek(mode.timeline.localTimeFor(position, mode.track))
             } else {
                 BookmarkSeekTarget.OutOfReach

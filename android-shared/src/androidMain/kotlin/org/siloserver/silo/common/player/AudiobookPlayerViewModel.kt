@@ -1142,17 +1142,17 @@ class AudiobookPlayerViewModel(
         val stored = bookmarkPositionFor(
             mode = wholeBookMode,
             positionSeconds = state.positionSeconds,
-            // With a timeline, only the active track counts. selectedFileId
-            // lags it during a cross-part load — the position has already been
-            // moved to the incoming part while the id still names the outgoing
-            // one — so falling back to it there would stamp the wrong file. No
-            // timeline means no parts to confuse, and the played file is right.
-            activeFileId = if (timeline != null) {
-                activeTrackIndex
-                    ?.let { idx -> timeline?.tracks?.firstOrNull { it.index == idx } }
-                    ?.fileId
-            } else {
-                state.selectedFileId
+            // Derived from the position rather than from activeTrackIndex or
+            // selectedFileId, because both lag a cross-part load: loadTrack
+            // writes the incoming part's global position immediately, while
+            // the track index and the file id only catch up when the new
+            // session starts. The position is already the authority here, so
+            // asking it which part it is in cannot disagree with itself.
+            //
+            // Null without a timeline: single-file playback has no parts to
+            // disambiguate, and the offline modes carry their own file.
+            activeFileId = timeline?.let { tl ->
+                tl.tracks.firstOrNull { it.index == tl.trackIndexAt(state.positionSeconds) }?.fileId
             },
         )
         if (stored == null) {
@@ -1221,6 +1221,9 @@ class AudiobookPlayerViewModel(
                 space = bookmark.positionSpace,
                 bookmarkSeconds = bookmark.positionSeconds,
                 sourceFileId = bookmark.sourceFileId,
+                // Lets a position recorded without a layout be converted now
+                // that one is available.
+                timeline = timeline,
             )
         ) {
             is BookmarkSeekTarget.Seek -> {
@@ -1490,5 +1493,9 @@ private fun AudiobookTimeline.toWholeBookChapters(): List<VersionChapter> =
 private const val BOOKMARK_UNPLACEABLE_NOTICE =
     "Can't bookmark this download — its place in the book isn't known offline."
 
+// Covers both reasons a jump is refused: the bookmark belongs to a part this
+// download does not contain, and the case where the book's part layout is
+// unknown offline so no bookmark can be placed at all. Naming only the first
+// would be false in the second.
 private const val BOOKMARK_OUT_OF_REACH_NOTICE =
-    "Can't open that bookmark from this download — it belongs to another part of the book."
+    "Can't open that bookmark from this download."

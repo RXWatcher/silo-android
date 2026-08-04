@@ -57,6 +57,19 @@ data class DownloadEntity(
     val durationSeconds: Double?,
     /** Serialized `List<VersionChapter>`; null/absent for non-chaptered media. */
     val chaptersJson: String?,
+    /**
+     * Audiobook part layout, captured when the download was enqueued.
+     *
+     * Offline there is no server detail to say whether this file is a whole
+     * book or one part of one, and that decides whether its own clock is the
+     * book's clock. Nullable so rows written before schema v9 — and every
+     * non-audiobook — simply carry no layout and stay ambiguous.
+     */
+    val audiobookPartCount: Int? = null,
+    val audiobookPartIndex: Int? = null,
+    val audiobookPartDurationSeconds: Double? = null,
+    val audiobookPartStartOffsetSeconds: Double? = null,
+    val audiobookTotalSeconds: Double? = null,
     // Mirror DownloadStatus wire values (lowercase): queued/downloading/completed/
     // failed/cancelled (DownloadModels.kt); plus a local-only "stale" for imported
     // rows whose bytes are missing (Task 6).

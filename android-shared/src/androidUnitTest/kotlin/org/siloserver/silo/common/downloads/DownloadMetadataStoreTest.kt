@@ -50,6 +50,43 @@ class DownloadMetadataStoreTest {
         )
 
     @Test
+    fun `an audiobook part layout survives the round-trip through Room`() = runTest {
+        // The layout is the only record of where a downloaded file sits in its
+        // book — offline nothing else can say. It reaches disk through the
+        // Room entity, so a column missing in either direction silently drops
+        // it and every offline session falls back to guessing.
+        val sidecar = stubSidecar(9).copy(
+            audiobookPartCount = 3,
+            audiobookPartIndex = 1,
+            audiobookPartDurationSeconds = 200.0,
+            audiobookPartStartOffsetSeconds = 100.0,
+            audiobookTotalSeconds = 450.0,
+        )
+        store.writeSidecar("srv1", "profA", sidecar)
+
+        val read = store.readSidecar("srv1", "profA", 9)
+        assertNotNull(read)
+        assertEquals(3, read.audiobookPartCount)
+        assertEquals(1, read.audiobookPartIndex)
+        assertEquals(200.0, read.audiobookPartDurationSeconds)
+        assertEquals(100.0, read.audiobookPartStartOffsetSeconds)
+        assertEquals(450.0, read.audiobookTotalSeconds)
+    }
+
+    @Test
+    fun `a download with no audiobook layout round-trips as absent`() = runTest {
+        store.writeSidecar("srv1", "profA", stubSidecar(10))
+
+        val read = store.readSidecar("srv1", "profA", 10)
+        assertNotNull(read)
+        assertNull(read.audiobookPartCount)
+        assertNull(read.audiobookPartIndex)
+        assertNull(read.audiobookPartDurationSeconds)
+        assertNull(read.audiobookPartStartOffsetSeconds)
+        assertNull(read.audiobookTotalSeconds)
+    }
+
+    @Test
     fun `writeSidecar then readSidecar round-trips`() = runTest {
         val sidecar = stubSidecar(7)
         store.writeSidecar("srv1", "profA", sidecar)

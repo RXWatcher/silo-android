@@ -13,6 +13,7 @@ import org.siloserver.silo.audiobook.WholeBookProgressMode
 import org.siloserver.silo.audiobook.bookmarkPositionFor
 import org.siloserver.silo.audiobook.bookmarkSeekTarget
 import org.siloserver.silo.audiobook.buildAudiobookTimeline
+import org.siloserver.silo.audiobook.offlineWholeBookMode
 import org.siloserver.silo.audiobook.wholeBookProgress
 import org.siloserver.silo.common.audiobook.AudiobookBookmarksStore
 import org.siloserver.silo.common.downloads.DownloadEnqueuer
@@ -845,20 +846,54 @@ class AudiobookPlayerViewModel(
                 }
             _resumePosition.value = localResume.takeIf { it > 0.0 }
         } else {
-            // One downloaded file with no timeline to place it in. Whether the
-            // position is part-local or whole-book depends on whether the book
-            // has parts at all, which nothing offline records.
-            wholeBookMode = WholeBookProgressMode.UnknownOfflineLayout(media.fileId)
-            val fileDuration = media.sidecar.durationSeconds ?: 0.0
-            if (resume != null && fileDuration > 0.0 && resume > fileDuration) {
-                // The whole-book snapshot lies beyond this file, so it must be
-                // one part of a longer book we have no timeline for: start at 0
-                // and keep part-local time out of the durable whole-book sink.
-                // No timeline means no sound conversion is possible.
-                wholeBookMode = WholeBookProgressMode.Unmappable
-                _resumePosition.value = null
+            // No cached server detail to build a timeline from, so fall back to
+            // the layout recorded on the download itself. That is the whole
+            // reason it is recorded: offline nothing else says whether this
+            // file is the book or one part of it.
+            val sidecarMode = offlineWholeBookMode(
+                partCount = media.sidecar.audiobookPartCount,
+                partIndex = media.sidecar.audiobookPartIndex,
+                partStartOffsetSeconds = media.sidecar.audiobookPartStartOffsetSeconds,
+                partDurationSeconds = media.sidecar.audiobookPartDurationSeconds,
+                bookTotalSeconds = media.sidecar.audiobookTotalSeconds,
+                fileId = media.fileId,
+            )
+            wholeBookMode = sidecarMode
+            if (sidecarMode is WholeBookProgressMode.OfflinePart) {
+                // Known offset, so the whole-book snapshot maps in exactly —
+                // the same treatment the cached-timeline branch gives, without
+                // needing the server detail.
+                val globalResume = resume ?: 0.0
+                val localResume =
+                    if (sidecarMode.timeline.partContains(sidecarMode.track, globalResume)) {
+                        sidecarMode.timeline.localTimeFor(globalResume, sidecarMode.track)
+                    } else {
+                        0.0
+                    }
+                _resumePosition.value = localResume.takeIf { it > 0.0 }
+            } else {
+                val fileDuration = media.sidecar.durationSeconds ?: 0.0
+                if (resume != null && fileDuration > 0.0 && resume > fileDuration) {
+                    // Layout unknown, but the whole-book snapshot lies beyond
+                    // this file, so it must be one part of a longer book: start
+                    // at 0 and keep part-local time out of the durable
+                    // whole-book sink. Nothing here can convert it.
+                    wholeBookMode = WholeBookProgressMode.Unmappable
+                    _resumePosition.value = null
+                }
             }
         }
+        // The span the engine can actually move within — this file's, not the
+        // book's. Taken from the mapped part wherever there is one, because the
+        // sidecar's own duration falls back to the whole book's total for a
+        // file that was never probed. Offline there is no timeline for seekTo
+        // to consult, so it clamps against exactly this number: leaving the
+        // book's total here sends a whole-book offset into one downloaded part,
+        // and hands the scrubber and chapter controls the wrong span with it.
+        val playableDurationSeconds =
+            (wholeBookMode as? WholeBookProgressMode.OfflinePart)?.track?.durationSeconds
+                ?: media.sidecar.durationSeconds
+                ?: 0.0
         _uiState.update {
             it.copy(
                 isLoading = false,
@@ -868,9 +903,7 @@ class AudiobookPlayerViewModel(
                 overview = media.sidecar.overview,
                 coverUrl = media.sidecar.posterUrl,
                 coverThumbhash = media.sidecar.posterThumbhash,
-                durationSeconds = offlinePart?.durationSeconds
-                    ?: media.sidecar.durationSeconds
-                    ?: 0.0,
+                durationSeconds = playableDurationSeconds,
                 chapters = media.sidecar.chapters.orEmpty(),
                 streamUrl = media.fileUrl,
                 selectedFileId = media.fileId,

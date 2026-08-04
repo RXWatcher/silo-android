@@ -7,6 +7,7 @@ import org.siloserver.silo.common.settings.PlayerSettingsStore
 import org.siloserver.silo.model.download.DownloadQuality
 import org.siloserver.silo.model.download.DownloadMediaType
 import org.siloserver.silo.model.download.DownloadRequest
+import org.siloserver.silo.audiobook.buildAudiobookTimeline
 import org.siloserver.silo.model.download.DownloadSidecar
 import org.siloserver.silo.model.download.DownloadStatus
 import org.siloserver.silo.model.download.statusEnum
@@ -397,6 +398,19 @@ class DownloadEnqueuer(
             else -> null
         }
         val version = detail?.versionFor(record.mediaFileId)
+        // Audiobook part layout, captured now because it is unrecoverable
+        // later: offline there is no server detail to say whether this file is
+        // the whole book or one part of it, and that decides whether its clock
+        // is the book's clock. Gated on the item actually being an audiobook so
+        // other media do not carry a meaningless part count.
+        val audiobookTimeline = detail?.takeIf { it.audiobook != null }?.let { d ->
+            buildAudiobookTimeline(
+                versions = d.versions,
+                serverTotalSeconds = d.audiobook?.totalDurationSeconds?.toDouble(),
+                preferredFileId = record.mediaFileId,
+            )
+        }
+        val audiobookPart = audiobookTimeline?.tracks?.firstOrNull { it.fileId == record.mediaFileId }
         return DownloadSidecar(
             record = record,
             title = detail?.title ?: fallbackTitle,
@@ -434,6 +448,18 @@ class DownloadEnqueuer(
             durationSeconds = version?.duration?.takeIf { it > 0.0 }
                 ?: detail?.audiobook?.totalDurationSeconds?.toDouble(),
             chapters = version?.chapters,
+            // All of them or none. They only describe this file if the timeline
+            // recognises it as one of the book's parts; a count on its own
+            // would claim knowledge of a layout the offset cannot back up.
+            audiobookPartCount = audiobookPart?.let { audiobookTimeline.tracks.size },
+            audiobookPartIndex = audiobookPart?.index,
+            // The timeline's part length, NOT the sidecar's durationSeconds
+            // above: that one falls back to the whole book's total when the
+            // file has no probed duration, which would stretch this part over
+            // every part after it.
+            audiobookPartDurationSeconds = audiobookPart?.durationSeconds,
+            audiobookPartStartOffsetSeconds = audiobookPart?.startOffsetSeconds,
+            audiobookTotalSeconds = audiobookPart?.let { audiobookTimeline.totalSeconds },
             updatedAtMs = System.currentTimeMillis(),
         )
     }

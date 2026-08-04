@@ -1,6 +1,7 @@
 package org.siloserver.silo.model.download
 
 import org.siloserver.silo.model.catalog.VersionChapter
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
@@ -64,6 +65,39 @@ data class DownloadSidecar(
      *  chapter list + chapter-aware progress. Empty/absent for non-chaptered
      *  media and for sidecars written before this field existed. */
     val chapters: List<VersionChapter>? = null,
+    /**
+     * How many parts the audiobook this file belongs to has.
+     *
+     * Captured at download time because it cannot be recovered afterwards. A
+     * download is one file, and offline there is no server detail to say
+     * whether that file is the whole book or one part of it — which is the
+     * difference between "this file's clock is the book's clock" and "it is
+     * not". Without it an offline session has to guess, and a guess written
+     * into durable, book-scoped data (resume position, bookmarks) is acted on
+     * later by sessions that know better.
+     *
+     * 1 for a single-part book. Null for non-audiobooks and for sidecars
+     * written before this existed, which stay ambiguous.
+     */
+    @SerialName("audiobook_part_count") val audiobookPartCount: Int? = null,
+    /** This file's position in the book's part order, so "is this the last
+     *  part" survives offline where the other parts are absent. */
+    @SerialName("audiobook_part_index") val audiobookPartIndex: Int? = null,
+    /**
+     * This part's own length as the timeline computed it, which is not always
+     * [durationSeconds]. A part with no probed duration takes its length from
+     * its chapter edges, while [durationSeconds] falls back to the whole book's
+     * total — using that as the part's span would stretch it over later parts.
+     */
+    @SerialName("audiobook_part_duration_seconds")
+    val audiobookPartDurationSeconds: Double? = null,
+    /** Where this file starts in whole-book seconds. With it, part-local time
+     *  converts offline without the server detail. Null when unknown. */
+    @SerialName("audiobook_part_start_offset_seconds")
+    val audiobookPartStartOffsetSeconds: Double? = null,
+    /** The whole book's duration in seconds, as opposed to [durationSeconds],
+     *  which is this file's. Null when unknown. */
+    @SerialName("audiobook_total_seconds") val audiobookTotalSeconds: Double? = null,
     /** HTTP validator (strong ETag, else Last-Modified) captured at download start,
      *  used to send `If-Range` when resuming an interrupted transfer so a changed
      *  source file restarts cleanly instead of corrupting. Null/absent = none. */

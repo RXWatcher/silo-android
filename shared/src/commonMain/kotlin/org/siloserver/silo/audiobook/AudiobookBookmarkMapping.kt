@@ -192,10 +192,9 @@ fun bookmarkSeekTarget(
             // files for the same logical part, so a bookmark stamped with one
             // variant must not be refused while another variant of that very
             // part is the one on disk.
-            val ownsPosition = mode.timeline.trackIndexAt(position) == mode.track.index
             val isThisPartsEnd = position ==
                 mode.track.startOffsetSeconds + maxOf(0.0, mode.track.durationSeconds)
-            val reachable = ownsPosition ||
+            val reachable = mode.timeline.partContains(mode.track, position) ||
                 (isThisPartsEnd && sourceFileId != null && sourceFileId == mode.track.fileId)
             if (reachable) {
                 BookmarkSeekTarget.Seek(mode.timeline.localTimeFor(position, mode.track))

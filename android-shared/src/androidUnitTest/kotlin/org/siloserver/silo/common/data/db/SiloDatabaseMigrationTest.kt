@@ -65,7 +65,59 @@ class SiloDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migration8To9PreservesDownloadsAndAddsNullableAudiobookLayoutColumns() {
+        migrationHelper.createDatabase(LAYOUT_DATABASE_NAME, 8).use { database ->
+            database.execSQL(
+                """
+                INSERT INTO downloads (
+                    serverId, profileId, mediaFileId, recordId, contentId, title,
+                    mediaType, status, kind, fileSize, bytesSent, createdAt, updatedAtMs
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent(),
+                arrayOf<Any?>(
+                    "server-a",
+                    "profile-a",
+                    43L,
+                    "record-b",
+                    "content-b",
+                    "Downloaded before the layout was recorded",
+                    "audio",
+                    "complete",
+                    "audiobook",
+                    2048L,
+                    2048L,
+                    "2026-08-04T00:00:00Z",
+                    5678L,
+                ),
+            )
+        }
+
+        migrationHelper.runMigrationsAndValidate(LAYOUT_DATABASE_NAME, 9, true).use { database ->
+            database.query(
+                """
+                SELECT title, audiobookPartCount, audiobookPartIndex,
+                       audiobookPartDurationSeconds, audiobookPartStartOffsetSeconds,
+                       audiobookTotalSeconds
+                FROM downloads
+                """.trimIndent(),
+            ).use { cursor ->
+                assertEquals(true, cursor.moveToFirst())
+                assertEquals("Downloaded before the layout was recorded", cursor.getString(0))
+                // An existing download keeps no layout, which is what makes it
+                // read back as ambiguous rather than as a confident wrong answer.
+                assertNull(cursor.getString(1))
+                assertNull(cursor.getString(2))
+                assertNull(cursor.getString(3))
+                assertNull(cursor.getString(4))
+                assertNull(cursor.getString(5))
+                assertEquals(false, cursor.moveToNext())
+            }
+        }
+    }
+
     private companion object {
         const val DATABASE_NAME = "migration-7-to-8"
+        const val LAYOUT_DATABASE_NAME = "migration-8-to-9"
     }
 }

@@ -66,6 +66,17 @@ data class AudiobookTimeline(
     val tracks: List<AudioPlaybackTrack>,
     val chapters: List<AudioPlaybackChapter>,
     val totalSeconds: Double,
+    /**
+     * Index of the book's last part, when [tracks] does not contain it.
+     *
+     * A timeline built from the server's detail holds every part, so the last
+     * one is simply the highest index present. A timeline reconstructed offline
+     * from a single download's recorded layout holds exactly one — and "is this
+     * the last part" cannot be answered by looking at what is present, nor by
+     * comparing its end to [totalSeconds], since a server total may exceed the
+     * stitched parts. It is recorded instead.
+     */
+    val finalTrackIndex: Int? = null,
 ) {
     /** True when the book is a single part (offset math is trivial). */
     val isSingle: Boolean get() = tracks.size <= 1
@@ -105,6 +116,31 @@ data class AudiobookTimeline(
      *
      * Mirrors Apple `globalTime(for:in:)` (AudioPlaybackTimeline.swift:22-24).
      */
+    /**
+     * Whether [globalTime] falls inside [track]'s own span.
+     *
+     * Expressed against the track directly rather than via [trackIndexAt] so it
+     * also holds for a timeline that describes only part of a book — one built
+     * offline from a single download's recorded layout, where every other part
+     * is absent. [trackIndexAt] answers "which of these tracks plays here" and
+     * clamps anything it does not recognise onto the last one, which for a
+     * one-track timeline means claiming the entire book.
+     *
+     * A part owns `[start, end)`, so the instant two parts share belongs to the
+     * later one — except for the final part, which keeps everything past the
+     * end, matching how [trackIndexAt] clamps.
+     */
+    fun partContains(track: AudioPlaybackTrack, globalTime: Double): Boolean {
+        val start = track.startOffsetSeconds
+        val end = start + maxOf(0.0, track.durationSeconds)
+        // Mirrors trackIndexAt, which hands everything past the stitched parts
+        // to the last one — including the tail left when the server's reported
+        // total exceeds what the parts actually add up to.
+        val lastIndex = finalTrackIndex ?: tracks.maxOfOrNull { it.index }
+        val isFinalPart = track.index == lastIndex
+        return globalTime >= start && (globalTime < end || isFinalPart)
+    }
+
     fun globalTimeFor(localTime: Double, track: AudioPlaybackTrack): Double =
         track.startOffsetSeconds + minOf(maxOf(0.0, localTime), maxOf(0.0, track.durationSeconds))
 }

@@ -89,3 +89,63 @@ fun wholeBookProgress(
 
     WholeBookProgressMode.Unmappable -> null
 }
+
+/**
+ * The playback mode for an offline session with no server detail, derived from
+ * the part layout recorded on the download.
+ *
+ * This is what closes the ambiguity [WholeBookProgressMode.UnknownOfflineLayout]
+ * exists for. Offline there is nothing to say whether a downloaded file is a
+ * whole book or one part of one, so it was captured at download time instead —
+ * and a download that carries it needs no guess:
+ *
+ * - One part means the file's clock IS the book's clock.
+ * - More than one, with the offset and totals to convert by, is an ordinary
+ *   mapped part. The timeline built here describes only the downloaded part,
+ *   which is all a single download can play; that is why part membership is
+ *   asked of the track ([AudiobookTimeline.partContains]) rather than of the
+ *   timeline as a whole.
+ *
+ * Downloads made before the layout was recorded, and any with a part count but
+ * missing numbers, stay ambiguous.
+ */
+fun offlineWholeBookMode(
+    partCount: Int?,
+    partIndex: Int?,
+    partStartOffsetSeconds: Double?,
+    partDurationSeconds: Double?,
+    bookTotalSeconds: Double?,
+    fileId: Int?,
+): WholeBookProgressMode {
+    if (partCount == null) return WholeBookProgressMode.UnknownOfflineLayout(fileId)
+    if (partCount <= 1) return WholeBookProgressMode.AlreadyGlobal
+
+    val offset = partStartOffsetSeconds
+    val duration = partDurationSeconds
+    val total = bookTotalSeconds
+    // All of it or none of it. fileId is included because the track's identity
+    // is compared against a bookmark's recorded source, and partIndex because
+    // "is this the last part" cannot be answered from one track alone. Half a
+    // layout is not a layout.
+    if (offset == null || duration == null || duration <= 0.0 ||
+        total == null || fileId == null || partIndex == null
+    ) {
+        return WholeBookProgressMode.UnknownOfflineLayout(fileId)
+    }
+
+    val track = AudioPlaybackTrack(
+        index = partIndex,
+        fileId = fileId,
+        durationSeconds = duration,
+        startOffsetSeconds = offset,
+    )
+    return WholeBookProgressMode.OfflinePart(
+        timeline = AudiobookTimeline(
+            tracks = listOf(track),
+            chapters = emptyList(),
+            totalSeconds = total,
+            finalTrackIndex = partCount - 1,
+        ),
+        track = track,
+    )
+}

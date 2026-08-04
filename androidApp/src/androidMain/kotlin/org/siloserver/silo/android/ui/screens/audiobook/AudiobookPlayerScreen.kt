@@ -263,11 +263,25 @@ fun AudiobookPlayerScreen(
                     )
                 }
             }
+            // A notice belongs to the sheet that produced it. Driven from the
+            // sheet's visibility rather than its dismiss callback: the view
+            // model outlives an activity recreation while this flag does not,
+            // so a callback-only clear leaves a stale notice waiting on the
+            // next open.
+            LaunchedEffect(showBookmarksSheet) {
+                if (!showBookmarksSheet) viewModel.consumeBookmarkNotice()
+            }
             if (showBookmarksSheet) {
                 val bookmarks by viewModel.bookmarks.collectAsState()
+                val bookmarkNotice by viewModel.bookmarkNotice.collectAsState()
                 AudiobookBookmarksSheet(
                     bookmarks = bookmarks,
-                    onJumpTo = { viewModel.jumpToBookmark(it); showBookmarksSheet = false },
+                    notice = bookmarkNotice,
+                    // Close only if playback actually moved. An offline
+                    // session cannot reach a bookmark in a part it does not
+                    // hold, and dismissing anyway looks exactly like a
+                    // successful jump to nowhere.
+                    onJumpTo = { if (viewModel.jumpToBookmark(it)) showBookmarksSheet = false },
                     onDelete = { viewModel.removeBookmark(it.id) },
                     onAddCurrent = { viewModel.addBookmark() },
                     onDismiss = { showBookmarksSheet = false },

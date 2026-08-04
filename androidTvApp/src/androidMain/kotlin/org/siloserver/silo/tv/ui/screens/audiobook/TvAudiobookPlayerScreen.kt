@@ -228,6 +228,11 @@ fun TvAudiobookPlayerScreen(
         }
     }
 
+    // A bookmark notice belongs to the panel that produced it.
+    LaunchedEffect(activePanel) {
+        if (activePanel != AudiobookPanel.Bookmarks) viewModel.consumeBookmarkNotice()
+    }
+
     BackHandler(enabled = true) {
         if (activePanel != AudiobookPanel.None) {
             activePanel = AudiobookPanel.None
@@ -415,12 +420,19 @@ fun TvAudiobookPlayerScreen(
                 )
                 AudiobookPanel.Bookmarks -> {
                     val bookmarks by viewModel.bookmarks.collectAsState()
+                    val bookmarkNotice by viewModel.bookmarkNotice.collectAsState()
                     TvAudiobookBookmarksPanel(
                         bookmarks = bookmarks,
+                        notice = bookmarkNotice,
                         onAddCurrent = { viewModel.addBookmark() },
                         onJumpTo = { bookmark ->
-                            viewModel.jumpToBookmark(bookmark)
-                            activePanel = AudiobookPanel.None
+                            // Close only if playback actually moved. An offline
+                            // session cannot reach a bookmark in a part it does
+                            // not hold, and dismissing anyway looks exactly like
+                            // a successful jump to nowhere.
+                            if (viewModel.jumpToBookmark(bookmark)) {
+                                activePanel = AudiobookPanel.None
+                            }
                         },
                         onDelete = { viewModel.removeBookmark(it.id) },
                     )

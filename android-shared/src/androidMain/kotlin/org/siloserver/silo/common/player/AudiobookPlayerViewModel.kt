@@ -8,7 +8,10 @@ import org.siloserver.silo.audiobook.AudiobookChapter
 import org.siloserver.silo.audiobook.AudiobookChapters
 import org.siloserver.silo.audiobook.AudiobookTimeline
 import org.siloserver.silo.audiobook.WholeBookProgress
+import org.siloserver.silo.audiobook.BookmarkSeekTarget
 import org.siloserver.silo.audiobook.WholeBookProgressMode
+import org.siloserver.silo.audiobook.bookmarkPositionFor
+import org.siloserver.silo.audiobook.bookmarkSeekTarget
 import org.siloserver.silo.audiobook.buildAudiobookTimeline
 import org.siloserver.silo.audiobook.wholeBookProgress
 import org.siloserver.silo.common.audiobook.AudiobookBookmarksStore
@@ -138,6 +141,17 @@ class AudiobookPlayerViewModel(
 
     private val _bookmarks = MutableStateFlow<List<AudiobookBookmark>>(emptyList())
     val bookmarks: StateFlow<List<AudiobookBookmark>> = _bookmarks.asStateFlow()
+
+    /**
+     * A one-line explanation for a bookmark action that could not be carried
+     * out, for the bookmarks surface to show inline.
+     *
+     * Deliberately not `uiState.error`: both players treat that as fatal and
+     * replace the whole screen with an error view, so a refused bookmark would
+     * take playback down with it. Cleared by [consumeBookmarkNotice].
+     */
+    private val _bookmarkNotice = MutableStateFlow<String?>(null)
+    val bookmarkNotice: StateFlow<String?> = _bookmarkNotice.asStateFlow()
 
     /** Position the player should seek to on first prepare. Resolved from
      *  the local snapshot at init; the Compose layer reads it via
@@ -380,6 +394,20 @@ class AudiobookPlayerViewModel(
                                 }
                             _resumePosition.value = localResume.takeIf { it > 0.0 }
                         } else {
+                            if (builtTimeline != null && !builtTimeline.isSingle) {
+                                // A multi-part book whose downloaded file is not
+                                // one of its known parts — the part list moved,
+                                // or the file was never a recognised part. Time
+                                // here is local to a file with no place in the
+                                // book, and unlike the no-detail case there is
+                                // no chance it is secretly whole-book: the
+                                // timeline says the book has parts. Nothing
+                                // durable may be written against the book.
+                                wholeBookMode = WholeBookProgressMode.Unmappable
+                            }
+                            // Otherwise the book is single-part (or has no
+                            // stitched parts at all), so file time IS book time
+                            // and the AlreadyGlobal reset above is correct.
                             _resumePosition.value = requestStartPosition?.takeIf { it > 0.0 }
                         }
                         _uiState.update { it.copy(error = null) }
@@ -816,9 +844,13 @@ class AudiobookPlayerViewModel(
                     0.0
                 }
             _resumePosition.value = localResume.takeIf { it > 0.0 }
-        } else if (resume != null) {
+        } else {
+            // One downloaded file with no timeline to place it in. Whether the
+            // position is part-local or whole-book depends on whether the book
+            // has parts at all, which nothing offline records.
+            wholeBookMode = WholeBookProgressMode.UnknownOfflineLayout(media.fileId)
             val fileDuration = media.sidecar.durationSeconds ?: 0.0
-            if (fileDuration > 0.0 && resume > fileDuration) {
+            if (resume != null && fileDuration > 0.0 && resume > fileDuration) {
                 // The whole-book snapshot lies beyond this file, so it must be
                 // one part of a longer book we have no timeline for: start at 0
                 // and keep part-local time out of the durable whole-book sink.
@@ -1087,10 +1119,51 @@ class AudiobookPlayerViewModel(
         }
     }
 
-    /** Drop a bookmark at the current position. Chapter title is
-     *  captured so the list can render it without re-resolving. */
-    fun addBookmark(note: String? = null) {
+    /**
+     * Drop a bookmark at the current position. Chapter title is captured so the
+     * list can render it without re-resolving.
+     *
+     * The stored position is whole-book time where that can be established,
+     * and the raw playback position marked as unconverted where it cannot.
+     *
+     * Returns whether a bookmark was accepted, not whether it reached disk —
+     * the write itself is asynchronous. False means the position could not be
+     * placed against the book at all, so there is nothing honest to store;
+     * [bookmarkNotice] carries the reason.
+     */
+    fun addBookmark(note: String? = null): Boolean {
+        _bookmarkNotice.value = null
         val state = _uiState.value
+        // Bookmarks are durable and scoped to the book, so they are stored in
+        // whole-book time — the same rule the resume sink follows. Offline
+        // playback of one downloaded part runs on part-local time, and storing
+        // that raw made a bookmark in part three point at part one the next
+        // time the book was opened online.
+        val stored = bookmarkPositionFor(
+            mode = wholeBookMode,
+            positionSeconds = state.positionSeconds,
+            // With a timeline, only the active track counts. selectedFileId
+            // lags it during a cross-part load — the position has already been
+            // moved to the incoming part while the id still names the outgoing
+            // one — so falling back to it there would stamp the wrong file. No
+            // timeline means no parts to confuse, and the played file is right.
+            activeFileId = if (timeline != null) {
+                activeTrackIndex
+                    ?.let { idx -> timeline?.tracks?.firstOrNull { it.index == idx } }
+                    ?.fileId
+            } else {
+                state.selectedFileId
+            },
+        )
+        if (stored == null) {
+            _bookmarkNotice.value = BOOKMARK_UNPLACEABLE_NOTICE
+            return false
+        }
+
+        // The chapter label is looked up in the CURRENT space, not the stored
+        // one: offline chapters come from the downloaded part's own sidecar and
+        // are part-local, matching state.positionSeconds. Converting first
+        // would name the wrong chapter.
         val chapterIndex = AudiobookChapters.currentIndex(
             state.chapters.toAudiobookChapters(),
             state.positionSeconds,
@@ -1100,7 +1173,9 @@ class AudiobookPlayerViewModel(
 
         val bookmark = AudiobookBookmark(
             id = generateBookmarkId(),
-            positionSeconds = state.positionSeconds,
+            positionSeconds = stored.seconds,
+            positionSpace = stored.space,
+            sourceFileId = stored.sourceFileId,
             chapterTitle = chapter?.title,
             note = note?.takeIf { it.isNotBlank() },
             createdAtMs = System.currentTimeMillis(),
@@ -1112,9 +1187,11 @@ class AudiobookPlayerViewModel(
             }
             _bookmarks.value = updated
         }
+        return true
     }
 
     fun removeBookmark(id: String) {
+        _bookmarkNotice.value = null
         viewModelScope.launch {
             val (serverId, profileId) = resolveScope()
             val updated = withContext(Dispatchers.IO) {
@@ -1124,9 +1201,41 @@ class AudiobookPlayerViewModel(
         }
     }
 
-    fun jumpToBookmark(bookmark: AudiobookBookmark) {
-        seekTo(bookmark.positionSeconds)
+    /**
+     * Jump to a stored bookmark, mapped from the space it was recorded in into
+     * whatever space this session is playing in.
+     *
+     * An offline session can only reach the one part it holds on disk, so a
+     * bookmark elsewhere in the book is refused rather than seeked: [seekTo]
+     * would clamp it into the downloaded part and land at an arbitrary point in
+     * the wrong chapter.
+     *
+     * Returns whether playback moved, so a caller does not dismiss its picker
+     * as though the jump had happened.
+     */
+    fun jumpToBookmark(bookmark: AudiobookBookmark): Boolean {
+        _bookmarkNotice.value = null
+        return when (
+            val target = bookmarkSeekTarget(
+                mode = wholeBookMode,
+                space = bookmark.positionSpace,
+                bookmarkSeconds = bookmark.positionSeconds,
+                sourceFileId = bookmark.sourceFileId,
+            )
+        ) {
+            is BookmarkSeekTarget.Seek -> {
+                seekTo(target.seconds)
+                true
+            }
+            BookmarkSeekTarget.OutOfReach -> {
+                _bookmarkNotice.value = BOOKMARK_OUT_OF_REACH_NOTICE
+                false
+            }
+        }
     }
+
+    /** Clear the current [bookmarkNotice] once a surface has shown it. */
+    fun consumeBookmarkNotice() { _bookmarkNotice.value = null }
 
     private fun generateBookmarkId(): String =
         // Compact, sortable-ish, sufficient for client-side uniqueness.
@@ -1376,3 +1485,10 @@ private fun AudiobookTimeline.toWholeBookChapters(): List<VersionChapter> =
             endSeconds = chapter.endSeconds ?: chapter.startSeconds,
         )
     }
+
+
+private const val BOOKMARK_UNPLACEABLE_NOTICE =
+    "Can't bookmark this download — its place in the book isn't known offline."
+
+private const val BOOKMARK_OUT_OF_REACH_NOTICE =
+    "Can't open that bookmark from this download — it belongs to another part of the book."

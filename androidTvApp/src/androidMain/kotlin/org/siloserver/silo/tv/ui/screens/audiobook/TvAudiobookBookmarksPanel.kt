@@ -51,6 +51,7 @@ fun TvAudiobookBookmarksPanel(
     onJumpTo: (AudiobookBookmark) -> Unit,
     onDelete: (AudiobookBookmark) -> Unit,
     modifier: Modifier = Modifier,
+    notice: String? = null,
 ) {
     val addFocus = remember { FocusRequester() }
 
@@ -63,6 +64,19 @@ fun TvAudiobookBookmarksPanel(
             focusRequester = addFocus,
             onSelect = onAddCurrent,
         )
+
+        // Bookmarking and jumping can both legitimately refuse offline. Without
+        // this the button and the row simply do nothing, which reads as a
+        // malfunction rather than a limitation.
+        if (notice != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = notice,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFF59E0B),
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
 
         Spacer(Modifier.height(8.dp))
 

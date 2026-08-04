@@ -15,6 +15,32 @@ sealed interface WholeBookProgressMode {
     /** Position is already whole-book time; no conversion needed. */
     data object AlreadyGlobal : WholeBookProgressMode
 
+    /**
+     * Offline playback of one downloaded file whose place in the book is
+     * unknown — no cached item detail to build a timeline from, and no saved
+     * resume position overshooting the file to give the game away. Position is
+     * part-local if the book has parts and whole-book if it does not, and
+     * nothing available offline says which: the download sidecar records no
+     * part index or part count.
+     *
+     * Kept distinct from [AlreadyGlobal] because the two are only
+     * interchangeable for callers willing to guess. [wholeBookProgress] does
+     * guess, preserving long-standing behaviour rather than dropping progress
+     * for every offline listen with a cold detail cache. Anything writing
+     * durable data that will be re-read against a *different* timeline later
+     * must not: see the bookmark mapping, which records such positions as
+     * unconverted instead of asserting a whole-book value it cannot prove.
+     */
+    data class UnknownOfflineLayout(
+        /**
+         * The file being played. The position cannot be placed in the book,
+         * but knowing which file produced it is what lets a later session tell
+         * an unconverted position of its own from one belonging to a different
+         * download.
+         */
+        val fileId: Int?,
+    ) : WholeBookProgressMode
+
     /** Position is local to [track] within [timeline] and converts back. */
     data class OfflinePart(
         val timeline: AudiobookTimeline,
@@ -49,7 +75,11 @@ fun wholeBookProgress(
     positionSeconds: Double,
     durationSeconds: Double,
 ): WholeBookProgress? = when (mode) {
-    WholeBookProgressMode.AlreadyGlobal ->
+    // The guess called out on UnknownOfflineLayout: a part-local position is
+    // recorded as the book's. It is the behaviour that shipped, and the
+    // alternative — persisting nothing for these sessions — is a product call,
+    // not a correctness one.
+    WholeBookProgressMode.AlreadyGlobal, is WholeBookProgressMode.UnknownOfflineLayout ->
         WholeBookProgress(positionSeconds, durationSeconds).takeIf { positionSeconds > 0.0 }
 
     is WholeBookProgressMode.OfflinePart -> {

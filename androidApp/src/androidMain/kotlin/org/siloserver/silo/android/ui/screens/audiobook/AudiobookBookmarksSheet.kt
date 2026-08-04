@@ -47,6 +47,7 @@ fun AudiobookBookmarksSheet(
     onDelete: (AudiobookBookmark) -> Unit,
     onAddCurrent: () -> Unit,
     onDismiss: () -> Unit,
+    notice: String? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -85,6 +86,17 @@ fun AudiobookBookmarksSheet(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
+            }
+            // Bookmarking and jumping can both legitimately refuse offline.
+            // Without this the button and the row simply do nothing, which
+            // reads as a malfunction rather than a limitation.
+            if (notice != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = notice,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Spacer(modifier = Modifier.height(16.dp))
 

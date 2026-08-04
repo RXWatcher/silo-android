@@ -7,7 +7,10 @@ import org.siloserver.silo.audiobook.AudioPlaybackTrack
 import org.siloserver.silo.audiobook.AudiobookChapter
 import org.siloserver.silo.audiobook.AudiobookChapters
 import org.siloserver.silo.audiobook.AudiobookTimeline
+import org.siloserver.silo.audiobook.WholeBookProgress
+import org.siloserver.silo.audiobook.WholeBookProgressMode
 import org.siloserver.silo.audiobook.buildAudiobookTimeline
+import org.siloserver.silo.audiobook.wholeBookProgress
 import org.siloserver.silo.common.audiobook.AudiobookBookmarksStore
 import org.siloserver.silo.common.downloads.DownloadEnqueuer
 import org.siloserver.silo.common.downloads.OfflineMediaResolver
@@ -168,6 +171,23 @@ class AudiobookPlayerViewModel(
      *  part loads or on the single-file fallback. */
     private var activeTrackIndex: Int? = null
 
+    /**
+     * How this playback's position relates to the whole book, which decides
+     * whether the durable whole-book sink may be written and how the position
+     * must be converted first. Every load re-decides it.
+     *
+     * One field rather than a suppression flag beside a nullable mapping: those
+     * had to be assigned together at every offline site, and dropping either
+     * assignment silently either persisted raw part-local time or discarded the
+     * write. There is no way to express half of this.
+     *
+     * The part it carries is deliberately separate from [activeTrackIndex],
+     * which also drives end-of-part advance — offline the next part is very
+     * often not downloaded, so reusing it would auto-load a part that is not
+     * there.
+     */
+    private var wholeBookMode: WholeBookProgressMode = WholeBookProgressMode.AlreadyGlobal
+
     /** Invalidates an in-flight [loadTrack] when the user seeks again, the book
      *  advances, or the player closes while `/playback/start` is still on the
      *  wire (Apple `loadGeneration`). */
@@ -188,13 +208,6 @@ class AudiobookPlayerViewModel(
      *  the stream swap), so position mapping and end-of-part detection are
      *  suppressed until the newly-loaded stream settles near this value. */
     private var pendingTrackLoadLocalStart: Double? = null
-
-    /** Set when the loaded stream is ONE PART of a multi-part book played
-     *  offline: playback then runs entirely in PART-LOCAL space (no engine to
-     *  cross parts), so the durable whole-book sink must be skipped — writing a
-     *  part-local position against the book's total would corrupt resume /
-     *  Continue Listening everywhere. */
-    private var suppressWholeBookPersistence = false
 
     init {
         observeAudiobookSettings()
@@ -231,6 +244,12 @@ class AudiobookPlayerViewModel(
         // Bump the start generation before the item-detail load so a slower,
         // older load can't overwrite the context of a newer one (Apple parity).
         val generation = ++startGeneration
+        // Every load re-decides how position relates to the book, so clear the
+        // previous decision up front. Today loadDetail only runs from init, so
+        // a stale mapping is unreachable — but that is an accident of the call
+        // graph, not an invariant, and reusing an old part's mapping would
+        // clamp a fresh global position into that part's span.
+        wholeBookMode = WholeBookProgressMode.AlreadyGlobal
         viewModelScope.launch {
             when (val r = catalogRepository.getItemDetail(contentId)) {
                 is ApiResult.Success -> {
@@ -350,7 +369,8 @@ class AudiobookPlayerViewModel(
                             // when the global position falls within it, otherwise
                             // start at 0 — a global position must never be seeded
                             // as a stream seek into a single part's file.
-                            suppressWholeBookPersistence = true
+                            wholeBookMode =
+                                WholeBookProgressMode.OfflinePart(builtTimeline, offlinePart)
                             val globalResume = requestStartPosition ?: 0.0
                             val localResume =
                                 if (builtTimeline.trackIndexAt(globalResume) == offlinePart.index) {
@@ -787,7 +807,7 @@ class AudiobookPlayerViewModel(
         // (unless the user explicitly chose to play from the beginning).
         val resume = if (!startFromBeginning) loadResumePositionSnapshot() else null
         if (cachedTimeline != null && offlinePart != null) {
-            suppressWholeBookPersistence = true
+            wholeBookMode = WholeBookProgressMode.OfflinePart(cachedTimeline, offlinePart)
             val globalResume = resume ?: 0.0
             val localResume =
                 if (cachedTimeline.trackIndexAt(globalResume) == offlinePart.index) {
@@ -802,7 +822,8 @@ class AudiobookPlayerViewModel(
                 // The whole-book snapshot lies beyond this file, so it must be
                 // one part of a longer book we have no timeline for: start at 0
                 // and keep part-local time out of the durable whole-book sink.
-                suppressWholeBookPersistence = true
+                // No timeline means no sound conversion is possible.
+                wholeBookMode = WholeBookProgressMode.Unmappable
                 _resumePosition.value = null
             }
         }
@@ -1117,28 +1138,34 @@ class AudiobookPlayerViewModel(
     private var positionSaveJob: Job? = null
     private var stoppingSessionId: String? = null
 
+    /**
+     * The whole-book progress to persist for [state], or null when there is
+     * none. The conversion lives in [wholeBookProgress] so it is tested as
+     * behavior rather than asserted as source text.
+     */
+    private fun wholeBookProgressFor(state: AudiobookPlayerUiState): WholeBookProgress? =
+        wholeBookProgress(wholeBookMode, state.positionSeconds, state.durationSeconds)
+
     /** Snapshot the current position (and any future server progress
      *  report). Called from periodic timer + pause + seek + close. */
     private fun savePosition() {
         val state = _uiState.value
         if (state.durationSeconds <= 0) return  // metadata not loaded yet
         viewModelScope.launch {
-            if (state.positionSeconds > 0 && !suppressWholeBookPersistence) {
-                // SINK 2 — whole-book durable resume. Records the WHOLE-BOOK
-                // (global) position against the WHOLE-BOOK total via a durable
-                // local projection + a content-level outbox op drained through
-                // syncProgress (furthest-position-wins). This is what powers
-                // resume + Continue Listening, and is what the multi-part fix
-                // protects: positionSeconds is now global, so a part-local
-                // position is never persisted here as the book's position
-                // (offline single-part playback runs part-local and skips this
-                // sink entirely via suppressWholeBookPersistence).
-                // fileId is the currently-playing part.
+            // SINK 2 — whole-book durable resume. Records the WHOLE-BOOK
+            // (global) position against the WHOLE-BOOK total via a durable
+            // local projection + a content-level outbox op drained through
+            // syncProgress (furthest-position-wins). This is what powers
+            // resume + Continue Listening. Offline part-local playback is
+            // converted back to whole-book time first; a part-local position is
+            // never persisted here as the book's position.
+            // fileId is the currently-playing part.
+            wholeBookProgressFor(state)?.let { progress ->
                 userItemStatePort.recordPosition(
                     contentId = contentId,
                     fileId = state.selectedFileId ?: requestedFileId ?: 0,
-                    positionSeconds = state.positionSeconds,
-                    durationSeconds = state.durationSeconds,
+                    positionSeconds = progress.positionSeconds,
+                    durationSeconds = progress.totalSeconds,
                 )
             }
             reportSessionProgress(state)
@@ -1206,16 +1233,18 @@ class AudiobookPlayerViewModel(
         viewModelScope.launch {
             try {
                 withContext(NonCancellable + Dispatchers.IO) {
-                    if (state.positionSeconds > 0 && !suppressWholeBookPersistence) {
-                        // SINK 2: whole-book global position + whole-book total.
-                        // Skipped on offline part-local playback, where
-                        // positionSeconds is a PART position that must never be
-                        // written against the book.
+                    // SINK 2: whole-book global position + whole-book total.
+                    // Shares savePosition's conversion so the two sinks cannot
+                    // drift. Note this path is online-only in practice: offline
+                    // playback carries no sessionId, and the null-session guard
+                    // above returns before reaching here, so offline progress is
+                    // durable through flushPosition/savePosition alone.
+                    wholeBookProgressFor(state)?.let { progress ->
                         userItemStatePort.recordPosition(
                             contentId = contentId,
                             fileId = state.selectedFileId ?: requestedFileId ?: 0,
-                            positionSeconds = state.positionSeconds,
-                            durationSeconds = state.durationSeconds,
+                            positionSeconds = progress.positionSeconds,
+                            durationSeconds = progress.totalSeconds,
                         )
                     }
                     // SINK 1: part-local position to the retiring session.

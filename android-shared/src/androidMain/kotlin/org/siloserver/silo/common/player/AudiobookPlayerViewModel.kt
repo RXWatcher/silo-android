@@ -678,6 +678,12 @@ class AudiobookPlayerViewModel(
                     }
                 }
                 is ApiResult.Error -> {
+                    // startTranscodeFallback documents that it does NOT stop the
+                    // caller's session. Clearing sessionId without stopping it
+                    // leaves the allocation alive — teardown then finds no id to
+                    // finalize and it burns a concurrent-stream slot until the
+                    // server times it out.
+                    runCatching { playbackSessionManager.stopSession(session.sessionId) }
                     if (generation != loadGeneration || isClosing) return
                     pendingTrackLoadLocalStart = null
                     _uiState.update {
@@ -691,6 +697,12 @@ class AudiobookPlayerViewModel(
                     }
                 }
                 is ApiResult.NetworkError -> {
+                    // startTranscodeFallback documents that it does NOT stop the
+                    // caller's session. Clearing sessionId without stopping it
+                    // leaves the allocation alive — teardown then finds no id to
+                    // finalize and it burns a concurrent-stream slot until the
+                    // server times it out.
+                    runCatching { playbackSessionManager.stopSession(session.sessionId) }
                     if (generation != loadGeneration || isClosing) return
                     pendingTrackLoadLocalStart = null
                     _uiState.update {
@@ -705,6 +717,14 @@ class AudiobookPlayerViewModel(
                 }
             }
         } else {
+            // getServerUrl() above suspends, so a newer part load can supersede
+            // this one in between. The transcode branches recheck; without the
+            // same guard here the stale part publishes over the newer load and
+            // its session is never stopped.
+            if (generation != loadGeneration || isClosing) {
+                runCatching { playbackSessionManager.stopSession(session.sessionId) }
+                return
+            }
             _uiState.update {
                 it.copy(
                     streamUrl = resolvePlaybackStreamUrl(serverUrl, session.streamUrl),

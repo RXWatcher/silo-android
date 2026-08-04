@@ -616,7 +616,13 @@ class PlaybackSessionLifecycle(
                 )
             }
 
-            val sessionId = (_state.value as? SessionState.Active)?.session?.sessionId
+            // Same fallback the ownership guard above uses: Reconnecting and
+            // Failed carry no session, so reading only Active would leave a
+            // server session running while the code below clears
+            // lastAdoptedSessionId and goes Idle — the slot stays consumed
+            // until the server times it out.
+            val sessionId =
+                (_state.value as? SessionState.Active)?.session?.sessionId ?: lastAdoptedSessionId
             // Fire the final snapshot regardless — even during Reconnecting we
             // want to durably record where the user was so a fresh login resumes
             // there.
@@ -803,6 +809,15 @@ class PlaybackSessionLifecycle(
     private fun beginOutageRecovery(currentSession: PlaybackSessionResponse) {
         if (outageJob?.isActive == true) return  // already probing
         if (_state.value is SessionState.Reconnecting) return
+        // A cancelled reporter still gets here: safeApiCall catches
+        // CancellationException along with everything else and hands back
+        // NetworkError, so the loop runs on into recovery after adoption has
+        // already replaced the session. Publishing Reconnecting for a session
+        // we no longer own would strand a deferred publication (settlement
+        // requires Active) and silence the replacement reporter.
+        val owned = (_state.value as? SessionState.Active)?.session?.sessionId
+            ?: lastAdoptedSessionId
+        if (owned != null && owned != currentSession.sessionId) return
 
         val deadline = nowMs() + OUTAGE_TIMEOUT_MS
         _state.value = SessionState.Reconnecting(deadlineEpochMs = deadline, tone = NoticeTone.Warning)

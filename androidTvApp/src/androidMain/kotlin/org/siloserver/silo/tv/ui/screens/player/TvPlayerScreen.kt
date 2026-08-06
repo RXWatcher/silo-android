@@ -1159,6 +1159,13 @@ fun TvPlayerScreen(
         dolbyVisionEnabled,
     ) {
         val backend = videoBackend ?: return@LaunchedEffect
+        // Not while the screen is leaving. A route change is exactly what fires
+        // this during teardown — pulling HDMI (a KVM switched to another input)
+        // re-reports capabilities as the session is being torn down — and the
+        // reselection it triggers then dereferences a null media period inside
+        // ExoPlayer. The player-side guard cannot see this: it samples state
+        // from the caller's thread, and the teardown completes on ExoPlayer's.
+        if (exitRequested || state.sessionId == null) return@LaunchedEffect
         // With Dolby Vision off, drop DV profiles (except 5 — no watchable
         // base layer) so the DV MIME preference is not added and multi-track
         // content selects the HEVC/HDR10 variant. DolbyVisionPolicy is the

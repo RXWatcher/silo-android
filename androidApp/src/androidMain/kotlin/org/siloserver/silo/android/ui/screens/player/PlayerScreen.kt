@@ -474,6 +474,12 @@ fun PlayerScreen(
         hdrEnabled,
     ) {
         val backend = videoBackend ?: return@LaunchedEffect
+        // Not while the screen is leaving — see the TV screen's copy of this
+        // guard. A route change during teardown (here: a headphone unplug or
+        // Bluetooth drop rather than HDMI) re-reports capabilities as the
+        // session is torn down, and the reselection it triggers dereferences a
+        // null media period inside ExoPlayer.
+        if (exitRequested || uiState.sessionId == null) return@LaunchedEffect
         backend.applyTrackSelection(
             audioCaps = audioCaps,
             displayHdr = if (hdrEnabled) displayHdr else org.siloserver.silo.model.playback.HdrCapabilities(),

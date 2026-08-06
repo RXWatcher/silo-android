@@ -421,6 +421,13 @@ class SiloPlayerFactory(
                 preferredTextLanguage = preferredTextLanguage,
             )
         }
+        // Assigning identical parameters still costs a full reselection, and a
+        // reselection is what crashes when it lands mid-teardown. The callers
+        // re-run on every capability report and on recomposition, so most of
+        // these assignments change nothing — the guard above cannot help those,
+        // because it samples the player from this thread while the reselection
+        // happens later on ExoPlayer's own.
+        if (next == base) return
         player.trackSelectionParameters = next
     }
 

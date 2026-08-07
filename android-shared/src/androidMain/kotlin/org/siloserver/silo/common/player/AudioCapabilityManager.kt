@@ -342,7 +342,7 @@ class AudioCapabilityManager(
         val encodingSupport = listOf(
             EncodingSupport("ac3", AudioFormat.ENCODING_AC3),
             EncodingSupport("eac3", AudioFormat.ENCODING_E_AC3),
-            EncodingSupport("eac3_joc", AudioFormat.ENCODING_E_AC3_JOC),
+            EncodingSupport("eac3_joc", AudioFormat.ENCODING_E_AC3_JOC, Build.VERSION_CODES.P),
             EncodingSupport("dts", AudioFormat.ENCODING_DTS),
             EncodingSupport("dts_hd", AudioFormat.ENCODING_DTS_HD, Build.VERSION_CODES.M),
             EncodingSupport("truehd", AudioFormat.ENCODING_DOLBY_TRUEHD, Build.VERSION_CODES.N_MR1),

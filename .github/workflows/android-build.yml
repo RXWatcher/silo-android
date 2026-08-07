@@ -94,9 +94,16 @@ jobs:
           # Existing findings are held in per-module lint-baseline.xml, so only
           # NEW violations fail. If this job fails, fix the call — do not
           # regenerate the baseline to make it pass.
+          #
+          # lintVitalRelease runs here too. checkReleaseBuilds makes it part of
+          # assembleRelease, which only ever runs from release.yml on a v* tag —
+          # so without this the release variant is gated by a check that no pull
+          # request exercises, and the first run would be mid-release. It also
+          # covers the release-only source sets that lintDebug never sees.
           ./gradlew \
             -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" \
             :android-shared:lintDebug :androidApp:lintDebug :androidTvApp:lintDebug \
+            :androidApp:lintVitalRelease :androidTvApp:lintVitalRelease \
             --max-workers=2
 
       - name: Upload lint reports

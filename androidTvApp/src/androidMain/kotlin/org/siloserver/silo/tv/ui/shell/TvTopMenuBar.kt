@@ -71,6 +71,16 @@ private const val TopMenuInitialPreviewDelayMillis = 180L
 private const val TopMenuPanelSwitchDelayMillis = 80L
 
 /**
+ * How long a dwell suppression survives while its own button keeps focus.
+ *
+ * Long enough that returning from a panel does not flash it straight back open,
+ * short enough that deliberately resting on the tab reopens its cascade. Sits
+ * above [TopMenuInitialPreviewDelayMillis] so the expiry and the preview delay
+ * cannot race into a reopen that reads as a flicker.
+ */
+private const val TopMenuDwellSuppressionExpiryMillis = 600L
+
+/**
  * Layout constants for the top menu band. Vertical-clearance / anchor tokens
  * here are consumed by every root screen (`contentTopInset`) and by the shell's
  * profile-menu overlay (`profileMenuTopInset` / `trailingInset`). The bar's own
@@ -293,7 +303,22 @@ fun TvTopMenuBar(
         if (suppressed != null) {
             // A transient null is the panel→bar focus handoff itself; keep the
             // suppression armed until the requested anchor actually focuses.
-            if (focus == null || focus == suppressed) return@LaunchedEffect
+            if (focus == null) return@LaunchedEffect
+            if (focus == suppressed) {
+                // Expire it rather than hold it forever. Its job is to stop the
+                // panel flashing straight back open the instant focus returns —
+                // not to make that tab's panel unreachable. Holding it until
+                // some *other* button took focus meant returning to the tab you
+                // just left could never reopen its own cascade: dwelling did
+                // nothing, and Down dived to content and re-armed on the way
+                // back. The only escape was to focus a different tab and come
+                // back, which is exactly what testers reported doing.
+                delay(TopMenuDwellSuppressionExpiryMillis)
+                if (dwellSuppressedButton == suppressed && focusedButton == suppressed) {
+                    dwellSuppressedButton = null
+                }
+                return@LaunchedEffect
+            }
             // Moving anywhere else re-arms normal dwell behavior, matching
             // tvOS's dwellSuppressedElement lifecycle.
             dwellSuppressedButton = null

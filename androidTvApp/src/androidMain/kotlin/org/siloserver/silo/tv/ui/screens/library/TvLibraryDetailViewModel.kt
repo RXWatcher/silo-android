@@ -158,6 +158,7 @@ class TvLibraryDetailViewModel(
     private val libraryId: Int,
     private val libraryTitle: String,
     private val libraryType: String,
+    private val mediaScope: String? = null,
 ) : ViewModel() {
 
     data class UiState(
@@ -479,12 +480,18 @@ class TvLibraryDetailViewModel(
                 sections.map { section -> resolvedById[section.id] ?: section }
             }
 
+            val scoped = resolved.map { section ->
+                scopeTvLibrarySection(section, mediaScope) { cursor ->
+                    sectionRepository.getLibrarySectionCatalogItems(libraryId, section.id, owner, cursor)
+                }
+            }
             if (!mayPublish()) return@launch
             _uiState.update {
                 it.copy(
-                    sections = resolved.visibleOnTv(),
+                    sections = scoped.map { it.section }.visibleOnTv(),
                     recommendedLoading = false,
-                    recommendedError = null,
+                    recommendedError = if (scoped.any { it.incomplete })
+                        "Some shelves could not be fully loaded for this media type. Retry or open Browse." else null,
                 )
             }
         }
@@ -547,7 +554,7 @@ class TvLibraryDetailViewModel(
             val facetGroups = filter.facetSelection.toQueryGroups()
             val result = catalogRepository.browse(
                 source = "query",
-                mediaType = mediaTypeFor(libraryType),
+                mediaType = mediaScope ?: mediaTypeFor(libraryType),
                 libraryId = libraryId,
                 genre = filter.genre,
                 sort = filter.sort,

@@ -74,6 +74,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.sync.Semaphore
@@ -225,6 +227,7 @@ class LibrariesViewModel(
     private var recommendedLoadedLibraryId: Int? = null
     private var browseLoadedLibraryId: Int? = null
     private var collectionsLoadedLibraryId: Int? = null
+    private var recommendedJob: Job? = null
     private var recommendedRequestGeneration = 0L
     private var catalogContinuation: CatalogContinuationV2? = null
     private var catalogRequestGeneration = 0L
@@ -418,6 +421,7 @@ class LibrariesViewModel(
      * RecentlyAdded — when nothing is saved.
      */
     private fun resetForLibrary(libraryId: Int?, mediaScope: String?) {
+        recommendedJob?.cancel()
         recommendedLoadedLibraryId = null
         browseLoadedLibraryId = null
         collectionsLoadedLibraryId = null
@@ -556,7 +560,8 @@ class LibrariesViewModel(
         recommendedLoadedLibraryId = libraryId
         val mediaScope = _uiState.value.mediaScope
         val requestGeneration = ++recommendedRequestGeneration
-        viewModelScope.launch {
+        recommendedJob?.cancel()
+        recommendedJob = viewModelScope.launch {
             if (!isRecommendedRequestCurrent(requestGeneration, libraryId)) return@launch
             _uiState.update {
                 if (isRecommendedRequestCurrent(requestGeneration, libraryId, it)) {
@@ -592,6 +597,7 @@ class LibrariesViewModel(
                         async {
                             permits.withPermit {
                                 scopeLibrarySection(section, mediaScope) { cursor ->
+                                    currentCoroutineContext().ensureActive()
                                     sectionRepository.getLibrarySectionCatalogItems(libraryId, section.id, owner, cursor)
                                 }
                             }

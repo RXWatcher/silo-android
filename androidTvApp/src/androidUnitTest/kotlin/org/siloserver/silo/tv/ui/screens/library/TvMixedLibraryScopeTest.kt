@@ -27,8 +27,8 @@ class TvMixedLibraryScopeTest {
         var active = 0
         var peak = 0
         val cursors = mutableMapOf<String, MutableList<String?>>()
-        val rows = (0..5).joinToString(",") { id ->
-            """{"id":"$id","title":"Shelf $id","section_type":"recently_added","item_limit":1,"total_count":2,"items":[{"content_id":"film","type":"movie","title":"Film"}]}"""
+        val rows = (0..6).joinToString(",") { id ->
+            """{"id":"$id","title":"Shelf $id","featured":${id == 6},"section_type":"recently_added","item_limit":1,"total_count":2,"items":[{"content_id":"film","type":"movie","title":"Film"}]}"""
         }
         val client = HttpClient(MockEngine(MockEngineConfig().apply {
             this.dispatcher = dispatcher

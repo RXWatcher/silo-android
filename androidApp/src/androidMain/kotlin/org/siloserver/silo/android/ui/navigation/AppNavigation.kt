@@ -1163,6 +1163,11 @@ fun AppNavigation(
                     nullable = true
                     defaultValue = null
                 },
+                navArgument("mediaScope") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
             ),
         ) { backStackEntry ->
             CollectionDetailScreen(

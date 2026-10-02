@@ -16,6 +16,58 @@ import kotlin.test.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class TvMixedLibraryScopeTest {
+    @Test fun refillsThreeShelvesAtATimeWithoutReorderingShelvesOrCursors() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val owner = AuthScopeSnapshot("server", "profile", "https://example.invalid", "pin", identityGeneration = 1)
+        val tokens = object : TokenManager by TokenManagerImpl() {
+            override suspend fun snapshotCurrentScope() = owner
+        }
+        val release = CompletableDeferred<Unit>()
+        var active = 0
+        var peak = 0
+        val cursors = mutableMapOf<String, MutableList<String?>>()
+        val rows = (0..5).joinToString(",") { id ->
+            """{"id":"$id","title":"Shelf $id","section_type":"recently_added","item_limit":1,"total_count":2,"items":[{"content_id":"film","type":"movie","title":"Film"}]}"""
+        }
+        val client = HttpClient(MockEngine(MockEngineConfig().apply {
+            this.dispatcher = dispatcher
+            addHandler { request ->
+                val body = when {
+                    request.url.encodedPath.endsWith("/sections") -> """{"sections":[$rows]}"""
+                    request.url.encodedPath.endsWith("/filters") -> """{"genres":[],"studios":[],"networks":[],"countries":[],"original_languages":[],"content_ratings":[],"authors":[],"narrators":[],"series":[]}"""
+                    else -> {
+                        val id = request.url.parameters["section_id"]!!
+                        val cursor = request.url.parameters["cursor"]
+                        cursors.getOrPut(id) { mutableListOf() } += cursor
+                        active++; peak = maxOf(peak, active)
+                        try {
+                            release.await()
+                            delay((6 - id.toInt()) * 10L)
+                            if (cursor == null) page("film", "movie", "next") else page("show-$id", "series")
+                        } finally { active-- }
+                    }
+                }
+                respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+            }
+        })) { install(ContentNegotiation) { json(SiloJson) } }
+        val store = ViewModelStore()
+        try {
+            val sections = SectionRepository(SectionApi(client, sectionItems = LibrarySectionItemsV2Api(client, tokens, ApiV2Gate.Unrestricted)))
+            val vm = TvLibraryDetailViewModel(sections, CatalogRepository(CatalogApi(client)), 7, "Anime", "mixed", "series")
+            store.put("series", vm)
+            runCurrent()
+            assertEquals(3, active, "Three independent shelves should load without waiting on the first")
+            release.complete(Unit)
+            advanceUntilIdle()
+            assertEquals(3, peak, "Do not flood the server with every shelf at once")
+            assertEquals((0..5).map(Int::toString), vm.uiState.value.sections.map { it.id })
+            assertEquals((0..5).map { "show-$it" }, vm.uiState.value.sections.flatMap { it.items }.map { it.contentId })
+            assertEquals(6, cursors.size)
+            cursors.values.forEach { assertEquals(listOf(null, "next"), it) }
+        } finally { store.clear(); client.close(); Dispatchers.resetMain() }
+    }
+
     @Test fun seriesShelfRefillsPastMoviesAndBrowseKeepsItsScope() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         Dispatchers.setMain(dispatcher)

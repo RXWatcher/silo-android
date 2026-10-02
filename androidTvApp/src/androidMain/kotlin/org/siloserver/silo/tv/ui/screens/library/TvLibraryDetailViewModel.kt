@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * Library content sections committed by the Skyline cascade. The extra browse
@@ -480,11 +482,17 @@ class TvLibraryDetailViewModel(
                 sections.map { section -> resolvedById[section.id] ?: section }
             }
 
+            // Independent shelves can overlap, but keep each cursor chain sequential.
+            val refillPermits = Semaphore(3)
             val scoped = resolved.map { section ->
-                scopeTvLibrarySection(section, mediaScope) { cursor ->
-                    sectionRepository.getLibrarySectionCatalogItems(libraryId, section.id, owner, cursor)
+                async {
+                    refillPermits.withPermit {
+                        scopeTvLibrarySection(section, mediaScope) { cursor ->
+                            sectionRepository.getLibrarySectionCatalogItems(libraryId, section.id, owner, cursor)
+                        }
+                    }
                 }
-            }
+            }.awaitAll()
             if (!mayPublish()) return@launch
             _uiState.update {
                 it.copy(

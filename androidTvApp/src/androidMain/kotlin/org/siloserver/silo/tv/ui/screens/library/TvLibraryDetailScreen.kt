@@ -101,6 +101,7 @@ fun TvLibraryDetailScreen(
     libraryId: Int,
     libraryTitle: String,
     libraryType: String,
+    mediaScope: String? = null,
     onItemClick: (contentId: String) -> Unit,
     onCollectionClick: (collectionId: String, title: String, isUserCollection: Boolean) -> Unit,
     onInitialContentFocus: () -> Unit = {},
@@ -117,8 +118,8 @@ fun TvLibraryDetailScreen(
     // Plays the first pick of a shuffle started from the Library tab.
     onShuffleStarted: (org.siloserver.silo.model.shuffle.Shuffle) -> Unit = {},
     viewModel: TvLibraryDetailViewModel = koinViewModel(
-        key = "library-$libraryId",
-        parameters = { parametersOf(libraryId, libraryTitle, libraryType) },
+        key = "library-$libraryId-${mediaScope.orEmpty()}",
+        parameters = { parametersOf(libraryId, libraryTitle, libraryType, mediaScope) },
     ),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -153,7 +154,7 @@ fun TvLibraryDetailScreen(
     ) {
         when (state.selectedTab) {
             TvLibraryTab.Recommended -> RecommendedTab(
-                surfaceKey = "library-$libraryId",
+                surfaceKey = "library-$libraryId-${mediaScope.orEmpty()}",
                 state = state,
                 onItemClick = onItemClick,
                 onRetry = viewModel::retryRecommended,
@@ -307,14 +308,20 @@ private fun RecommendedTab(
             )
         }
         else -> {
-            TvSkylineSectionFeed(
-                surfaceKey = surfaceKey,
-                sections = rows,
-                onItemClick = onItemClick,
-                focusRequest = focusRequest,
-                onInitialContentFocus = onInitialContentFocus,
-                onContentUpFallbackChanged = onContentUpFallbackChanged,
-            )
+            Box {
+                TvSkylineSectionFeed(
+                    surfaceKey = surfaceKey,
+                    sections = rows,
+                    onItemClick = onItemClick,
+                    focusRequest = focusRequest,
+                    onInitialContentFocus = onInitialContentFocus,
+                    onContentUpFallbackChanged = onContentUpFallbackChanged,
+                )
+                state.recommendedError?.let { message ->
+                    Text(message, modifier = Modifier.align(Alignment.BottomCenter)
+                        .background(MaterialTheme.colorScheme.surface).padding(16.dp))
+                }
+            }
         }
     }
 }

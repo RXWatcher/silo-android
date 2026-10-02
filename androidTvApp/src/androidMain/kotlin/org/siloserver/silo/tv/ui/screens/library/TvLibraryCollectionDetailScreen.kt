@@ -44,13 +44,15 @@ fun TvLibraryCollectionDetailScreen(
     collectionId: String,
     title: String,
     libraryType: String,
+    collectionSource: String = "library_collection",
+    mediaScope: String? = null,
     onItemClick: (contentId: String) -> Unit,
     onBack: () -> Unit,
     // Plays the first pick of a shuffle started from the header.
     onShuffleStarted: (org.siloserver.silo.model.shuffle.Shuffle) -> Unit = {},
     viewModel: TvLibraryCollectionDetailViewModel = koinViewModel(
-        key = "library-collection-$libraryId-$collectionId",
-        parameters = { parametersOf(libraryId, collectionId, title) },
+        key = "library-collection-$libraryId-$collectionId-$libraryType-$collectionSource-${mediaScope.orEmpty()}",
+        parameters = { parametersOf(libraryId, collectionId, title, mediaScope, collectionSource) },
     ),
 ) {
     val state by viewModel.uiState.collectAsState()

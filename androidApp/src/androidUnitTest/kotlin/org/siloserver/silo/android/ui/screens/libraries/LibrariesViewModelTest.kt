@@ -111,6 +111,44 @@ class LibrariesViewModelTest {
     }
 
     @Test
+    fun switchingLibraryStopsObsoleteRecommendationPagination() = runTest {
+        assertObsoleteRecommendationStops(switchScope = false)
+    }
+
+    @Test
+    fun switchingScopeStopsObsoleteRecommendationPagination() = runTest {
+        assertObsoleteRecommendationStops(switchScope = true)
+    }
+
+    private suspend fun kotlinx.coroutines.test.TestScope.assertObsoleteRecommendationStops(switchScope: Boolean) {
+        val firstPage = "catalog:1:null:asc:null"
+        val fixture = DeferredLibrariesFixture(setOf(firstPage), firstLibraryType = "mixed", sectionResponse = """
+            {"sections":[{"id":"recent","section_type":"recently_added","title":"Recent","total_count":40,"items":[]}]}
+        """.trimIndent())
+        Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+        val viewModel = fixture.viewModel()
+        val store = ViewModelStore().also { it.put("libraries", viewModel) }
+        try {
+            fixture.awaitRequest(firstPage)
+            val oldRequest = viewModel.onlyActiveRequest()
+            if (switchScope) {
+                viewModel.selectTab(LibrariesSubtab.Browse)
+                viewModel.selectMediaScope("series")
+                viewModel.uiState.first { !it.isLoadingCatalog }
+            } else {
+                viewModel.selectLibrary(2)
+                viewModel.uiState.first { !it.isLoadingSections }
+            }
+            fixture.complete(firstPage, catalogPageBody("old-film", hasMore = true))
+            oldRequest.join()
+            // Unscoped catalog calls belong to the old shelf; the new Browse
+            // requests have a movie/series type. No second shelf page is allowed.
+            assertEquals(1, fixture.catalogQueries.count { it["type"] == null })
+            assertEquals(true, oldRequest.isCancelled)
+        } finally { store.clear(); Dispatchers.resetMain(); fixture.close() }
+    }
+
+    @Test
     fun mixedRecommendationsSwitchTypesAndKeepEpisodeProgress() = runTest {
         val fixture = DeferredLibrariesFixture(emptySet(), firstLibraryType = "mixed", sectionResponse = """
             {"sections":[{"id":"recent","section_type":"recently_added","title":"Recent","total_count":2,"items":[

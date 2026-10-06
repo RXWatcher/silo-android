@@ -157,7 +157,7 @@ class LibrariesViewModelTest {
     @Test
     fun mixedRecommendationsSwitchTypesAndKeepEpisodeProgress() = runTest {
         val fixture = DeferredLibrariesFixture(emptySet(), firstLibraryType = "mixed", sectionResponse = """
-            {"sections":[{"id":"recent","section_type":"recently_added","title":"Recent","total_count":2,"items":[
+            {"sections":[{"id":"recent","section_type":"recently_added","title":"Recent","item_limit":20,"total_count":2,"items":[
             {"content_id":"film","type":"movie","title":"Film"},
             {"content_id":"episode","type":"episode","title":"Episode","series_id":"show","position_seconds":12}]}]}
         """.trimIndent())

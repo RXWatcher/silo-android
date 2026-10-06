@@ -210,7 +210,7 @@ class TvMixedLibraryScopeTest {
 
     @Test fun seriesShelvesKeepEpisodeProgressAndHideMovies() = runTest {
         val episode = org.siloserver.silo.model.section.SectionItem("episode", "episode", "Episode", positionSeconds = 73.0)
-        val row = org.siloserver.silo.model.section.ResolvedSection("continue", "continue_watching", "Continue", totalCount = 2,
+        val row = org.siloserver.silo.model.section.ResolvedSection("continue", "continue_watching", "Continue", itemLimit = 20, totalCount = 2,
             items = listOf(episode, org.siloserver.silo.model.section.SectionItem("film", "movie", "Film")))
         val result = scopeTvLibrarySection(row, "series") {
             ApiResult.Success(org.siloserver.silo.model.catalog.CatalogResponse(items = listOf(

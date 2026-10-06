@@ -37,6 +37,10 @@ class SectionApi(client: HttpClient, private val v2: CatalogV2Api = CatalogV2Api
     suspend fun getLibrarySectionItems(libraryId: Int, sectionId: String, owner: AuthScopeSnapshot): ApiResult<HomeSectionItemsResponse> =
         sectionItems.read(libraryId, sectionId, owner)
 
+    /**
+     * Pages the section's stored admin definition: the server's catalog section source does not apply
+     * profile overrides, so callers must not refill a `customized` or `is_custom` section through it.
+     */
     suspend fun getLibrarySectionCatalogItems(libraryId: Int, sectionId: String,
         owner: AuthScopeSnapshot, continuation: CatalogContinuationV2?): ApiResult<CatalogResponse> {
         if (!sectionItems.current(owner)) return identityChanged()

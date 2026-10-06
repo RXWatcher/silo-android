@@ -16,7 +16,10 @@ fun matchesLibraryMediaScope(type: String, scope: String?): Boolean = when (scop
 
 data class ScopedLibrarySection(val section: ResolvedSection, val incomplete: Boolean = false)
 
-/** Section sources reject type overlays. Page their original order and filter locally. */
+/**
+ * Section sources reject type overlays. Page their original order and filter locally.
+ * Shelves with profile overrides keep their scoped inline slice: a refill would page the admin definition.
+ */
 suspend fun scopeLibrarySection(
     section: ResolvedSection,
     mediaScope: String?,
@@ -27,7 +30,15 @@ suspend fun scopeLibrarySection(
     val target = (section.itemLimit.takeIf { it > 0 } ?: section.items.size.coerceAtLeast(20)).coerceAtMost(100)
     fun result(items: List<SectionItem>, incomplete: Boolean = false) =
         ScopedLibrarySection(section.copy(items = items.take(target), totalCount = items.size.coerceAtMost(target)), incomplete)
-    if (initial.size >= target || section.totalCount <= section.items.size) return result(initial)
+    if (initial.size >= target) return result(initial)
+    // Recently Added/Released report total_count = len(items) after LIMIT item_limit, so the count only
+    // proves "more" when it exceeds the slice. Only an under-filled slice proves the shelf is exhausted.
+    val exhausted = section.totalCount <= section.items.size &&
+        section.itemLimit > 0 && section.items.size < section.itemLimit
+    if (exhausted) return result(initial)
+    // The catalog section source pages the stored admin definition, not the profile-resolved one, so a
+    // customized or profile-added shelf cannot be refilled without dropping the profile's overrides.
+    if (section.customized || section.isCustom) return result(initial, incomplete = true)
 
     val originals = section.items.associateBy { it.contentId }
     val visible = linkedMapOf<String, SectionItem>()

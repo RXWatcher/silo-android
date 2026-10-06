@@ -27,7 +27,9 @@ internal suspend fun scopeTvLibrarySection(
     val target = (section.itemLimit.takeIf { it > 0 } ?: section.items.size.coerceAtLeast(20)).coerceAtMost(100)
     fun result(items: List<SectionItem>, incomplete: Boolean = false) =
         ScopedTvSection(section.copy(items = items.take(target), totalCount = items.size.coerceAtMost(target)), incomplete)
-    if (initial.size >= target || section.totalCount <= section.items.size) return result(initial)
+    // Inline total_count is not an exhaustion signal: several server shelves (e.g. recently added)
+    // report the bounded inline count. Only the catalog continuation can say nothing else remains.
+    if (initial.size >= target) return result(initial)
 
     val originals = section.items.associateBy { it.contentId }
     val visible = linkedMapOf<String, SectionItem>()

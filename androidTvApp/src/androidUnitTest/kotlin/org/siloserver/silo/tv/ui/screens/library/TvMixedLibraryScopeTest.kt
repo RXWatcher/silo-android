@@ -147,8 +147,32 @@ class TvMixedLibraryScopeTest {
         val episode = org.siloserver.silo.model.section.SectionItem("episode", "episode", "Episode", positionSeconds = 73.0)
         val row = org.siloserver.silo.model.section.ResolvedSection("continue", "continue_watching", "Continue", totalCount = 2,
             items = listOf(episode, org.siloserver.silo.model.section.SectionItem("film", "movie", "Film")))
-        val result = scopeTvLibrarySection(row, "series") { error("Complete inline section must not refetch") }
-        assertEquals(listOf(episode), result.section.items)
+        val result = scopeTvLibrarySection(row, "series") {
+            ApiResult.Success(org.siloserver.silo.model.catalog.CatalogResponse(items = listOf(
+                SiloJson.decodeFromString("""{"content_id":"episode","type":"episode","title":"Episode"}"""),
+                SiloJson.decodeFromString("""{"content_id":"film","type":"movie","title":"Film"}"""),
+            )))
+        }
+        assertEquals(listOf(episode), result.section.items, "Inline items keep their richer section payload")
+        assertFalse(result.incomplete)
+    }
+
+    @Test fun boundedInlineCountStillRefillsScopedShelf() = runTest {
+        // Server recently-added shelves report total_count = len(items) after the limit, so 20 inline
+        // movies with total_count 20 says nothing about older series further down the source.
+        val movies = (1..20).map { org.siloserver.silo.model.section.SectionItem("film-$it", "movie", "Film $it") }
+        val row = org.siloserver.silo.model.section.ResolvedSection("recent", "recently_added", "Recent",
+            itemLimit = 20, totalCount = 20, items = movies)
+        var refills = 0
+        val result = scopeTvLibrarySection(row, "series") {
+            refills++
+            // The source continues past the inline window: the same 20 movies, then an older series.
+            val json = movies.map { """{"content_id":"${it.contentId}","type":"movie","title":"${it.title}"}""" } +
+                """{"content_id":"show","type":"series","title":"Show"}"""
+            ApiResult.Success(org.siloserver.silo.model.catalog.CatalogResponse(items = json.map { SiloJson.decodeFromString(it) }))
+        }
+        assertEquals(1, refills, "A short scoped slice must ask the catalog instead of trusting total_count")
+        assertEquals(listOf("show"), result.section.items.map { it.contentId })
         assertFalse(result.incomplete)
     }
 

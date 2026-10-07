@@ -142,6 +142,8 @@ jobs:
 
   release-readiness:
     name: Release readiness
+    env:
+      SILO_CI_PARALLEL_FLAG: --no-parallel
     needs: changes
     if: needs.changes.outputs.release_readiness == 'true'
     runs-on: ${{ inputs.self_hosted && (github.repository == 'Silo-Server/silo-android' && ((github.event_name == 'pull_request' && contains(fromJSON(vars.SILO_CI_MEMBERS || '[]'), github.event.pull_request.user.login)) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main'))) && fromJSON(format('["self-hosted","linux","x64","silo-linux","silo-run-{0}-{1}","silo-job-release-readiness"]', github.run_id, github.run_attempt)) || 'ubuntu-latest' }}
@@ -191,6 +193,7 @@ jobs:
         run: |
           ./gradlew \
             -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" \
+            -Pandroid.r8.maxWorkers=1 \
             :androidApp:bundleRelease :androidTvApp:bundleRelease \
             "${SILO_CI_CACHE_FLAG}" "${SILO_CI_PARALLEL_FLAG}" "${SILO_CI_CONFIGURATION_FLAG}" \
             --max-workers=2
@@ -199,6 +202,8 @@ jobs:
 
   unit-tests:
     name: Unit tests
+    env:
+      SILO_CI_PARALLEL_FLAG: --parallel
     needs: changes
     if: needs.changes.outputs.unit_tests == 'true'
     runs-on: ${{ inputs.self_hosted && (github.repository == 'Silo-Server/silo-android' && ((github.event_name == 'pull_request' && contains(fromJSON(vars.SILO_CI_MEMBERS || '[]'), github.event.pull_request.user.login)) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main'))) && fromJSON(format('["self-hosted","linux","x64","silo-linux","silo-run-{0}-{1}","silo-job-unit-tests"]', github.run_id, github.run_attempt)) || 'ubuntu-latest' }}

@@ -940,8 +940,11 @@ fun LibrariesScreen(
     val selectedLibrary = state.libraries.firstOrNull { it.id == state.selectedLibraryId }
     // Movie, TV, and mixed libraries shuffle from the Browse tab when the
     // server offers it.
+    // A Movies- or Series-scoped mixed library offers no shuffle: a shuffle
+    // request carries no media type, so it would draw from both.
     val onShuffle = selectedLibrary
         ?.takeIf { state.selectedTab == LibrariesSubtab.Browse }
+        ?.takeIf { state.mediaScope == null }
         ?.takeIf { org.siloserver.silo.model.shuffle.isShuffleLibraryType(it.type) }
         ?.takeIf { shuffleLauncher?.supports(org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY) == true }
         ?.let { library ->

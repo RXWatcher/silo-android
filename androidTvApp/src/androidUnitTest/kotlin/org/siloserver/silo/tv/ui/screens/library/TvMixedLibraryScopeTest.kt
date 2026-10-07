@@ -143,6 +143,52 @@ class TvMixedLibraryScopeTest {
         } finally { store.clear(); client.close(); Dispatchers.resetMain() }
     }
 
+    @Test fun retryCancelsTheSupersededRefillChain() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        val owner = AuthScopeSnapshot("server", "profile", "https://example.invalid", "pin", identityGeneration = 1)
+        val tokens = object : TokenManager by TokenManagerImpl() {
+            override suspend fun snapshotCurrentScope() = owner
+        }
+        val firstPageHeld = CompletableDeferred<Unit>()
+        val cursors = mutableListOf<String?>()
+        val client = HttpClient(MockEngine(MockEngineConfig().apply {
+            this.dispatcher = dispatcher
+            addHandler { request ->
+                val body = when {
+                    request.url.encodedPath.endsWith("/sections") -> """{"sections":[{"id":"recent","title":"Recent","section_type":"recently_added","item_limit":1,"total_count":2,"items":[{"content_id":"film","type":"movie","title":"Film"}]}]}"""
+                    request.url.encodedPath.endsWith("/filters") -> """{"genres":[],"studios":[],"networks":[],"countries":[],"original_languages":[],"content_ratings":[],"authors":[],"narrators":[],"series":[]}"""
+                    else -> {
+                        val cursor = request.url.parameters["cursor"]; cursors += cursor
+                        // The first load's first page stays in flight until after the retry.
+                        if (cursors.size == 1) firstPageHeld.await()
+                        if (cursor == null) page("film", "movie", "next") else page("show", "series")
+                    }
+                }
+                respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+            }
+        })) { install(ContentNegotiation) { json(SiloJson) } }
+        val store = ViewModelStore()
+        try {
+            val sections = SectionRepository(SectionApi(client, sectionItems = LibrarySectionItemsV2Api(client, tokens, ApiV2Gate.Unrestricted)))
+            val vm = TvLibraryDetailViewModel(sections, CatalogRepository(CatalogApi(client)), 7, "Anime", "mixed", "series")
+            store.put("series", vm)
+            runCurrent()
+            assertEquals(listOf<String?>(null), cursors)
+            vm.retryRecommended()
+            firstPageHeld.complete(Unit)
+            advanceUntilIdle()
+            // Only the retry pages on; the superseded load never asks for "next".
+            assertEquals(listOf(null, null, "next"), cursors)
+            assertEquals(listOf("show"), vm.uiState.value.sections.single().items.map { it.contentId })
+        } finally { store.clear(); client.close(); Dispatchers.resetMain() }
+    }
+
+    @Test fun personalCollectionsShuffleInTheUserCollectionScope() {
+        assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION, collectionShuffleKind("user_collection"))
+        assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION, collectionShuffleKind("library_collection"))
+    }
+
     @Test fun seriesShelvesKeepEpisodeProgressAndHideMovies() = runTest {
         val episode = org.siloserver.silo.model.section.SectionItem("episode", "episode", "Episode", positionSeconds = 73.0)
         val row = org.siloserver.silo.model.section.ResolvedSection("continue", "continue_watching", "Continue", totalCount = 2,

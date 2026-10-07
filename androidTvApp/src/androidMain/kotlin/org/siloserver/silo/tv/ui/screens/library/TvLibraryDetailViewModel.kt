@@ -16,7 +16,9 @@ import org.siloserver.silo.repository.SectionRepository
 import org.siloserver.silo.tv.ui.util.tvCatalogMediaTypeFor
 import org.siloserver.silo.tv.ui.util.visibleOnTv
 import kotlinx.coroutines.async
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -402,11 +404,15 @@ class TvLibraryDetailViewModel(
     }
 
     private var recommendedGeneration = 0L
+    private var recommendedJob: Job? = null
 
     private fun loadRecommended() {
         val run = ++recommendedGeneration
         loadedRecommended = true
-        viewModelScope.launch {
+        // A retry supersedes the running load; cancel it so its refill
+        // cursor chains stop instead of paging until the final publish check.
+        recommendedJob?.cancel()
+        recommendedJob = viewModelScope.launch {
             _uiState.update { it.copy(recommendedLoading = true, recommendedError = null) }
 
             val owner = sectionRepository.captureLibrarySectionAuthority()
@@ -488,6 +494,8 @@ class TvLibraryDetailViewModel(
                 async {
                     refillPermits.withPermit {
                         scopeTvLibrarySection(section, mediaScope) { cursor ->
+                            // Each page request also rechecks the auth identity.
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             sectionRepository.getLibrarySectionCatalogItems(libraryId, section.id, owner, cursor)
                         }
                     }

@@ -35,6 +35,15 @@ import org.siloserver.silo.tv.ui.theme.tvPresetGridColumns
 import org.koin.compose.viewmodel.koinViewModel
 import org.koin.core.parameter.parametersOf
 
+/**
+ * A mixed library opens personal collections here too, so the shuffle scope
+ * follows the collection's source: a personal collection id means nothing to
+ * the library-collection namespace.
+ */
+internal fun collectionShuffleKind(collectionSource: String): org.siloserver.silo.model.shuffle.ShuffleScopeKind =
+    if (collectionSource == "user_collection") org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION
+    else org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION
+
 /** Which overlay panel is open over the collection grid (mirrors Browse). */
 private enum class TvCollectionPanel { Sort, Filter }
 
@@ -60,15 +69,13 @@ fun TvLibraryCollectionDetailScreen(
         org.koin.compose.koinInject(),
         onShuffleStarted,
     )
+    val shuffleKind = collectionShuffleKind(collectionSource)
     val onShuffle = if (
         state.items.isNotEmpty() &&
-        shuffleLauncher.supports(org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION)
+        shuffleLauncher.supports(shuffleKind)
     ) {
         {
-            shuffleLauncher.start(
-                org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION,
-                collectionId,
-            )
+            shuffleLauncher.start(shuffleKind, collectionId)
         }
     } else {
         null

@@ -419,6 +419,8 @@ class TvVideoPlaybackStarter(
                 chapters = effectiveVersion?.chapters.orEmpty(),
                 seriesId = watchDetail.seriesId,
                 seriesTitle = watchDetail.seriesTitle,
+                year = watchDetail.year,
+                contentType = watchDetail.type,
                 seasonNumber = watchDetail.seasonNumber,
                 episodeNumber = watchDetail.episodeNumber,
                 resolvedEpisodeSelection = resolvedEpisodeSelection,

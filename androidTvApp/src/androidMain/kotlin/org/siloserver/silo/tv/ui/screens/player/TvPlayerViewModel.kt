@@ -997,6 +997,8 @@ class TvPlayerViewModel(
         val serverUnreachable: Boolean = false,
         val title: String = "",
         val seriesTitle: String? = null,
+        val year: Int? = null,
+        val contentType: String? = null,
         /**
          * Artwork URL for Now Playing lock-screen / Bluetooth / Wear surfaces.
          * Sourced from `WatchDetail.posterUrl` with `backdropUrl` fallback.
@@ -2302,6 +2304,8 @@ class TvPlayerViewModel(
                                 contentId = contentId,
                                 title = result.title,
                                 seriesTitle = result.seriesTitle,
+                                year = result.year,
+                                contentType = result.contentType,
                                 artworkUrl = result.artworkUrl,
                                 sessionId = result.sessionId,
                                 playMethod = result.playMethod,

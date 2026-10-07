@@ -30,6 +30,9 @@ internal suspend fun scopeTvLibrarySection(
     // Inline total_count is not an exhaustion signal: several server shelves (e.g. recently added)
     // report the bounded inline count. Only the catalog continuation can say nothing else remains.
     if (initial.size >= target) return result(initial)
+    // The catalog section source pages the stored admin definition, not the profile-resolved one, so a
+    // customized or profile-added shelf cannot be refilled without dropping the profile's overrides.
+    if (section.customized || section.isCustom) return result(initial, incomplete = true)
 
     val originals = section.items.associateBy { it.contentId }
     val visible = linkedMapOf<String, SectionItem>()

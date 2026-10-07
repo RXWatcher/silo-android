@@ -184,6 +184,19 @@ class TvMixedLibraryScopeTest {
         } finally { store.clear(); client.close(); Dispatchers.resetMain() }
     }
 
+    @Test fun profileCustomizedShelvesNeverRefillFromTheStoredDefinition() = runTest {
+        val film = org.siloserver.silo.model.section.SectionItem("film", "movie", "Film")
+        for (row in listOf(
+            org.siloserver.silo.model.section.ResolvedSection("random", "random", "Random", itemLimit = 1, totalCount = 21, customized = true, items = listOf(film)),
+            org.siloserver.silo.model.section.ResolvedSection("mine", "random", "Mine", itemLimit = 1, totalCount = 21, isCustom = true, items = listOf(film)),
+        )) {
+            // The refill would page the admin's unfiltered definition, not the profile's override.
+            val result = scopeTvLibrarySection(row, "series") { error("Customized shelf must not refill") }
+            assertEquals(emptyList(), result.section.items)
+            assertTrue(result.incomplete)
+        }
+    }
+
     @Test fun personalCollectionsShuffleInTheUserCollectionScope() {
         assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION, collectionShuffleKind("user_collection", null))
         assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION, collectionShuffleKind("library_collection", null))

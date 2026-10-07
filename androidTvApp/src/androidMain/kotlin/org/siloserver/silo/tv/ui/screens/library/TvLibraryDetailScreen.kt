@@ -128,8 +128,11 @@ fun TvLibraryDetailScreen(
         org.koin.compose.koinInject(),
         onShuffleStarted,
     )
-    // Movie, TV, and mixed libraries shuffle when the server offers it.
+    // Movie, TV, and mixed libraries shuffle when the server offers it. A
+    // Movies- or Series-scoped view of a mixed library does not: a shuffle
+    // request carries no media type, so it would draw from both.
     val onShuffleLibrary = if (
+        mediaScope == null &&
         org.siloserver.silo.model.shuffle.isShuffleLibraryType(libraryType) &&
         shuffleLauncher.supports(org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY)
     ) {

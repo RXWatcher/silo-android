@@ -157,6 +157,13 @@ fun ProfileSelectionScreen(
     DisposableEffect(Unit) { onDispose { MarqueeScene.personalTint = null } }
 
     // Navigate after a profile is selected.
+    LaunchedEffect(state.openAddProfile) {
+        if (state.openAddProfile) {
+            viewModel.onAddProfileConsumed()
+            onNavigateToCreateProfile()
+        }
+    }
+
     LaunchedEffect(state.selectedProfileId) {
         if (state.selectedProfileId != null) {
             viewModel.onProfileSelectedConsumed()
@@ -234,7 +241,7 @@ fun ProfileSelectionScreen(
                     if (state.isManageMode) onNavigateToEditProfile(profile.id) else viewModel.onProfileTapped(profile)
                 },
                 onProfileDelete = viewModel::requestDeleteProfile,
-                onAddProfile = onNavigateToCreateProfile,
+                onAddProfile = viewModel::requestAddProfile,
                 onChangeServer = onChangeServer,
                 onSignOut = onSignOut,
                 onToggleManage = viewModel::toggleManageMode,
@@ -254,6 +261,7 @@ fun ProfileSelectionScreen(
                     errorCount = state.pinErrorCount,
                     onPinComplete = viewModel::onPinEntered,
                     onDismiss = viewModel::dismissPinDialog,
+                    prompt = if (state.pinForManagement) "Enter this PIN to manage profiles" else "Enter your PIN",
                 )
             }
         }

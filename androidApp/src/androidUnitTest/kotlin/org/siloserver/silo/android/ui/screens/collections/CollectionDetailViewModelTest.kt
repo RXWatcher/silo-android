@@ -75,6 +75,8 @@ class CollectionDetailViewModelTest {
         assertEquals("User Picks", viewModel.uiState.value.title)
         assertEquals(2, viewModel.uiState.value.total)
         assertFalse(viewModel.uiState.value.canManage)
+        // A shuffle request can't carry the Series scope, so it is not offered.
+        assertEquals(null, viewModel.shuffleScopeKind)
 
         viewModel.loadMore()
         awaitState(viewModel) { !it.isLoadingMore }
@@ -129,6 +131,7 @@ class CollectionDetailViewModelTest {
         assertEquals(1, viewModel.uiState.value.total)
         assertFalse(viewModel.uiState.value.canManage)
         assertEquals("library_collection", requests.single { it.path == "/api/v2/catalog" }.parameters["source"])
+        assertEquals(null, viewModel.shuffleScopeKind)
     }
 
     @Test
@@ -156,6 +159,7 @@ class CollectionDetailViewModelTest {
         assertEquals("Personal Picks", viewModel.uiState.value.title)
         assertTrue(viewModel.uiState.value.canManage)
         assertEquals("user_collection", requests.single { it.path == "/api/v2/catalog" }.parameters["source"])
+        assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION, viewModel.shuffleScopeKind)
     }
 
     private fun runCollectionTest(block: suspend (MutableList<CapturedRequest>) -> Unit) = runTest {

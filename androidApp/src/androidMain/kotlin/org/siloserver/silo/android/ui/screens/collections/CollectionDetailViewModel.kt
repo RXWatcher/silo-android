@@ -55,9 +55,15 @@ class CollectionDetailViewModel(
     private val isLibraryUserCollection: Boolean
         get() = libraryId != null && collectionSource == "user_collection"
 
-    /** The shuffle scope this collection is: a library's server collection or a user collection. */
-    val shuffleScopeKind: org.siloserver.silo.model.shuffle.ShuffleScopeKind
-        get() = if (libraryId != null && !isLibraryUserCollection) {
+    /**
+     * The shuffle scope this collection is: a library's server collection or a
+     * user collection. Null in a Movies- or Series-scoped view: a shuffle
+     * request carries no media type or library, so it would draw from both.
+     */
+    val shuffleScopeKind: org.siloserver.silo.model.shuffle.ShuffleScopeKind?
+        get() = if (mediaScope != null) {
+            null
+        } else if (libraryId != null && !isLibraryUserCollection) {
             org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION
         } else {
             org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION

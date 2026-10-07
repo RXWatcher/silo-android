@@ -78,7 +78,7 @@ fun CollectionDetailScreen(
                 title = state.title,
                 onBackClick = onBackClick,
                 actions = {
-                    if (state.items.isNotEmpty() && shuffleLauncher.supports(shuffleKind)) {
+                    if (shuffleKind != null && state.items.isNotEmpty() && shuffleLauncher.supports(shuffleKind)) {
                         IconButton(
                             onClick = { shuffleLauncher.start(shuffleKind, collectionId) },
                             enabled = !shuffleLauncher.isStarting,

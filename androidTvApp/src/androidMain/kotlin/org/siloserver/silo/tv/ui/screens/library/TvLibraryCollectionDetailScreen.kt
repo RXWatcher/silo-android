@@ -38,11 +38,18 @@ import org.koin.core.parameter.parametersOf
 /**
  * A mixed library opens personal collections here too, so the shuffle scope
  * follows the collection's source: a personal collection id means nothing to
- * the library-collection namespace.
+ * the library-collection namespace. A Movies- or Series-scoped view offers no
+ * shuffle, since a shuffle request carries no media type or library and would
+ * draw from the whole collection.
  */
-internal fun collectionShuffleKind(collectionSource: String): org.siloserver.silo.model.shuffle.ShuffleScopeKind =
-    if (collectionSource == "user_collection") org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION
-    else org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION
+internal fun collectionShuffleKind(
+    collectionSource: String,
+    mediaScope: String?,
+): org.siloserver.silo.model.shuffle.ShuffleScopeKind? = when {
+    mediaScope != null -> null
+    collectionSource == "user_collection" -> org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION
+    else -> org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION
+}
 
 /** Which overlay panel is open over the collection grid (mirrors Browse). */
 private enum class TvCollectionPanel { Sort, Filter }
@@ -69,8 +76,9 @@ fun TvLibraryCollectionDetailScreen(
         org.koin.compose.koinInject(),
         onShuffleStarted,
     )
-    val shuffleKind = collectionShuffleKind(collectionSource)
+    val shuffleKind = collectionShuffleKind(collectionSource, mediaScope)
     val onShuffle = if (
+        shuffleKind != null &&
         state.items.isNotEmpty() &&
         shuffleLauncher.supports(shuffleKind)
     ) {

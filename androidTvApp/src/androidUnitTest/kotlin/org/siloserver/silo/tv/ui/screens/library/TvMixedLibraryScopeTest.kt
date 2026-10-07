@@ -185,8 +185,14 @@ class TvMixedLibraryScopeTest {
     }
 
     @Test fun personalCollectionsShuffleInTheUserCollectionScope() {
-        assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION, collectionShuffleKind("user_collection"))
-        assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION, collectionShuffleKind("library_collection"))
+        assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.USER_COLLECTION, collectionShuffleKind("user_collection", null))
+        assertEquals(org.siloserver.silo.model.shuffle.ShuffleScopeKind.LIBRARY_COLLECTION, collectionShuffleKind("library_collection", null))
+    }
+
+    @Test fun scopedCollectionViewsOfferNoShuffle() {
+        // A shuffle request can't carry the Movies/Series scope, so it would draw from both.
+        assertNull(collectionShuffleKind("user_collection", "series"))
+        assertNull(collectionShuffleKind("library_collection", "movie"))
     }
 
     @Test fun seriesShelvesKeepEpisodeProgressAndHideMovies() = runTest {

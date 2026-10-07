@@ -196,6 +196,8 @@ fun TvMainShell(
         collectionId: String,
         title: String,
         libraryType: String,
+        collectionSource: String,
+        mediaScope: String?,
     ) -> Unit,
     onOpenCollectionDetail: (collectionId: String, title: String) -> Unit,
     onSignedOut: () -> Unit,
@@ -492,8 +494,13 @@ fun TvMainShell(
         { libraryId, collectionId, title, libraryType ->
             restoreContentAfterDetail = true
             detailReturnRoot = null
-            onOpenLibraryCollectionDetail(libraryId, collectionId, title, libraryType)
+            onOpenLibraryCollectionDetail(libraryId, collectionId, title, libraryType, "library_collection", null)
         }
+    val openScopedCollection: (Int, String, String, String, Boolean) -> Unit = { libraryId, id, title, scope, isUser ->
+        restoreContentAfterDetail = true
+        detailReturnRoot = null
+        onOpenLibraryCollectionDetail(libraryId, id, title, "mixed", if (isUser) "user_collection" else "library_collection", scope)
+    }
     val openCollectionDetail: (String, String) -> Unit = { collectionId, title ->
         restoreContentAfterDetail = true
         detailReturnRoot = null
@@ -1262,6 +1269,7 @@ fun TvMainShell(
                 shellComposable(TvMainRoute.Movies.route) {
                     TvLibraryTypeContent(
                         type = TvLibraryTabType.Movies,
+                        onScopedCollectionClick = openScopedCollection,
                         library = activeLibrary(TvLibraryTabType.Movies),
                         emptyConfirmed = librariesLoaded && libraries.none { TvLibraryTabType.Movies.matches(it) },
                         selectedPill = pillSelections[TvLibraryTabType.Movies] ?: TvLibraryPill.Recommended,
@@ -1279,6 +1287,7 @@ fun TvMainShell(
                 shellComposable(TvMainRoute.Series.route) {
                     TvLibraryTypeContent(
                         type = TvLibraryTabType.Series,
+                        onScopedCollectionClick = openScopedCollection,
                         library = activeLibrary(TvLibraryTabType.Series),
                         emptyConfirmed = librariesLoaded && libraries.none { TvLibraryTabType.Series.matches(it) },
                         selectedPill = pillSelections[TvLibraryTabType.Series] ?: TvLibraryPill.Recommended,
@@ -1296,6 +1305,7 @@ fun TvMainShell(
                 shellComposable(TvMainRoute.Music.route) {
                     TvLibraryTypeContent(
                         type = TvLibraryTabType.Music,
+                        onScopedCollectionClick = openScopedCollection,
                         library = activeLibrary(TvLibraryTabType.Music),
                         emptyConfirmed = librariesLoaded && libraries.none { TvLibraryTabType.Music.matches(it) },
                         selectedPill = pillSelections[TvLibraryTabType.Music] ?: TvLibraryPill.Recommended,
@@ -1313,6 +1323,7 @@ fun TvMainShell(
                 shellComposable(TvMainRoute.Audiobooks.route) {
                     TvLibraryTypeContent(
                         type = TvLibraryTabType.Audiobooks,
+                        onScopedCollectionClick = openScopedCollection,
                         library = activeLibrary(TvLibraryTabType.Audiobooks),
                         emptyConfirmed = librariesLoaded && libraries.none { TvLibraryTabType.Audiobooks.matches(it) },
                         selectedPill = pillSelections[TvLibraryTabType.Audiobooks] ?: TvLibraryPill.Recommended,
@@ -1707,6 +1718,7 @@ fun TvMainShell(
 @Composable
 private fun TvLibraryTypeContent(
     type: TvLibraryTabType,
+    onScopedCollectionClick: (Int, String, String, String, Boolean) -> Unit,
     library: UserLibrary?,
     emptyConfirmed: Boolean,
     selectedPill: TvLibraryPill,
@@ -1753,9 +1765,13 @@ private fun TvLibraryTypeContent(
             libraryId = library.id,
             libraryTitle = library.name,
             libraryType = library.type,
+            mediaScope = type.mediaScope(library),
             onItemClick = onItemClick,
             onCollectionClick = { collectionId, title, isUserCollection ->
-                if (isUserCollection) {
+                val scope = type.mediaScope(library)
+                if (scope != null) {
+                    onScopedCollectionClick(library.id, collectionId, title, scope, isUserCollection)
+                } else if (isUserCollection) {
                     onUserCollectionClick(collectionId, title)
                 } else {
                     onLibraryCollectionClick(library.id, collectionId, title, library.type)

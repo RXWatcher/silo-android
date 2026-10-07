@@ -16,13 +16,17 @@ import org.siloserver.silo.repository.SectionRepository
 import org.siloserver.silo.tv.ui.util.tvCatalogMediaTypeFor
 import org.siloserver.silo.tv.ui.util.visibleOnTv
 import kotlinx.coroutines.async
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 /**
  * Library content sections committed by the Skyline cascade. The extra browse
@@ -158,6 +162,7 @@ class TvLibraryDetailViewModel(
     private val libraryId: Int,
     private val libraryTitle: String,
     private val libraryType: String,
+    private val mediaScope: String? = null,
 ) : ViewModel() {
 
     data class UiState(
@@ -399,11 +404,15 @@ class TvLibraryDetailViewModel(
     }
 
     private var recommendedGeneration = 0L
+    private var recommendedJob: Job? = null
 
     private fun loadRecommended() {
         val run = ++recommendedGeneration
         loadedRecommended = true
-        viewModelScope.launch {
+        // A retry supersedes the running load; cancel it so its refill
+        // cursor chains stop instead of paging until the final publish check.
+        recommendedJob?.cancel()
+        recommendedJob = viewModelScope.launch {
             _uiState.update { it.copy(recommendedLoading = true, recommendedError = null) }
 
             val owner = sectionRepository.captureLibrarySectionAuthority()
@@ -479,12 +488,26 @@ class TvLibraryDetailViewModel(
                 sections.map { section -> resolvedById[section.id] ?: section }
             }
 
+            // Independent shelves can overlap, but keep each cursor chain sequential.
+            val refillPermits = Semaphore(3)
+            val scoped = resolved.filterNot { it.featured }.map { section ->
+                async {
+                    refillPermits.withPermit {
+                        scopeTvLibrarySection(section, mediaScope) { cursor ->
+                            // Each page request also rechecks the auth identity.
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                            sectionRepository.getLibrarySectionCatalogItems(libraryId, section.id, owner, cursor)
+                        }
+                    }
+                }
+            }.awaitAll()
             if (!mayPublish()) return@launch
             _uiState.update {
                 it.copy(
-                    sections = resolved.visibleOnTv(),
+                    sections = scoped.map { it.section }.visibleOnTv(),
                     recommendedLoading = false,
-                    recommendedError = null,
+                    recommendedError = if (scoped.any { it.incomplete })
+                        "Some shelves could not be fully loaded for this media type. Retry or open Browse." else null,
                 )
             }
         }
@@ -547,7 +570,7 @@ class TvLibraryDetailViewModel(
             val facetGroups = filter.facetSelection.toQueryGroups()
             val result = catalogRepository.browse(
                 source = "query",
-                mediaType = mediaTypeFor(libraryType),
+                mediaType = mediaScope ?: mediaTypeFor(libraryType),
                 libraryId = libraryId,
                 genre = filter.genre,
                 sort = filter.sort,

@@ -22,6 +22,11 @@ import org.siloserver.silo.android.cast.GOOGLE_CAST_LEGACY_SEEK_INTERVALS
 import org.siloserver.silo.android.ui.screens.auth.DevicePairingWrongServerScreen
 import org.siloserver.silo.android.ui.screens.auth.DevicePairingUnknownServerScreen
 import androidx.compose.runtime.collectAsState
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import org.siloserver.silo.android.ui.components.LoadingIndicator
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -181,11 +186,25 @@ fun AppNavigation(
     val seekIntervalStore: org.siloserver.silo.common.settings.SeekIntervalStore = koinInject()
     val titleArtStore: TitleArtStore = koinInject()
     val signOutTeardown: org.siloserver.silo.android.auth.SignOutTeardown = koinInject()
+    val profileSwitchTeardown: org.siloserver.silo.android.auth.ProfileSwitchTeardown = koinInject()
     val siloCastController: SiloCastController = koinInject()
     // Lives as long as the nav host, so work started from a destination that is
     // popped in the same gesture (re-hydrating after a profile switch) is not
     // cancelled with that destination's own scope.
     val navScope = rememberCoroutineScope()
+    val profileSwitching by profileSwitchTeardown.switching.collectAsState()
+    // Both "Switch Profile" entry points (profile menu, Settings) run here, so
+    // leaving a tab while settings are pushed cannot cancel the switch; the
+    // teardown ignores a repeat request while one is in flight.
+    val switchProfile: () -> Unit = remember(navController, profileSwitchTeardown) {
+        {
+            navScope.launch {
+                profileSwitchTeardown.switchProfile {
+                    navController.navigate(Route.ProfileSelection.route)
+                }
+            }
+        }
+    }
     val diagnosticsViewModel = koinViewModel<DiagnosticsViewModel>()
     val diagnosticsState by diagnosticsViewModel.state.collectAsState()
     var activePlayerTargetProvider by remember {
@@ -390,6 +409,7 @@ fun AppNavigation(
     CompositionLocalProvider(
         LocalSharedTransitionScope provides this,
         LocalHeroSourceHandoff provides heroSourceHandoff,
+        LocalProfileSwitch provides switchProfile,
     ) {
     Box(modifier = Modifier.fillMaxSize()) {
     // The first-run screens draw over one shared brand-light backdrop that
@@ -951,16 +971,9 @@ fun AppNavigation(
                 onPairDevice = {
                     navController.navigate(Route.PairDevice().route)
                 },
-                onSwitchProfile = {
-                    // Leave the shell first, then drop the per-profile caches
-                    // (see the profile-menu path in MainScreen).
-                    navController.navigate(Route.ProfileSelection.route)
-                    overlayPrefsStore.clear()
-                    activeProfileStore.reset()
-                    cardPresentationStore.clear()
-                    seekIntervalStore.clear()
-                    titleArtStore.clear()
-                },
+                // Same switch as the profile menu: push pending settings,
+                // leave the shell, then drop the per-profile caches.
+                onSwitchProfile = switchProfile,
                 onNavigateToWatchlist = { navController.navigate(Route.Watchlist.route) },
                 onNavigateToFavorites = { navController.navigate(Route.Favorites.route) },
                 onNavigateToHistory = { navController.navigate(Route.History.route) },
@@ -1689,6 +1702,26 @@ fun AppNavigation(
             enabled = currentRoute != null && currentRoute !in companionHiddenRoutes,
         )
         org.siloserver.silo.android.ui.screens.profiles.HouseholdReverifyHost()
+
+        // While a profile switch pushes pending settings (bounded at a few
+        // seconds), show that it is under way and take input, so nothing else
+        // can be opened over a switch that is about to leave the shell.
+        if (profileSwitching) {
+            // System Back too: composed after the NavHost, this handler wins, so
+            // Back can neither pop the screen under the switch nor close the
+            // app and cancel it.
+            BackHandler {}
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
+                    },
+            ) {
+                LoadingIndicator()
+            }
+        }
     }
     }
     }

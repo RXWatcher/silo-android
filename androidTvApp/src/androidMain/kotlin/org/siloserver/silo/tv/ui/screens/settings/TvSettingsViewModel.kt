@@ -124,7 +124,7 @@ class TvSettingsViewModel(
         val dolbyVisionEnabled: Boolean = true,
         val showAudiobooksTab: Boolean = false,
         val subtitleMatchesDevice: Boolean = false,
-        val dvProfile7HDR10Fallback: Boolean = true,
+        val dvProfile7HDR10Fallback: Boolean = false,
         val forceHdrPassthrough: Boolean = false,
         val trueBlackBars: Boolean = false,
         val autoSkipCredits: Boolean = false,

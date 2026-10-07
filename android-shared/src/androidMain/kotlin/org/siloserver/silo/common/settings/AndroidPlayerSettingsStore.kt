@@ -14,6 +14,7 @@ import org.siloserver.silo.model.download.DownloadQuality
 import org.siloserver.silo.model.settings.EffectiveSettingValue
 import org.siloserver.silo.model.settings.LanguageOptions
 import org.siloserver.silo.model.settings.PlaybackSettingsKeys
+import org.siloserver.silo.model.settings.PlaybackSpeedRange
 import org.siloserver.silo.model.settings.QualityPresets
 import org.siloserver.silo.model.settings.SettingKeys
 import org.siloserver.silo.model.settings.SettingScope
@@ -263,8 +264,12 @@ class AndroidPlayerSettingsStore(
     override val hdrEnabledFlow: Flow<Boolean> =
         profileScopedFlow(true) { p, s -> p.boolFor(s, PlaybackSettingsKeys.HdrEnabled, true) }
 
+    // Off until the server says otherwise: the contract default is false, so
+    // defaulting on here sent Profile 7 sources down the HDR10 path before the
+    // first refresh (or offline) when the server would have played them as
+    // Dolby Vision.
     override val dvProfile7HDR10FallbackFlow: Flow<Boolean> =
-        profileScopedFlow(true) { p, s -> p.boolFor(s, PlaybackSettingsKeys.DvProfile7HDR10Fallback, true) }
+        profileScopedFlow(false) { p, s -> p.boolFor(s, PlaybackSettingsKeys.DvProfile7HDR10Fallback, false) }
 
     override val dolbyVisionEnabledFlow: Flow<Boolean> =
         profileScopedFlow(true) { p, s -> p.boolFor(s, PlaybackSettingsKeys.DolbyVisionEnabled, true) }
@@ -312,7 +317,10 @@ class AndroidPlayerSettingsStore(
     // ---- Doubles -------------------------------------------------------
     override val playbackSpeedFlow: Flow<Double> =
         profileScopedFlow(1.0) { p, s ->
-            p.stringFor(s, PlaybackSettingsKeys.PlaybackSpeed, "1.0").toDoubleOrNull() ?: 1.0
+            // Normalized on read too, so a value an older build stored outside
+            // the contract range (up to 4.0) is not played back as is.
+            p.stringFor(s, PlaybackSettingsKeys.PlaybackSpeed, "1.0").toDoubleOrNull()
+                ?.let(PlaybackSpeedRange::normalize) ?: 1.0
         }
 
     // ---- Ints ----------------------------------------------------------
@@ -478,7 +486,9 @@ class AndroidPlayerSettingsStore(
         writeStringLocal(PlaybackSettingsKeys.DefaultDownloadQuality, DownloadQuality.fromWire(value).wire)
 
     override suspend fun setPlaybackSpeed(value: Double) {
-        val clamped = value.coerceIn(0.25, 4.0)
+        // The server refuses a speed outside the contract range or off its
+        // step, and the flusher then drops the write for good.
+        val clamped = PlaybackSpeedRange.normalize(value)
         withScope { scope, store ->
             store.edit { it[stringPreferencesKey(scope.keyPrefix + PlaybackSettingsKeys.PlaybackSpeed)] = clamped.toString() }
             serverSettingsFlusher.enqueue(

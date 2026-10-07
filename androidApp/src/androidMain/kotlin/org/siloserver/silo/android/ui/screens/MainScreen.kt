@@ -34,7 +34,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
-import org.siloserver.silo.model.profile.ActiveProfileStore
 import org.siloserver.silo.android.ui.components.MainAppHeaderBodyHeight
 import org.siloserver.silo.android.ui.components.MainAppTopBar
 import org.siloserver.silo.android.ui.components.TabTopBarActions
@@ -76,8 +75,6 @@ import org.siloserver.silo.model.feature.MetadataAiFeatureStore
 import org.siloserver.silo.model.feature.RequestsFeatureStore
 import org.siloserver.silo.common.network.ServerReachabilityMonitor
 import org.siloserver.silo.common.network.ServerReachabilityStatus
-import org.siloserver.silo.common.settings.CardPresentationStore
-import org.siloserver.silo.common.settings.OverlayPrefsStore
 import org.siloserver.silo.android.ui.theme.siloPageBackdrop
 import org.siloserver.silo.network.ApiResult
 import org.siloserver.silo.network.ServerRegistry
@@ -164,12 +161,8 @@ fun MainScreen(
     val requestsFeatureStore: RequestsFeatureStore = koinInject()
     val metadataAiFeatureStore: MetadataAiFeatureStore = koinInject()
     val shuffleFeatureStore: org.siloserver.silo.model.feature.ShuffleFeatureStore = koinInject()
-    val overlayPrefsStore: OverlayPrefsStore = koinInject()
-    val activeProfileStore: ActiveProfileStore = koinInject()
-    val cardPresentationStore: CardPresentationStore = koinInject()
-    val seekIntervalStore: org.siloserver.silo.common.settings.SeekIntervalStore = koinInject()
-    val titleArtStore: org.siloserver.silo.common.settings.TitleArtStore = koinInject()
     val signOutTeardown: org.siloserver.silo.android.auth.SignOutTeardown = koinInject()
+    val switchProfile = org.siloserver.silo.android.ui.navigation.LocalProfileSwitch.current
     val reachabilityState by reachabilityMonitor.state.collectAsState()
     val requestsEnabled by requestsFeatureStore.isEnabled.collectAsState()
     val reachabilityScope = rememberCoroutineScope()
@@ -303,21 +296,12 @@ fun MainScreen(
     }
 
     /**
-     * Profile-menu "Switch Profile". Overlays and card presentation are cached
-     * per profile and the app never backgrounds during an in-app switch, so
-     * drop them here or the next profile keeps rendering — and writing back —
-     * the previous one's values. Navigate first: clearing while the shell is
-     * still composed repaints it with default cards behind the picker (the
-     * TV shell's switch-profile path takes the same order).
+     * Profile-menu "Switch Profile": pushes pending settings while this
+     * profile is still active, then leaves the shell and drops the per-profile
+     * caches (see [org.siloserver.silo.android.auth.ProfileSwitchTeardown]).
+     * Runs in the navigation host's scope ([org.siloserver.silo.android.ui.navigation.LocalProfileSwitch]).
      */
-    fun switchProfileFromMenu() {
-        navController.navigate(Route.ProfileSelection.route)
-        overlayPrefsStore.clear()
-        activeProfileStore.reset()
-        cardPresentationStore.clear()
-        seekIntervalStore.clear()
-        titleArtStore.clear()
-    }
+    fun switchProfileFromMenu() = switchProfile()
     val requestsMenuAction: (() -> Unit)? = if (requestsEnabled) {
         { navController.navigate(Route.Requests.route) }
     } else {

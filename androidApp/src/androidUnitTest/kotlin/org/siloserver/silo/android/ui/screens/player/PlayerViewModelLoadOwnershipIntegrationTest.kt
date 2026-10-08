@@ -26,6 +26,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -794,7 +795,7 @@ class PlayerViewModelLoadOwnershipIntegrationTest {
     }
 
     /** A shuffle server whose answers each test scripts; it records every request. */
-    private class FakeShuffleServer {
+    private class FakeShuffleServer(testDispatcher: CoroutineDispatcher? = null) {
         val requests: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
         var read: String = shuffle(current = EPISODE_A, next = MOVIE_B)
         var advance: String = shuffle(current = MOVIE_B, next = EPISODE_C)
@@ -804,24 +805,27 @@ class PlayerViewModelLoadOwnershipIntegrationTest {
         var skipGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         val api = org.siloserver.silo.network.apiv2.ShufflesV2Api(
-            HttpClient(MockEngine { request ->
-                val body = (request.body as? io.ktor.http.content.TextContent)?.text.orEmpty()
-                requests += "${request.method.value} ${request.url.encodedPath} $body".trim()
-                val path = request.url.encodedPath
-                val (status, json) = when {
-                    request.method.value == "DELETE" -> HttpStatusCode.NoContent to ""
-                    path == "/api/v2/shuffles" -> HttpStatusCode.Created to
-                        shuffle(current = EPISODE_A, next = MOVIE_B)
-                    path.endsWith("/advance") -> HttpStatusCode.OK to advance
-                    path.endsWith("/skip") -> {
-                        skipGate?.await()
-                        HttpStatusCode.OK to skip
+            HttpClient(MockEngine.create {
+                dispatcher = testDispatcher
+                addHandler { request ->
+                    val body = (request.body as? io.ktor.http.content.TextContent)?.text.orEmpty()
+                    requests += "${request.method.value} ${request.url.encodedPath} $body".trim()
+                    val path = request.url.encodedPath
+                    val (status, json) = when {
+                        request.method.value == "DELETE" -> HttpStatusCode.NoContent to ""
+                        path == "/api/v2/shuffles" -> HttpStatusCode.Created to
+                            shuffle(current = EPISODE_A, next = MOVIE_B)
+                        path.endsWith("/advance") -> HttpStatusCode.OK to advance
+                        path.endsWith("/skip") -> {
+                            skipGate?.await()
+                            HttpStatusCode.OK to skip
+                        }
+                        readStatus.value >= 400 -> readStatus to
+                            """{"type":"https://siloserver.org/docs/api/v2/problems/conflict","title":"Conflict","status":${readStatus.value}}"""
+                        else -> HttpStatusCode.OK to read
                     }
-                    readStatus.value >= 400 -> readStatus to
-                        """{"type":"https://siloserver.org/docs/api/v2/problems/conflict","title":"Conflict","status":${readStatus.value}}"""
-                    else -> HttpStatusCode.OK to read
+                    respond(json, status, headersOf(HttpHeaders.ContentType, "application/json"))
                 }
-                respond(json, status, headersOf(HttpHeaders.ContentType, "application/json"))
             }) { install(ContentNegotiation) { json(SiloJson) } },
             FakeTokenManager(),
             ApiV2Gate.Unrestricted,
@@ -1010,7 +1014,7 @@ class PlayerViewModelLoadOwnershipIntegrationTest {
 
     @Test
     fun pickAnotherReplacesThePickWithAFullCountdownAndStopEndsTheShuffle() = runTest(dispatcher) {
-        val server = FakeShuffleServer()
+        val server = FakeShuffleServer(dispatcher)
         val starter = DeferredNonCooperativeStarter()
         val fixture = playerViewModel(starter, backgroundScope, server.api)
         val store = ViewModelStore().also { it.put("player", fixture.viewModel) }
@@ -1024,7 +1028,10 @@ class PlayerViewModelLoadOwnershipIntegrationTest {
             assertEquals(PlayerViewModel.UP_NEXT_COUNTDOWN_SECONDS - 3, viewModel.uiState.value.upNextCountdownSeconds)
 
             viewModel.pickAnotherShuffle()
-            viewModel.awaitState { it.nextEpisode?.contentId == "episode-c" }
+            // Keep the response and this waiter on the countdown's scheduler.
+            // Returning through Dispatchers.Default lets virtual time tick
+            // between publication of the full countdown and this assertion.
+            withTimeout(30_000) { viewModel.uiState.first { it.nextEpisode?.contentId == "episode-c" } }
             assertTrue(server.requests.contains("""POST /api/v2/shuffles/sh1/skip {"next_content_id":"movie-b"}"""))
             assertEquals(PlayerViewModel.UP_NEXT_COUNTDOWN_SECONDS, viewModel.uiState.value.upNextCountdownSeconds)
 

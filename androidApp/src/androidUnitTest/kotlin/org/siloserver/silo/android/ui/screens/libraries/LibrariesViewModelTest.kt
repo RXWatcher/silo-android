@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.viewModelScope
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockEngineConfig
 import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -14,6 +15,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -21,6 +23,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -311,7 +314,7 @@ class LibrariesViewModelTest {
 
     @Test
     fun libraryListRecheckRecoversShortOrClearedListsAndKeepsThemOnlyOnTransientFailure() = runTest {
-        val fixture = DeferredLibrariesFixture(deferredKeys = emptySet())
+        val fixture = DeferredLibrariesFixture(deferredKeys = emptySet(), engineDispatcher = StandardTestDispatcher(testScheduler))
         fixture.librariesBody = """
             {"items":[{"id":"1","name":"First","type":"movies","sort_order":0}],"page":{"has_more":false}}
         """.trimIndent()
@@ -369,7 +372,7 @@ class LibrariesViewModelTest {
 
     @Test
     fun libraryListRecheckThatDropsTheSelectedLibraryResetsToTheReplacement() = runTest {
-        val fixture = DeferredLibrariesFixture(deferredKeys = emptySet())
+        val fixture = DeferredLibrariesFixture(deferredKeys = emptySet(), engineDispatcher = StandardTestDispatcher(testScheduler))
         Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
         val viewModel = fixture.viewModel()
         val store = ViewModelStore().also { it.put("libraries", viewModel) }
@@ -400,7 +403,7 @@ class LibrariesViewModelTest {
 
     @Test
     fun libraryListRecheckConfirmsAShrinkBeforePublishingIt() = runTest {
-        val fixture = DeferredLibrariesFixture(deferredKeys = emptySet())
+        val fixture = DeferredLibrariesFixture(deferredKeys = emptySet(), engineDispatcher = StandardTestDispatcher(testScheduler))
         Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
         val cache = InMemoryLibraryCache()
         val viewModel = fixture.viewModel(catalogCache = cache)
@@ -452,7 +455,7 @@ class LibrariesViewModelTest {
 
     @Test
     fun libraryListRecheckConfirmsAShrinkOfHiddenAudiobookLibraries() = runTest {
-        val fixture = DeferredLibrariesFixture(deferredKeys = emptySet())
+        val fixture = DeferredLibrariesFixture(deferredKeys = emptySet(), engineDispatcher = StandardTestDispatcher(testScheduler))
         fixture.librariesBody = """
             {"items":[
               {"id":"1","name":"First","type":"movies","sort_order":0},
@@ -555,6 +558,13 @@ class LibrariesViewModelTest {
 
     private class DeferredLibrariesFixture(
         private val deferredKeys: Set<String>,
+        /**
+         * Runs the mock engine, and so the view model's resumptions after each
+         * response, on the test's scheduler. Without it a response resumes the
+         * view model on an IO thread, where a load can finish concurrently with
+         * the test's next refresh and swallow it.
+         */
+        engineDispatcher: CoroutineDispatcher? = null,
     ) {
         var owner = AuthScopeSnapshot("s", "p", "https://example.invalid", "pin", identityGeneration = 1)
         /** Overrides the immediate two-library list; [librariesStatus] fails it instead. */
@@ -569,49 +579,52 @@ class LibrariesViewModelTest {
         private val pendingRequests = mutableListOf<String>()
         private val responses = deferredKeys.associateWith { CompletableDeferred<String>() }
         private val client = HttpClient(
-            MockEngine { request ->
-                val key = when (request.url.encodedPath) {
-                    "/api/v2/user/libraries" -> "libraries"
-                    "/api/v2/catalog/filters" -> "filters"
-                    // Unfiltered browses are GET /catalog with `sort=-field`; facet
-                    // filters switch to POST /catalog/query with the query in the body.
-                    "/api/v2/catalog", "/api/v2/catalog/query" -> {
-                        val body = (request.body as? io.ktor.http.content.TextContent)
-                            ?.let { SiloJson.parseToJsonElement(it.text).jsonObject }
-                        fun field(name: String): String? = body?.get(name)?.let { (it as? JsonPrimitive)?.contentOrNull }
-                            ?: request.url.parameters[name]
-                        val rawSort = field("sort")
-                        val sort = rawSort?.removePrefix("-")
-                        val order = field("order") ?: if (rawSort?.startsWith("-") == true) "desc" else "asc"
-                        val baseKey = "catalog:${field("library_id")}:$sort:$order"
-                        val filterSuffix = if ((body?.get("groups") as? JsonArray)?.isNotEmpty() == true) {
-                            ":filtered"
-                        } else {
-                            ""
+            MockEngine(MockEngineConfig().apply {
+                engineDispatcher?.let { dispatcher = it }
+                addHandler { request ->
+                    val key = when (request.url.encodedPath) {
+                        "/api/v2/user/libraries" -> "libraries"
+                        "/api/v2/catalog/filters" -> "filters"
+                        // Unfiltered browses are GET /catalog with `sort=-field`; facet
+                        // filters switch to POST /catalog/query with the query in the body.
+                        "/api/v2/catalog", "/api/v2/catalog/query" -> {
+                            val body = (request.body as? io.ktor.http.content.TextContent)
+                                ?.let { SiloJson.parseToJsonElement(it.text).jsonObject }
+                            fun field(name: String): String? = body?.get(name)?.let { (it as? JsonPrimitive)?.contentOrNull }
+                                ?: request.url.parameters[name]
+                            val rawSort = field("sort")
+                            val sort = rawSort?.removePrefix("-")
+                            val order = field("order") ?: if (rawSort?.startsWith("-") == true) "desc" else "asc"
+                            val baseKey = "catalog:${field("library_id")}:$sort:$order"
+                            val filterSuffix = if ((body?.get("groups") as? JsonArray)?.isNotEmpty() == true) {
+                                ":filtered"
+                            } else {
+                                ""
+                            }
+                            val offsetSuffix = ":${field("cursor") ?: "0"}"
+                            listOf(
+                                baseKey + filterSuffix + offsetSuffix,
+                                baseKey + filterSuffix,
+                                baseKey + offsetSuffix,
+                                baseKey,
+                            ).firstOrNull(responses::containsKey) ?: (baseKey + filterSuffix)
                         }
-                        val offsetSuffix = ":${field("cursor") ?: "0"}"
-                        listOf(
-                            baseKey + filterSuffix + offsetSuffix,
-                            baseKey + filterSuffix,
-                            baseKey + offsetSuffix,
-                            baseKey,
-                        ).firstOrNull(responses::containsKey) ?: (baseKey + filterSuffix)
+                        else -> {
+                            val segments = request.url.encodedPath.split('/')
+                            val family = segments.last()
+                            "$family:${segments[4]}"
+                        }
                     }
-                    else -> {
-                        val segments = request.url.encodedPath.split('/')
-                        val family = segments.last()
-                        "$family:${segments[4]}"
+                    requests.send(key)
+                    val body = responses[key]?.await() ?: immediateBody(key)
+                    val status = if (key == "libraries") librariesStatusQueue.poll() ?: librariesStatus else HttpStatusCode.OK
+                    if (status != HttpStatusCode.OK) {
+                        respond(content = "", status = status)
+                    } else {
+                        respondJson(body)
                     }
                 }
-                requests.send(key)
-                val body = responses[key]?.await() ?: immediateBody(key)
-                val status = if (key == "libraries") librariesStatusQueue.poll() ?: librariesStatus else HttpStatusCode.OK
-                if (status != HttpStatusCode.OK) {
-                    respond(content = "", status = status)
-                } else {
-                    respondJson(body)
-                }
-            },
+            }),
         ) {
             install(ContentNegotiation) { json(SiloJson) }
         }

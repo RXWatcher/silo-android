@@ -32,7 +32,18 @@ class LibraryMediaScopeTest {
         val result = scopeLibrarySection(row, "series") {
             ApiResult.Success(CatalogResponse(items = listOf(BrowseItem("other-show", "series", "Other"), BrowseItem("film-3", "movie", "Film 3"))))
         }
-        assertEquals(listOf("other-show", "inline-show"), result.section.items.map { it.contentId })
+        assertEquals(listOf("inline-show", "other-show"), result.section.items.map { it.contentId })
+        assertFalse(result.incomplete)
+    }
+
+    /** A fresh sample that alone fills the shelf must not evict the series already shown. */
+    @Test fun refillThatFillsTheShelfKeepsMatchingInlineItems() = runTest {
+        val row = ResolvedSection("random", "random", "Random", itemLimit = 2, totalCount = 2,
+            items = listOf(SectionItem("film", "movie", "Film"), SectionItem("inline-show", "series", "Inline")))
+        val result = scopeLibrarySection(row, "series") {
+            ApiResult.Success(CatalogResponse(items = listOf(BrowseItem("show-a", "series", "A"), BrowseItem("show-b", "series", "B")), hasMore = true))
+        }
+        assertEquals(listOf("inline-show", "show-a"), result.section.items.map { it.contentId })
         assertFalse(result.incomplete)
     }
 

@@ -60,6 +60,24 @@ job_runs = lambda do |job, needs, cancelled|
   (status_function || implicit_success) && eval(translated.join(" "))
 end
 
+check.call(jobs.fetch("unit-tests").fetch("needs", []) == ["setup"],
+           "Unit tests must wait for the shared supply-chain gate")
+setup_steps = jobs.fetch("setup").fetch("steps")
+checkout, supply_chain = setup_steps.first(2)
+check.call(checkout["uses"] == "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803" &&
+           checkout.dig("with", "persist-credentials") == false,
+           "Setup must check out sources without persisted credentials before validation")
+check.call(supply_chain["name"] == "Check build supply chain" &&
+           supply_chain["run"].lines.map(&:strip) == %w[
+             ./scripts/test-release-workflow.sh
+             ./scripts/test-check-build-supply-chain.sh
+             ./scripts/check-build-supply-chain.sh
+           ] && !supply_chain.key?("if") && !supply_chain.key?("continue-on-error") &&
+           !jobs.fetch("setup").key?("continue-on-error"),
+           "Setup must run all supply-chain checks before other setup or signing actions")
+check.call(jobs.fetch("unit-tests").fetch("steps").none? { |step| step["name"] == "Check build supply chain" },
+           "The shared supply-chain gate must run once per release")
+
 check.call(jobs.fetch("apks").fetch("needs").sort == %w[setup unit-tests].sort,
            "APK preparation must wait for setup/tests and overlap Play")
 check.call(jobs.fetch("play-bundles").fetch("needs") == ["setup"],
@@ -72,6 +90,12 @@ check.call(jobs.fetch("publish-release").fetch("needs").sort == %w[setup unit-te
 statuses = %w[success failure cancelled skipped]
 flags = ["true", "false", "", "unexpected"]
 condition_cases = 0
+statuses.product([false, true]).each do |setup, cancelled|
+  needs = {"setup" => {"result" => setup}}
+  check.call(job_runs.call(jobs.fetch("unit-tests"), needs, cancelled) == (!cancelled && setup == "success"),
+             "Unit-test setup gate mismatch: #{[setup, cancelled].inspect}")
+  condition_cases += 1
+end
 statuses.repeated_permutation(5) do |setup, tests, bundles, play, apks|
   flags.product([false, true]).each do |flag, cancelled|
     needs = {

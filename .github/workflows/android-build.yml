@@ -22,7 +22,7 @@ on:
         default: true
         type: boolean
       parallel:
-        description: Benchmark parallel project execution at the existing worker limit
+        description: Benchmark lint parallelism at the existing worker limit
         required: false
         default: false
         type: boolean

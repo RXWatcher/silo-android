@@ -1024,7 +1024,12 @@ class PlayerViewModelLoadOwnershipIntegrationTest {
             assertEquals(PlayerViewModel.UP_NEXT_COUNTDOWN_SECONDS - 3, viewModel.uiState.value.upNextCountdownSeconds)
 
             viewModel.pickAnotherShuffle()
-            viewModel.awaitState { it.nextEpisode?.contentId == "episode-c" }
+            // The new pick and its fresh countdown are published in two updates,
+            // and the skip response resumes the view model off the test thread.
+            viewModel.awaitState {
+                it.nextEpisode?.contentId == "episode-c" &&
+                    it.upNextCountdownSeconds == PlayerViewModel.UP_NEXT_COUNTDOWN_SECONDS
+            }
             assertTrue(server.requests.contains("""POST /api/v2/shuffles/sh1/skip {"next_content_id":"movie-b"}"""))
             assertEquals(PlayerViewModel.UP_NEXT_COUNTDOWN_SECONDS, viewModel.uiState.value.upNextCountdownSeconds)
 

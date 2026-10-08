@@ -50,7 +50,9 @@ suspend fun scopeLibrarySection(
                     visible.putIfAbsent(item.contentId, originals[item.contentId]
                         ?: SiloJson.decodeFromString<SectionItem>(SiloJson.encodeToString(item)))
                 }
-                if (visible.size >= target || !page.data.hasMore) return result(visible.values.toList())
+                // Keep matching inline items too: a changing shelf (Random) can page a sample without them.
+                if (visible.size >= target || !page.data.hasMore)
+                    return result((visible.values + initial).distinctBy { it.contentId })
                 val next = page.data.continuation
                 if (next == null || next === continuation || page.data.items.isEmpty())
                     return result((visible.values + initial).distinctBy { it.contentId }, true)

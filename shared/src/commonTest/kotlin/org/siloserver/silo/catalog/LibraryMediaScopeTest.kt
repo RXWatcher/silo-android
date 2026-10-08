@@ -25,6 +25,17 @@ class LibraryMediaScopeTest {
         assertFalse(result.incomplete)
     }
 
+    /** A Random shelf pages a fresh sample, which need not include the series already shown inline. */
+    @Test fun completedRefillKeepsMatchingInlineItems() = runTest {
+        val row = ResolvedSection("random", "random", "Random", itemLimit = 3, totalCount = 3,
+            items = listOf(SectionItem("film", "movie", "Film"), SectionItem("film-2", "movie", "Film 2"), SectionItem("inline-show", "series", "Inline")))
+        val result = scopeLibrarySection(row, "series") {
+            ApiResult.Success(CatalogResponse(items = listOf(BrowseItem("other-show", "series", "Other"), BrowseItem("film-3", "movie", "Film 3"))))
+        }
+        assertEquals(listOf("other-show", "inline-show"), result.section.items.map { it.contentId })
+        assertFalse(result.incomplete)
+    }
+
     @Test fun underfilledInlineSliceIsExhaustedWithoutRefill() = runTest {
         val row = ResolvedSection("recent", "recently_added", "Recent", itemLimit = 20, totalCount = 2,
             items = listOf(SectionItem("film", "movie", "Film"), SectionItem("show", "series", "Show")))

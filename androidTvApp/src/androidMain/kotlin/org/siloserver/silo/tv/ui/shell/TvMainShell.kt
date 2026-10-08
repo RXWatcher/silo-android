@@ -244,15 +244,44 @@ fun TvMainShell(
     // `visibleRoots` is only Home + Calendar, so a restored/deep-linked
     // `main/movies` route must NOT be treated as "type has no libraries" yet.
     var librariesLoaded by remember { mutableStateOf(false) }
+    // The list leaves out libraries the profile hid; hiding or showing one
+    // on another device re-loads it.
+    val hiddenLibrariesRevision by personalDataRepository.hiddenLibrariesRevision.collectAsState()
+    // A failed load is retried on the next reachable probe: the revision that
+    // asked for it won't come again, and a library shown again on another
+    // device can only come back from the server.
+    var librariesReloadPending by remember { mutableStateOf(false) }
+    var librariesRetry by remember { mutableIntStateOf(0) }
+    LaunchedEffect(reachabilityState.status, reachabilityState.lastCheckedAtMs) {
+        if (librariesReloadPending && reachabilityState.status == ServerReachabilityStatus.Reachable) librariesRetry++
+    }
     val libraries by produceState(
         initialValue = emptyList<UserLibrary>(),
         personalDataRepository,
+        hiddenLibrariesRevision,
+        librariesRetry,
     ) {
-        when (val result = personalDataRepository.listUserLibraries()) {
-            is ApiResult.Success ->
+        // Pending means the last load failed and none is running, so a probe
+        // never cancels a load still in flight.
+        librariesReloadPending = false
+        // Only the first load may fall back to the offline cache. A later one
+        // re-checks, so a failure stays a failure and stays pending, rather
+        // than a cached list that misses a library shown again since.
+        val result = if (librariesLoaded) {
+            personalDataRepository.recheckUserLibraries(value.mapTo(mutableSetOf()) { it.id })
+        } else {
+            personalDataRepository.listUserLibraries()
+        }
+        when (result) {
+            is ApiResult.Success -> {
                 value = result.data.visibleOnTv().sortedBy { it.sortOrder }
+            }
+            // Keep what's shown, minus a library hidden since.
             is ApiResult.Error,
-            is ApiResult.NetworkError -> Unit
+            is ApiResult.NetworkError -> {
+                value = personalDataRepository.withoutHidden(value)
+                librariesReloadPending = true
+            }
         }
         // Mark loaded even on error (we've attempted) so the redirect can run;
         // an empty list then legitimately means "no libraries for this profile".

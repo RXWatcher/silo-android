@@ -235,6 +235,10 @@ class LibrariesViewModel(
     private var pendingContentReload = false
     private val pageSize = 42
 
+    /** Bumps when the profile hides or shows a library on another device. */
+    val hiddenLibrariesRevision: StateFlow<Int> = personalDataRepository.hiddenLibrariesRevision
+    private var seenHiddenLibrariesRevision = hiddenLibrariesRevision.value
+
     init {
         playerSettingsStore?.showAudiobooksFlow
             ?.onEach { show ->
@@ -245,6 +249,12 @@ class LibrariesViewModel(
             }
             ?.launchIn(viewModelScope)
         refresh()
+    }
+
+    fun onHiddenLibrariesRevision(revision: Int) {
+        if (revision == seenHiddenLibrariesRevision) return
+        seenHiddenLibrariesRevision = revision
+        refreshLibraryList()
     }
 
     private fun isHiddenAudiobookLibrary(library: UserLibrary): Boolean =
@@ -299,8 +309,13 @@ class LibrariesViewModel(
             personalDataRepository.recheckUserLibraries(known.mapTo(mutableSetOf()) { it.id })
         }
         // A transient failure re-shows the known list, re-filtered so a Show
-        // Audiobooks change still applies. Auth failures fall through and clear it.
-        val result = if (fetched.canServeCache() && known.isNotEmpty()) ApiResult.Success(known) else fetched
+        // Audiobooks change or a newly hidden library still applies. Auth
+        // failures fall through and clear it.
+        val result = if (fetched.canServeCache() && known.isNotEmpty()) {
+            ApiResult.Success(personalDataRepository.withoutHidden(known))
+        } else {
+            fetched
+        }
         when (result) {
             is ApiResult.Success -> {
                 serverLibraries = result.data
@@ -881,6 +896,12 @@ fun LibrariesScreen(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    // A library hidden or shown on another device lands on foreground, which
+    // can be after this resume's re-check; re-check again when it does.
+    val hiddenLibrariesRevision by viewModel.hiddenLibrariesRevision.collectAsState()
+    LaunchedEffect(viewModel, hiddenLibrariesRevision) {
+        viewModel.onHiddenLibrariesRevision(hiddenLibrariesRevision)
     }
 
     // Recommended tab scroll state — drives the chrome scrim opacity so the

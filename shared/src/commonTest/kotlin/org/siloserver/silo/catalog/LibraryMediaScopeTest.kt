@@ -6,6 +6,7 @@ import org.siloserver.silo.model.catalog.CatalogResponse
 import org.siloserver.silo.model.section.ResolvedSection
 import org.siloserver.silo.model.section.SectionItem
 import org.siloserver.silo.network.ApiResult
+import org.siloserver.silo.network.apiv2.CatalogContinuationV2
 import kotlin.test.*
 
 class LibraryMediaScopeTest {
@@ -44,6 +45,21 @@ class LibraryMediaScopeTest {
             ApiResult.Success(CatalogResponse(items = listOf(BrowseItem("show-a", "series", "A"), BrowseItem("show-b", "series", "B")), hasMore = true))
         }
         assertEquals(listOf("inline-show", "show-a"), result.section.items.map { it.contentId })
+        assertFalse(result.incomplete)
+    }
+
+    /** Inline items count toward the shelf, so a refill page that completes it ends the paging. */
+    @Test fun refillStopsOnceInlineAndRefilledItemsFillTheShelf() = runTest {
+        val row = ResolvedSection("random", "random", "Random", itemLimit = 3, totalCount = 3,
+            items = listOf(SectionItem("film", "movie", "Film"), SectionItem("show-1", "series", "One"), SectionItem("show-2", "series", "Two")))
+        var loads = 0
+        val result = scopeLibrarySection(row, "series") {
+            loads++
+            ApiResult.Success(CatalogResponse(items = listOf(BrowseItem("show-$loads-new", "series", "New"), BrowseItem("film-$loads", "movie", "Film")),
+                hasMore = true, continuation = CatalogContinuationV2("random", "page-$loads", null, emptySet())))
+        }
+        assertEquals(1, loads)
+        assertEquals(listOf("show-1", "show-2", "show-1-new"), result.section.items.map { it.contentId })
         assertFalse(result.incomplete)
     }
 

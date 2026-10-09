@@ -52,11 +52,12 @@ suspend fun scopeLibrarySection(
                 }
                 // Inline items come first: a changing shelf (Random) can page a sample without them, and
                 // they are the start of an ordered shelf anyway, so the trim to target never evicts them.
-                if (visible.size >= target || !page.data.hasMore)
-                    return result((initial + visible.values).distinctBy { it.contentId })
+                // They also count toward the target, so a page that completes the shelf ends the paging.
+                val merged = (initial + visible.values).distinctBy { it.contentId }
+                if (merged.size >= target || !page.data.hasMore) return result(merged)
                 val next = page.data.continuation
                 if (next == null || next === continuation || page.data.items.isEmpty())
-                    return result((initial + visible.values).distinctBy { it.contentId }, true)
+                    return result(merged, true)
                 continuation = next
             }
             else -> return result((initial + visible.values).distinctBy { it.contentId }, true)

@@ -139,6 +139,32 @@ class TvLibraryBrowsePrefsTest {
         assertEquals("year", saved?.sort)
     }
 
+    @Test
+    fun mixedLibraryMoviesAndSeriesKeepSeparateBrowseState() = runPrefsTest {
+        val prefs = BrowsePrefsStore(ApplicationProvider.getApplicationContext(), FakeServerRegistry(), "androidtv")
+        val movies = viewModel(prefs, libraryType = "mixed", mediaScope = "movie")
+        movies.onTabSelected(TvLibraryTab.Browse)
+        movies.onSortKeySelected(TvLibrarySortOption.Year)
+        movies.onFacetSelectionApplied(
+            TvCatalogFacetSelection().toggled(TvCatalogFacet.Genre, "Drama"),
+        )
+        movies.onPreserveFiltersChanged(false)
+
+        // The Series tab of the same library opens on its own defaults and
+        // keeps its own preserve toggle.
+        val series = viewModel(prefs, libraryType = "mixed", mediaScope = "series")
+        assertEquals(true, series.uiState.value.preserveFilters)
+        series.onTabSelected(TvLibraryTab.Browse)
+        assertEquals("title", series.uiState.value.browseFilter.sort)
+        assertEquals(TvCatalogFacetSelection(), series.uiState.value.browseFilter.facetSelection)
+        series.onSortKeySelected(TvLibrarySortOption.Rating)
+
+        assertEquals("rating_imdb", prefs.savedState(LIBRARY_ID, "series")?.sort)
+        assertNull(prefs.savedState(LIBRARY_ID, "movie"))
+        assertNull(prefs.savedState(LIBRARY_ID))
+        assertEquals(false, viewModel(prefs, libraryType = "mixed", mediaScope = "movie").uiState.value.preserveFilters)
+    }
+
     private val createdViewModels = mutableListOf<TvLibraryDetailViewModel>()
 
     private fun runPrefsTest(block: suspend () -> Unit) = runTest {
@@ -152,7 +178,11 @@ class TvLibraryBrowsePrefsTest {
         }
     }
 
-    private suspend fun viewModel(prefs: BrowsePrefsStore): TvLibraryDetailViewModel {
+    private suspend fun viewModel(
+        prefs: BrowsePrefsStore,
+        libraryType: String = "movies",
+        mediaScope: String? = null,
+    ): TvLibraryDetailViewModel {
         val client = HttpClient(
             MockEngine { request ->
                 val body = when (request.url.encodedPath) {
@@ -170,7 +200,8 @@ class TvLibraryBrowsePrefsTest {
             catalogRepository = CatalogRepository(CatalogApi(client)),
             libraryId = LIBRARY_ID,
             libraryTitle = "Movies",
-            libraryType = "movies",
+            libraryType = libraryType,
+            mediaScope = mediaScope,
             browsePrefs = prefs,
         ).also { createdViewModels += it }
         // Let the eager Recommended load finish before the test drives tabs.

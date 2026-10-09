@@ -202,7 +202,7 @@ class TvLibraryDetailViewModel(
         UiState(
             title = libraryTitle,
             libraryType = libraryType,
-            preserveFilters = browsePrefs?.preserveEnabled(libraryId) ?: true,
+            preserveFilters = browsePrefs?.preserveEnabled(libraryId, mediaScope) ?: true,
         ),
     )
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -405,7 +405,7 @@ class TvLibraryDetailViewModel(
      * current Browse sort and filters at once (tvOS `setPreserveEnabled`).
      */
     fun onPreserveFiltersChanged(enabled: Boolean) {
-        browsePrefs?.setPreserveEnabled(libraryId, enabled)
+        browsePrefs?.setPreserveEnabled(libraryId, enabled, mediaScope)
         _uiState.update { it.copy(preserveFilters = enabled) }
         if (enabled) saveBrowseFilter(_uiState.value)
     }
@@ -426,7 +426,7 @@ class TvLibraryDetailViewModel(
     // sections are fixed presets.
     private fun saveBrowseFilter(state: UiState) {
         if (state.selectedTab != TvLibraryTab.Browse) return
-        browsePrefs?.saveState(libraryId, state.browseFilter.toSavedState())
+        browsePrefs?.saveState(libraryId, state.browseFilter.toSavedState(), mediaScope)
     }
 
     private var recommendedGeneration = 0L
@@ -832,7 +832,7 @@ class TvLibraryDetailViewModel(
             TvLibraryTab.Collections -> this
             // Browse restores the saved sort and filters, else lands on the
             // tvOS default view: Title A–Z, no facets.
-            TvLibraryTab.Browse -> browsePrefs?.savedState(libraryId)?.toTvBrowseFilter() ?: copy(
+            TvLibraryTab.Browse -> browsePrefs?.savedState(libraryId, mediaScope)?.toTvBrowseFilter() ?: copy(
                 genre = null,
                 namePrefix = null,
                 sort = TvLibrarySortOption.Title.wireValue,

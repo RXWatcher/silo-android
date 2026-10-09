@@ -96,7 +96,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.mutableIntStateOf
 import org.siloserver.silo.android.ui.components.rememberShimmerProgress
 import androidx.compose.material.icons.filled.Cancel
-import org.siloserver.silo.android.ui.screens.browse.BrowsePrefsStore
+import org.siloserver.silo.common.settings.BrowsePrefsStore
 import org.siloserver.silo.android.ui.screens.browse.CatalogGrid
 import org.siloserver.silo.android.ui.screens.browse.CatalogViewDensity
 import org.siloserver.silo.android.ui.screens.browse.FilterSheet

@@ -293,6 +293,12 @@ val androidTvModule = module {
         org.siloserver.silo.tv.data.preferences.TvLibraryScopeStore(androidContext(), get())
     }
 
+    // Library Browse sort + filters, per server·profile·library (the phone
+    // store under its own key prefix).
+    single {
+        org.siloserver.silo.common.settings.BrowsePrefsStore(androidContext(), get(), keyPrefix = "androidtv")
+    }
+
     // tvOS-parity Home row visibility/order, local to this TV and partitioned
     // by active server + profile.
     single { TvHomeSectionPreferences(androidContext(), get()) }
@@ -488,6 +494,7 @@ val androidTvModule = module {
             libraryTitle = params.get(),
             libraryType = params.get(),
             mediaScope = params.values.getOrNull(3) as? String,
+            browsePrefs = get(),
         )
     }
     viewModel { params ->

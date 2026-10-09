@@ -455,13 +455,13 @@ val androidModule = module {
             get(), get(), get(),
             getOrNull<org.siloserver.silo.repository.port.UserItemStatePort>() ?: org.siloserver.silo.repository.port.NoOpUserItemStatePort,
             get(),
-            get<org.siloserver.silo.android.ui.screens.browse.BrowsePrefsStore>(),
+            get<org.siloserver.silo.common.settings.BrowsePrefsStore>(),
         )
     }
     viewModel { RecommendationsViewModel(get()) }
     viewModel { SearchViewModel(get()) }
     single {
-        org.siloserver.silo.android.ui.screens.browse.BrowsePrefsStore(
+        org.siloserver.silo.common.settings.BrowsePrefsStore(
             context = get(),
             serverRegistry = get(),
         )

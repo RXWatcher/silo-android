@@ -39,7 +39,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import androidx.test.core.app.ApplicationProvider
-import org.siloserver.silo.android.ui.screens.browse.BrowsePrefsStore
+import org.siloserver.silo.common.settings.BrowsePrefsStore
 import org.siloserver.silo.catalog.filter.CatalogFacet
 import org.siloserver.silo.catalog.filter.CatalogFilterState
 import org.siloserver.silo.model.server.ServerEntry
